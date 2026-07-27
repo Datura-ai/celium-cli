@@ -62,6 +62,8 @@ class PodInfo:
     removal_scheduled_at: Optional[str]
     jupyter_installation_status: Optional[str]
     jupyter_url: Optional[str]
+    enable_volume_encryption: bool | None = None
+    volume_encryption_status: str | None = None
 
     @property
     def host(self) -> Optional[str]:
