@@ -39,6 +39,11 @@ from .actions import (
 @click.option("--entrypoint", default="", help="Container entrypoint")
 @click.option("--cmd", default="", help="Command to run in the container")
 @click.option("--ssh-name", default=None, help="Name to register a new SSH key under (default: cli-<user>@<hostname>)")
+@click.option(
+    "--volume-encryption/--no-volume-encryption",
+    default=True,
+    help="Encrypt the local volume when supported (enabled by default)",
+)
 @handle_errors
 def up_command(
     executor_id: Optional[str],
@@ -60,6 +65,7 @@ def up_command(
     entrypoint: Optional[str],
     cmd: Optional[str],
     ssh_name: Optional[str],
+    volume_encryption: bool,
 ):
     """\b
     Create a new GPU pod on a node.
@@ -295,6 +301,7 @@ def up_command(
             "volume_id": volume_id,
             "ports": ports,
             "ssh_name": ssh_name,
+            "enable_volume_encryption": volume_encryption,
         })
     )
 

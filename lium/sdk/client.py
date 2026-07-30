@@ -318,6 +318,7 @@ class Lium:
         ports: Optional[int] = None,
         ssh_keys: Optional[List[str]] = None,
         ssh_name: Optional[str] = None,
+        enable_volume_encryption: bool | None = True,
     ) -> Dict[str, Any]:
         """Start a new pod on a specific node.
 
@@ -337,6 +338,9 @@ class Lium:
             ssh_name: Optional name to use when registering a new SSH key with the
                 backend. Defaults to ``cli-<user>@<hostname>``. Only applied to keys
                 that are not already registered server-side.
+            enable_volume_encryption: Whether to request encryption for the local
+                pod volume. Enabled by default. The image must support Lium volume
+                encryption.
 
         Returns:
             Pod metadata as returned by the rent API (id, name, status, ssh command, etc.).
@@ -367,6 +371,7 @@ class Lium:
             "volume_id": volume_id,
             "user_public_key": ssh_material,
             "initial_port_count": ports,
+            "enable_volume_encryption": enable_volume_encryption,
         }
 
         response = self._request("POST", f"/executors/{executor_info.id}/rent", json=payload).json()
@@ -565,7 +570,9 @@ class Lium:
                 template=d.get("template", {}),
                 removal_scheduled_at=d.get("removal_scheduled_at"),
                 jupyter_installation_status=d.get("jupyter_installation_status"),
-                jupyter_url=d.get("jupyter_url")
+                jupyter_url=d.get("jupyter_url"),
+                enable_volume_encryption=d.get("enable_volume_encryption"),
+                volume_encryption_status=d.get("volume_encryption_status"),
             ))
 
         return pods
@@ -1122,7 +1129,9 @@ class Lium:
             template={"id": response.get("template_id", template_id)},
             removal_scheduled_at=None,
             jupyter_installation_status=None,
-            jupyter_url=None
+            jupyter_url=None,
+            enable_volume_encryption=response.get("enable_volume_encryption"),
+            volume_encryption_status=response.get("volume_encryption_status"),
         )
 
     

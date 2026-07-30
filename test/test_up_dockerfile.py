@@ -101,6 +101,50 @@ def test_up_without_template_or_dockerfile_falls_back_to_default_template(monkey
     payload = captured["payload"]
     assert payload["template_id"] == "tmpl-default"
     assert payload["dockerfile_content"] is None
+    assert payload["enable_volume_encryption"] is True
+
+
+@pytest.mark.parametrize(
+    ("enabled", "expected"),
+    [
+        (None, None),
+        (False, False),
+        (True, True),
+    ],
+)
+def test_up_sends_volume_encryption_preference(monkeypatch, enabled, expected):
+    client = Lium(Config(api_key="test"))
+    captured: dict = {}
+    _stub_up(monkeypatch, client, captured)
+
+    client.up(
+        executor_id="exec-1",
+        ssh_keys=["ssh-ed25519 AAA"],
+        enable_volume_encryption=enabled,
+    )
+
+    assert captured["payload"]["enable_volume_encryption"] is expected
+
+
+def test_ps_hydrates_volume_encryption_outcome(monkeypatch):
+    client = Lium(Config(api_key="test"))
+    response = SimpleNamespace(
+        json=lambda: [
+            {
+                "id": "pod-1",
+                "pod_name": "encrypted-pod",
+                "status": "RUNNING",
+                "enable_volume_encryption": True,
+                "volume_encryption_status": "ENABLED",
+            }
+        ]
+    )
+    monkeypatch.setattr(client, "_request", lambda *args, **kwargs: response)
+
+    pod = client.ps()[0]
+
+    assert pod.enable_volume_encryption is True
+    assert pod.volume_encryption_status == "ENABLED"
 
 
 def test_up_rejects_both_template_and_dockerfile(monkeypatch):
@@ -123,6 +167,13 @@ def test_up_rejects_both_template_and_dockerfile(monkeypatch):
 # --------------------------------------------------------------------------- #
 # CLI: validation XOR
 # --------------------------------------------------------------------------- #
+
+
+def test_up_command_exposes_volume_encryption_flag():
+    result = CliRunner().invoke(up_command.up_command, ["--help"])
+    assert result.exit_code == 0
+    assert "--volume-encryption" in result.output
+    assert "--no-volume-encryption" in result.output
 
 
 def test_validate_rejects_dockerfile_with_image():
@@ -171,6 +222,7 @@ def test_rent_pod_action_passes_dockerfile_content_and_no_template():
             "template": None,
             "dockerfile_content": "FROM busybox\nCMD [\"true\"]",
             "name": "custom-pod",
+            "enable_volume_encryption": True,
         }
     )
 
@@ -178,6 +230,7 @@ def test_rent_pod_action_passes_dockerfile_content_and_no_template():
     assert result.ok
     assert captured["dockerfile_content"] == 'FROM busybox\nCMD ["true"]'
     assert captured["template_id"] is None
+    assert captured["enable_volume_encryption"] is True
     assert captured["executor_id"] == "exec-1"
 
 
