@@ -5,7 +5,7 @@
 groups = ["default"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.0"
-content_hash = "sha256:29bfc9718636cf5f1105b76e9073c03af6383ae10ef6085fe06d2f77b11df974"
+content_hash = "sha256:b051835d37053a2ccd7b2277103017ef14a76fd7c76d411336ec935c72f9bd53"
 
 [[metadata.targets]]
 requires_python = ">=3.10,<3.15"
@@ -188,13 +188,13 @@ files = [
 
 [[package]]
 name = "annotated-doc"
-version = "0.0.4"
-requires_python = ">=3.8"
+version = "0.0.5"
+requires_python = ">=3.9"
 summary = "Document parameters, class attributes, return types, and variables inline, with Annotated."
 groups = ["default"]
 files = [
-    {file = "annotated_doc-0.0.4-py3-none-any.whl", hash = "sha256:571ac1dc6991c450b25a9c2d84a3705e2ae7a53467b5d111c24fa8baabbed320"},
-    {file = "annotated_doc-0.0.4.tar.gz", hash = "sha256:fbcda96e87e9c92ad167c2e53839e57503ecfda18804ea28102353485033faa4"},
+    {file = "annotated_doc-0.0.5-py3-none-any.whl", hash = "sha256:117bac03a25ede5df5440e855b32d556049ca169ead221505badf432fed4b101"},
+    {file = "annotated_doc-0.0.5.tar.gz", hash = "sha256:c7e58ce09192557605d8bbd92836d7e1d520ac9580096042c0bfd197efacf1bb"},
 ]
 
 [[package]]
@@ -818,6 +818,20 @@ files = [
     {file = "ckzg-2.1.8-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:bc8a259bc3cc321413c3c8eb0789cbe35919f4f4bb32946b0e1a484d4303629c"},
     {file = "ckzg-2.1.8-cp314-cp314t-win_amd64.whl", hash = "sha256:f41377a2a63330df64ae6f7cd806a288b21c52aa346151fd8f0551b9e0742289"},
     {file = "ckzg-2.1.8.tar.gz", hash = "sha256:d7bef6b425dca6995457fc59fc5b30211d9b28cbbeee0e7a7bef1372e13f29ca"},
+]
+
+[[package]]
+name = "click"
+version = "8.4.2"
+requires_python = ">=3.10"
+summary = "Composable command line interface toolkit"
+groups = ["default"]
+dependencies = [
+    "colorama; platform_system == \"Windows\"",
+]
+files = [
+    {file = "click-8.4.2-py3-none-any.whl", hash = "sha256:e6f9f66136c816745b9d65817da91d61d957fb16e02e4dcd0552553c5a197b76"},
+    {file = "click-8.4.2.tar.gz", hash = "sha256:9a6cea6e60b17ebe0a44c5cc636d94f09bd66142c1cd7d8b4cd731c4917a15f6"},
 ]
 
 [[package]]
@@ -1905,7 +1919,7 @@ files = [
 
 [[package]]
 name = "plotly"
-version = "6.9.0"
+version = "7.0.0rc0"
 requires_python = ">=3.8"
 summary = "An open-source interactive data visualization library for Python"
 groups = ["default"]
@@ -1914,8 +1928,8 @@ dependencies = [
     "packaging",
 ]
 files = [
-    {file = "plotly-6.9.0-py3-none-any.whl", hash = "sha256:36bebe2f1bb13884774fe61689c329071446f6ce4a8927fb1f0d6fb24f581236"},
-    {file = "plotly-6.9.0.tar.gz", hash = "sha256:967ad33e8c704fed051800d11d985eb206a9c795c14206b30a6f463ed9c67d0d"},
+    {file = "plotly-7.0.0rc0-py3-none-any.whl", hash = "sha256:7cc7e4e2f797a8ee4e440dcb3c2b69d7570cab5a41cbf3e7417317daf66a3668"},
+    {file = "plotly-7.0.0rc0.tar.gz", hash = "sha256:cb1b03bc2ebe840fb4540832467e5a86480eb9ee8a7aa46069668c554c341ddb"},
 ]
 
 [[package]]
