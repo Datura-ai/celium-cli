@@ -1,0 +1,210 @@
+[
+  {
+    "id": "split-cheap",
+    "machine_name": "NVIDIA H100 SXM 8x",
+    "gpu_count": 8,
+    "tier": "secure",
+    "reliability_score": 99,
+    "uptime_in_minutes": 43200,
+    "price_per_gpu": 2.5,
+    "available_gpu_count": 8,
+    "min_gpu_count_for_rental": 1,
+    "location": { "country": "United States", "country_code": "US" },
+    "specs": {
+      "available_port_count": 32,
+      "gpu": { "count": 8, "details": [{ "name": "H100", "capacity": 81920 }] }
+    }
+  },
+  {
+    "id": "full-mid",
+    "machine_name": "NVIDIA H100 SXM 8x",
+    "gpu_count": 8,
+    "tier": "secure",
+    "reliability_score": 95,
+    "uptime_in_minutes": 10080,
+    "price_per_gpu": 4.0,
+    "available_gpu_count": 8,
+    "min_gpu_count_for_rental": null,
+    "location": { "country": "United States", "country_code": "US" },
+    "specs": {
+      "available_port_count": 8,
+      "gpu": { "count": 8, "details": [{ "name": "H100", "capacity": 81920 }] }
+    }
+  },
+  {
+    "id": "unscored-single",
+    "machine_name": "NVIDIA RTX A5000 1x",
+    "gpu_count": 1,
+    "tier": "spot",
+    "reliability_score": null,
+    "uptime_in_minutes": 1440,
+    "price_per_gpu": 1.0,
+    "available_gpu_count": 1,
+    "min_gpu_count_for_rental": null,
+    "location": { "country": "Germany", "country_code": "DE" },
+    "specs": {
+      "available_port_count": 100,
+      "gpu": { "count": 1, "details": [{ "name": "A5000", "capacity": 24576 }] }
+    }
+  },
+  {
+    "id": "spot-cheap-noports",
+    "machine_name": "NVIDIA RTX A5000 2x",
+    "gpu_count": 2,
+    "tier": "spot",
+    "reliability_score": 88,
+    "uptime_in_minutes": 720,
+    "price_per_gpu": 0.5,
+    "available_gpu_count": 2,
+    "min_gpu_count_for_rental": null,
+    "location": { "country": "France", "country_code": "FR" },
+    "specs": {
+      "available_port_count": null,
+      "gpu": { "count": 2, "details": [{ "name": "A5000", "capacity": 24576 }] }
+    }
+  },
+  {
+    "id": "secure-noports",
+    "machine_name": "NVIDIA L40S 4x",
+    "gpu_count": 4,
+    "tier": "secure",
+    "reliability_score": 92,
+    "uptime_in_minutes": 129600,
+    "price_per_gpu": 3.0,
+    "available_gpu_count": 4,
+    "min_gpu_count_for_rental": null,
+    "location": { "country": "Germany", "country_code": "DE" },
+    "specs": {
+      "available_port_count": null,
+      "gpu": { "count": 4, "details": [{ "name": "L40S", "capacity": 49152 }] }
+    }
+  },
+  {
+    "id": "split-bigvram",
+    "machine_name": "NVIDIA H200 SXM 8x",
+    "gpu_count": 8,
+    "tier": "secure",
+    "reliability_score": 97,
+    "uptime_in_minutes": 100000,
+    "price_per_gpu": 6.0,
+    "available_gpu_count": 8,
+    "min_gpu_count_for_rental": 2,
+    "location": { "country": "Japan", "country_code": "JP" },
+    "specs": {
+      "available_port_count": 16,
+      "gpu": { "count": 8, "details": [{ "name": "H200", "capacity": 144384 }] }
+    }
+  },
+  {
+    "id": "tierless",
+    "machine_name": "NVIDIA L40S 4x",
+    "gpu_count": 4,
+    "tier": null,
+    "reliability_score": 90,
+    "uptime_in_minutes": 4320,
+    "price_per_gpu": 2.0,
+    "available_gpu_count": 4,
+    "min_gpu_count_for_rental": null,
+    "location": { "country": "United States", "country_code": "US" },
+    "specs": {
+      "available_port_count": 8,
+      "gpu": { "count": 4, "details": [{ "name": "L40S", "capacity": 49152 }] }
+    }
+  },
+  {
+    "id": "low-reliability",
+    "machine_name": "NVIDIA RTX A5000 2x",
+    "gpu_count": 2,
+    "tier": "spot",
+    "reliability_score": 40,
+    "uptime_in_minutes": 60,
+    "price_per_gpu": 1.5,
+    "available_gpu_count": 2,
+    "min_gpu_count_for_rental": null,
+    "location": { "country": "India", "country_code": "IN" },
+    "specs": {
+      "available_port_count": 4,
+      "gpu": { "count": 2, "details": [{ "name": "A5000", "capacity": 24576 }] }
+    }
+  },
+  {
+    "id": "unscored-pricey",
+    "machine_name": "NVIDIA H100 SXM 8x",
+    "gpu_count": 8,
+    "tier": "secure",
+    "reliability_score": null,
+    "uptime_in_minutes": 200000,
+    "price_per_gpu": 10.0,
+    "available_gpu_count": 8,
+    "min_gpu_count_for_rental": null,
+    "location": { "country": "United States", "country_code": "US" },
+    "specs": {
+      "available_port_count": 64,
+      "gpu": { "count": 8, "details": [{ "name": "H100", "capacity": 81920 }] }
+    }
+  },
+  {
+    "id": "split-mid",
+    "machine_name": "NVIDIA H100 SXM 4x",
+    "gpu_count": 4,
+    "tier": "spot",
+    "reliability_score": 95,
+    "uptime_in_minutes": 20160,
+    "price_per_gpu": 3.5,
+    "available_gpu_count": 4,
+    "min_gpu_count_for_rental": 2,
+    "location": { "country": "Germany", "country_code": "DE" },
+    "specs": {
+      "available_port_count": 32,
+      "gpu": { "count": 4, "details": [{ "name": "H100", "capacity": 81920 }] }
+    }
+  },
+  {
+    "id": "single-cheap",
+    "machine_name": "NVIDIA RTX A5000 1x",
+    "gpu_count": 1,
+    "tier": "secure",
+    "reliability_score": 99.5,
+    "uptime_in_minutes": 43200,
+    "price_per_gpu": 0.8,
+    "available_gpu_count": 1,
+    "min_gpu_count_for_rental": null,
+    "location": { "country": "France", "country_code": "FR" },
+    "specs": {
+      "available_port_count": 12,
+      "gpu": { "count": 1, "details": [{ "name": "A5000", "capacity": 24576 }] }
+    }
+  },
+  {
+    "id": "no-location",
+    "machine_name": "NVIDIA H100 SXM 8x",
+    "gpu_count": 8,
+    "tier": "secure",
+    "reliability_score": 93,
+    "uptime_in_minutes": 5760,
+    "price_per_gpu": 5.0,
+    "available_gpu_count": 8,
+    "min_gpu_count_for_rental": null,
+    "location": null,
+    "specs": {
+      "available_port_count": 8,
+      "gpu": { "count": 8, "details": [{ "name": "H100", "capacity": 81920 }] }
+    }
+  },
+  {
+    "id": "fully-rented",
+    "machine_name": "NVIDIA RTX A5000 8x",
+    "gpu_count": 8,
+    "tier": null,
+    "reliability_score": 10,
+    "uptime_in_minutes": 5,
+    "price_per_gpu": 9.0,
+    "available_gpu_count": 0,
+    "min_gpu_count_for_rental": null,
+    "location": { "country": "Brazil", "country_code": "BR" },
+    "specs": {
+      "available_port_count": 0,
+      "gpu": { "count": 8, "details": [{ "name": "A5000", "capacity": 24576 }] }
+    }
+  }
+]

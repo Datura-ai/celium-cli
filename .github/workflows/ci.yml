@@ -48,8 +48,8 @@ jobs:
         path: dist/
         retention-days: 7
 
-  validate-binary-targets:
-    name: Validate binary target matrix
+  test:
+    name: Test suite
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -64,8 +64,11 @@ jobs:
     - name: Install pytest
       run: python -m pip install --upgrade pip pytest
 
-    - name: Verify installer and workflow target coverage
-      run: pytest test/test_release_binary_targets.py
+    - name: Install test dependencies
+      run: python -m pip install -e .
+
+    - name: Run the test suite
+      run: pytest test/
 
   build-linux-binary:
     name: Build Linux binary (${{ matrix.asset_name }})

@@ -41,6 +41,12 @@ def _executor(huid: str, price_per_hour: float, download: int) -> SimpleNamespac
         docker_in_docker=False,
         max_cuda_version=12.4,
         tier="secure",
+        # Optional ExecutorInfo fields the ls table reads. They default to None on the
+        # real model, so the stand-in has to carry them or the table raises.
+        available_gpu_count=1,
+        min_gpu_count_for_rental=None,
+        reliability_score=None,
+        uptime_in_minutes=None,
     )
 
 

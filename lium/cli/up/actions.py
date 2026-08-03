@@ -20,6 +20,7 @@ class ResolveExecutorAction:
         count: Optional[int] = ctx.get("count")
         country: Optional[str] = ctx.get("country")
         ports: Optional[int] = ctx.get("ports")
+        min_cuda_version: Optional[float] = ctx.get("min_cuda_version")
 
         try:
             if executor_id:
@@ -41,20 +42,18 @@ class ResolveExecutorAction:
                         error=f"Node {executor.huid} has insufficient ports (available: {available}, required: {ports})"
                     )
             else:
-                executors = lium.ls(gpu_type=gpu)
-
-                if count:
-                    executors = [e for e in executors if e.gpu_count == count]
-                if country:
-                    executors = [
-                        e for e in executors
-                        if e.location and e.location.get('country_code', '').upper() == country.upper()
-                    ]
-                if ports:
-                    executors = [
-                        e for e in executors
-                        if e.available_port_count and e.available_port_count >= ports
-                    ]
+                # One filtered call, the same one `lium ls` makes. The old hand-rolled
+                # block compared gpu_count while ls compares available_gpu_count widened
+                # for splitting, so `lium ls --count N` and `lium up --count N` could
+                # offer disjoint candidate sets.
+                executors = lium.ls(
+                    gpu_type=gpu,
+                    gpu_count=count,
+                    widen_for_splitting=True,
+                    min_cuda_version=min_cuda_version,
+                    countries=[country] if country else None,
+                    min_ports=ports,
+                )
 
                 if not executors:
                     filters = []
@@ -66,11 +65,14 @@ class ResolveExecutorAction:
                         filters.append(f"country={country}")
                     if ports:
                         filters.append(f"min ports={ports}")
+                    if min_cuda_version:
+                        filters.append(f"min CUDA={min_cuda_version}")
                     filter_desc = ', '.join(filters) if filters else "specified filters"
                     return ActionResult(ok=False, data={}, error=f"No nodes available with {filter_desc}")
 
-                from lium.cli.ls.command import ls_store_executor
-                ls_store_executor(gpu_type=gpu)
+                # Remember the candidates we already have instead of re-fetching them.
+                from lium.cli.ls.command import store_sorted_executors
+                store_sorted_executors(executors)
 
                 pareto_flags = calculate_pareto_frontier(executors)
                 pareto_executors = [e for e, is_pareto in zip(executors, pareto_flags) if is_pareto]
@@ -177,11 +179,14 @@ class RentPodAction:
         ports: Optional[int] = ctx.get("ports")
         ssh_name: Optional[str] = ctx.get("ssh_name")
         enable_volume_encryption: bool | None = ctx.get("enable_volume_encryption")
+        count: Optional[int] = ctx.get("count")
 
         try:
             if not name:
                 name = executor.huid
 
+            # Without this the API rents every available GPU, so `up --count 1` on a
+            # splittable 8-GPU node would hand over — and bill — all eight.
             pod_info = lium.up(
                 executor_id=executor.id,
                 name=name,
@@ -191,6 +196,7 @@ class RentPodAction:
                 ports=ports,
                 ssh_name=ssh_name,
                 enable_volume_encryption=enable_volume_encryption,
+                gpu_count=count,
             )
 
             pod_id = pod_info.get('id') or pod_info.get('name', '')

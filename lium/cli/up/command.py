@@ -36,6 +36,7 @@ from .actions import (
 @click.option("--count", "-c", type=int, help="Number of GPUs per pod")
 @click.option("--country", help="Filter nodes by ISO country code (e.g., US, FR)")
 @click.option("--ports", "-p", type=int, help="Minimum number of available ports required")
+@click.option("--min-cuda", "min_cuda_version", type=float, help="Minimum CUDA version, e.g. 12.4 (NVIDIA drivers are backward compatible)")
 @click.option("--ttl", help="Auto-terminate after duration (e.g., 6h, 45m, 2d)")
 @click.option("--until", help="Auto-terminate at time in local timezone (e.g., 'today 23:00', 'tomorrow 01:00', '2025-10-20 15:30')")
 @click.option("--jupyter", is_flag=True, help="Install Jupyter Notebook (automatically selects available port)")
@@ -63,6 +64,7 @@ def up_command(
     count: Optional[int],
     country: Optional[str],
     ports: Optional[int],
+    min_cuda_version: Optional[float],
     ttl: Optional[str],
     until: Optional[str],
     jupyter: bool,
@@ -197,7 +199,8 @@ def up_command(
             "gpu": gpu,
             "count": count,
             "country": country,
-            "ports": ports
+            "ports": ports,
+            "min_cuda_version": min_cuda_version,
         })
     )
 
@@ -277,10 +280,14 @@ def up_command(
             pass
 
     if not yes:
+        # Price what is actually being rented. On a splittable node `--count` takes a
+        # slice, so quoting the whole node here would overstate the bill.
+        rented_gpus = count or executor.available_gpu_count or executor.gpu_count
+        rented_price = executor.price_per_gpu * rented_gpus
         confirm_msg = (
             f"Acquire pod on {executor.huid} "
-            f"({executor.gpu_count}×{executor.gpu_type}) "
-            f"at ${executor.price_per_hour:.2f}/h?"
+            f"({rented_gpus}×{executor.gpu_type}) "
+            f"at ${rented_price:.2f}/h?"
         )
         if not ui.confirm(confirm_msg):
             return
@@ -313,6 +320,7 @@ def up_command(
             "ports": ports,
             "ssh_name": ssh_name,
             "enable_volume_encryption": volume_encryption,
+            "count": count,
         })
     )
 

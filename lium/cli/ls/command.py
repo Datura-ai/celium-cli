@@ -1,7 +1,7 @@
 """List (ls) command implementation."""
 
 import json
-from typing import Optional, List
+from typing import Optional, List, Tuple
 import click
 
 from lium.sdk import Lium, ExecutorInfo
@@ -18,14 +18,8 @@ from . import validation, display
 from .actions import GetExecutorsAction
 
 
-def ls_store_executor(gpu_type: Optional[str] = None, sort_by: str = "download") -> List[ExecutorInfo]:
-    """Load and store nodes without displaying them."""
-    lium = Lium()
-    executors = lium.ls(gpu_type=gpu_type)
-
-    if not executors:
-        return []
-
+def store_sorted_executors(executors: List[ExecutorInfo]) -> List[ExecutorInfo]:
+    """Pareto-sort *executors* and remember them for index-based access in ``lium up``."""
     pareto_flags = calculate_pareto_frontier(executors)
     executors_with_pareto = list(zip(executors, pareto_flags))
 
@@ -44,6 +38,16 @@ def ls_store_executor(gpu_type: Optional[str] = None, sort_by: str = "download")
 @click.option("--gpu", "gpu_type", shell_complete=get_gpu_completions, help="Filter by GPU type, e.g. A100")
 @click.option("--count", "gpu_count", type=int, help="Renter-intent GPU count (widens to splittable nodes where min <= N <= available)")
 @click.option("--min-cuda", "min_cuda_version", type=float, help="Minimum CUDA version, e.g. 12.4 (NVIDIA drivers are backward compatible)")
+@click.option("--tier", type=click.Choice(["any", "secure", "spot"]), default=None, help="Only nodes of this tier (spot nodes are cheaper but reclaimable)")
+@click.option("--min-reliability", type=float, help="Minimum provider reliability score, 0-100")
+@click.option("--scored-only", is_flag=True, help="With --min-reliability, also drop nodes that have no score yet")
+@click.option("--min-uptime", "min_uptime_days", type=float, help="Minimum current uptime, in days")
+@click.option("--min-vram", "min_vram_gb", type=float, help="Minimum VRAM per GPU, in GB")
+@click.option("--min-vram-total", "min_vram_total_gb", type=float, help="Minimum VRAM across the whole node, in GB")
+@click.option("--max-price", "max_price_total", type=float, help="Maximum total $/hour (prices the split --count would rent)")
+@click.option("--max-price-gpu", "max_price_per_gpu", type=float, help="Maximum $/GPU-hour, matching the $/GPU·h column")
+@click.option("--country", "countries", multiple=True, help="ISO country code, e.g. US. Repeat for several countries")
+@click.option("--ports", "min_ports", type=int, help="Minimum number of open ports")
 @click.option("--lat", type=float, help="Latitude for distance filtering")
 @click.option("--lon", type=float, help="Longitude for distance filtering")
 @click.option("--max-distance", "max_distance", type=int, help="Maximum distance in miles from --lat/--lon")
@@ -72,8 +76,33 @@ def ls_command(
     limit: Optional[int],
     output_format: str,
     min_cuda_version: Optional[float],
+    tier: Optional[str],
+    min_reliability: Optional[float],
+    scored_only: bool,
+    min_uptime_days: Optional[float],
+    min_vram_gb: Optional[float],
+    min_vram_total_gb: Optional[float],
+    max_price_total: Optional[float],
+    max_price_per_gpu: Optional[float],
+    countries: Tuple[str, ...],
+    min_ports: Optional[int],
 ):
-    """List available GPU nodes."""
+    """\b
+    List available GPU nodes.
+    \b
+    Hardware filters:
+      --gpu, --count, --min-vram, --min-vram-total, --min-cuda, --ports
+    \b
+    Price filters:
+      --max-price       total $/hour, the number you pay
+      --max-price-gpu   $/GPU-hour, the $/GPU·h column
+    \b
+    Trust filters:
+      --tier, --min-reliability, --scored-only, --min-uptime
+    \b
+    Location filters:
+      --country, --lat/--lon, --max-distance
+    """
 
     _, error = validation.validate(limit, lat, lon, max_distance, min_cuda_version)
     if error:
@@ -89,6 +118,16 @@ def ls_command(
         "lon": lon,
         "max_distance": max_distance,
         "min_cuda_version": min_cuda_version,
+        "tier": tier,
+        "min_reliability": min_reliability,
+        "include_unscored": not scored_only,
+        "min_uptime_minutes": int(min_uptime_days * 1440) if min_uptime_days else None,
+        "min_vram_gb": min_vram_gb,
+        "min_vram_total_gb": min_vram_total_gb,
+        "min_ports": min_ports,
+        "countries": list(countries) or None,
+        "max_price_total": max_price_total,
+        "max_price_per_gpu": max_price_per_gpu,
     }
 
     action = GetExecutorsAction()
@@ -112,8 +151,8 @@ def ls_command(
             ui.error(f"All {gpu_type} GPUs are currently rented out")
             ui.info(f"Tip: {ui.styled('lium ls', 'success')}")
         else:
-            ui.error("All GPUs are currently rented out")
-            ui.info("Check back later or contact support if this persists")
+            ui.error("No nodes match those filters")
+            ui.info("Check back later or loosen the filters")
         return
 
 

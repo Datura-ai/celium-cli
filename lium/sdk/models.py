@@ -26,6 +26,31 @@ class ExecutorInfo:
     tier: Optional[str] = None  # "spot" or "secure"; reclaim/penalty risk signal
     min_gpu_count_for_rental: Optional[int] = None
     available_gpu_count: Optional[int] = None
+    # Blended 0-100 provider reliability score. None means "not enough data yet", not
+    # "unreliable" — filters keep those nodes unless the caller opts out.
+    reliability_score: Optional[float] = None
+    uptime_in_minutes: Optional[int] = None
+
+    @property
+    def vram_gb(self) -> Optional[float]:
+        """VRAM of a single GPU in GiB (capacity is reported in MiB)."""
+        details = self.specs.get('gpu', {}).get('details', []) if self.specs else []
+        capacity = details[0].get('capacity') if details else None
+        if not capacity:
+            return None
+        return capacity / 1024
+
+    @property
+    def vram_total_gb(self) -> Optional[float]:
+        """VRAM of the whole node in GiB. SN51 nodes are homogeneous, so per-GPU × count."""
+        # Mirrors getNodeVramMb in lium-io-frontend/src/modules/pod/browse-pod/gpuVram.ts,
+        # which returns null on a missing or non-positive count and does not fall back
+        # to the physical GPU count.
+        per_gpu = self.vram_gb
+        count = self.available_gpu_count
+        if per_gpu is None or not count or count < 0:
+            return None
+        return per_gpu * count
 
     @property
     def driver_version(self) -> str:

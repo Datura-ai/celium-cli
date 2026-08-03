@@ -122,8 +122,10 @@ _SORT_KEY_FUNCS: Dict[str, Callable[[ExecutorInfo], Any]] = {
     "loc": lambda e: _country_name(e.location),
     "id": lambda e: e.huid,
     "gpu": lambda e: (e.gpu_type, e.gpu_count),
-    "download": lambda e: -(e.specs.get("network", {}).get("download_speed", 0) or 0),
-    "upload": lambda e: -(e.specs.get("network", {}).get("upload_speed", 0) or 0),
+    # Sort on the backend-authoritative effective speeds, the same numbers the table
+    # prints. These used to read the raw specs value, which the table does not show.
+    "download": lambda e: -e.download_speed,
+    "upload": lambda e: -e.upload_speed,
 }
 
 # Aliases let a caller sort by the field name `--format json` emits.
@@ -150,6 +152,7 @@ def _add_table_columns(t: Table) -> None:
     t.add_column("Tier", justify="left", width=8, no_wrap=True)
     t.add_column("Max CUDA", justify="right", width=10, no_wrap=True)
     t.add_column("$/GPU·h", justify="right", width=8, no_wrap=True)
+    t.add_column("$/h", justify="right", width=8, no_wrap=True)
     t.add_column("Location", justify="left", ratio=4, min_width=10, overflow="fold")
     t.add_column("VRAM (Gb)", justify="right", width=11, no_wrap=True)
     t.add_column("RAM (Gb)", justify="right", width=10, no_wrap=True)
@@ -191,6 +194,9 @@ def compact_executor(exe: ExecutorInfo, is_pareto: bool, index: int) -> Dict[str
         "upload_mbps": _intish(s["Upload"]),
         "download_mbps": _intish(s["Download"]),
         "available_ports": _intish(s["Ports"]),
+        "available_gpu_count": exe.available_gpu_count,
+        "reliability_score": exe.reliability_score,
+        "uptime_in_minutes": exe.uptime_in_minutes,
         "docker_in_docker": exe.docker_in_docker,
         "is_pareto": is_pareto,
         "max_cuda_version": exe.max_cuda_version,
@@ -285,6 +291,7 @@ def build_executors_table(
             _tier_display(exe),
             cuda_display,
             console.get_styled(_money(exe.price_per_gpu), 'success'),
+            console.get_styled(_money(exe.price_per_hour), 'success'),
             _country_name(exe.location),
             s["VRAM"],
             s["RAM"],

@@ -510,13 +510,11 @@ def _render_generic_rows(items: list[Mapping[str, Any]]) -> None:
     for k in items[0].keys():
         if k not in keys:
             keys.append(k)
-    # Push complex (dict/list) keys to the back so they get pruned by the cap.
-    keys.sort(
-        key=lambda k: (
-            isinstance(items[0].get(k), (dict, list, tuple)),
-            keys.index(k),
-        )
-    )
+    # Push complex (dict/list) keys to the back so they get pruned by the cap. list.sort()
+    # is stable, so insertion order survives inside each group on its own — the previous
+    # `keys.index(k)` tie-breaker was both redundant and a crash, because list.sort()
+    # empties the list while it runs.
+    keys.sort(key=lambda k: isinstance(items[0].get(k), (dict, list, tuple)))
     keys = keys[:6]
 
     table = _new_table()

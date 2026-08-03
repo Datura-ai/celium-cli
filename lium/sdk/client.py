@@ -23,6 +23,18 @@ from dotenv import load_dotenv
 from lium.__about__ import __version__ as fallback_version
 
 from .config import Config
+# Re-exported so `from lium.sdk.client import _is_splittable_for_count` keeps working.
+from .filters import (
+    _is_splittable_for_count,
+    matches_countries,
+    matches_max_price,
+    matches_min_ports,
+    matches_min_reliability,
+    matches_min_uptime,
+    matches_min_vram,
+    matches_min_vram_total,
+    matches_tier,
+)
 from .exceptions import (
     LiumAuthError,
     LiumError,
@@ -70,21 +82,6 @@ class AlphaQuote:
     alpha_amount: Decimal  # the API's ``converted`` (raw Decimal; floored by the caller)
     rate: Decimal          # the API's ``rate`` = USD per alpha
     netuid: int            # the API's ``netuid`` — drives the transfer
-
-
-def _is_splittable_for_count(ex: "ExecutorInfo", wanted: int) -> bool:
-    """Return True if *ex* is a splittable node that can serve *wanted* GPUs.
-
-    PREDICATE PARITY: must match matchesGpuCountFilter in
-    lium-io-frontend/src/contexts/PodFiltersProvider.tsx.  Shared fixture:
-    lium/test/fixtures/splittable_executors.json mirrored in
-    lium-io-frontend/src/contexts/__fixtures__/splittable-executors.json.
-    """
-    minc = ex.min_gpu_count_for_rental  # None-safe per CLAUDE.md
-    avail = ex.available_gpu_count
-    if minc is None or avail is None:
-        return False
-    return minc <= wanted <= avail
 
 
 # Main SDK Class
@@ -212,7 +209,11 @@ class Lium:
                     gpu_type = extract_gpu_type(gpu_name)
 
         price_per_gpu = executor_dict.get("price_per_gpu") or 0
-        price_per_hour = price_per_gpu * gpu_count
+        # Price what is rentable, not what is installed. A partially-rented node prints its
+        # $/h in `lium ls` and is compared against --max-price; using the physical GPU count
+        # would make those two numbers disagree — the exact mismatch DAH-2506 fixes on the web.
+        available_gpu_count = executor_dict.get("available_gpu_count")
+        price_per_hour = price_per_gpu * (available_gpu_count if available_gpu_count is not None else gpu_count)
 
         return ExecutorInfo(
             id=executor_dict.get("id", ""),
@@ -233,7 +234,9 @@ class Lium:
             max_cuda_version=executor_dict.get("max_cuda_version"),
             tier=executor_dict.get("tier"),
             min_gpu_count_for_rental=executor_dict.get("min_gpu_count_for_rental"),
-            available_gpu_count=executor_dict.get("available_gpu_count"),
+            available_gpu_count=available_gpu_count,
+            reliability_score=executor_dict.get("reliability_score"),
+            uptime_in_minutes=executor_dict.get("uptime_in_minutes"),
         )
 
     def list_ssh_keys(self) -> List[SSHKey]:
@@ -336,6 +339,7 @@ class Lium:
         ssh_keys: Optional[List[str]] = None,
         ssh_name: Optional[str] = None,
         enable_volume_encryption: bool | None = True,
+        gpu_count: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Start a new pod on a specific node.
 
@@ -358,6 +362,9 @@ class Lium:
             enable_volume_encryption: Whether to request encryption for the local
                 pod volume. Enabled by default. The image must support Lium volume
                 encryption.
+            gpu_count: How many GPUs to rent on a splittable node. Omit to rent every
+                available GPU. Passing fewer than the node's ``min_gpu_count_for_rental``,
+                or more than it has free, is rejected by the API.
 
         Returns:
             Pod metadata as returned by the rent API (id, name, status, ssh command, etc.).
@@ -389,6 +396,7 @@ class Lium:
             "user_public_key": ssh_material,
             "initial_port_count": ports,
             "enable_volume_encryption": enable_volume_encryption,
+            "gpu_count": gpu_count,
         }
 
         response = self._request("POST", f"/executors/{executor_info.id}/rent", json=payload).json()
@@ -509,12 +517,22 @@ class Lium:
         max_distance_miles: Optional[int] = None,
         min_cuda_version: Optional[float] = None,
         widen_for_splitting: bool = False,
+        tier: Optional[str] = None,
+        min_reliability: Optional[float] = None,
+        include_unscored: bool = True,
+        min_uptime_minutes: Optional[int] = None,
+        min_vram_gb: Optional[float] = None,
+        min_vram_total_gb: Optional[float] = None,
+        min_ports: Optional[int] = None,
+        countries: Optional[List[str]] = None,
+        max_price_total: Optional[float] = None,
+        max_price_per_gpu: Optional[float] = None,
     ) -> List[ExecutorInfo]:
         """List available nodes.
 
         Args:
             gpu_type: Optional GPU filter such as ``"A100"`` or ``"H200"``.
-            gpu_count: Exact GPU count to match (defaults to 8, pass ``None`` to disable).
+            gpu_count: Exact GPU count to match (defaults to ``None``, meaning any count).
             lat: Optional latitude for geospatial filtering. Must be used together with ``lon`` and ``max_distance_miles``.
             lon: Optional longitude for geospatial filtering. Must be used together with ``lat`` and ``max_distance_miles``.
             max_distance_miles: Optional radius (in miles) for geospatial filtering. Must be used together with ``lat`` and ``lon``.
@@ -524,6 +542,20 @@ class Lium:
             widen_for_splitting: When ``True`` and ``gpu_count`` is set, also include splittable nodes
                 where ``min_gpu_count_for_rental <= gpu_count <= available_gpu_count``.  Defaults to
                 ``False`` so all existing callers (including ``@machine``) retain strict equality semantics.
+            tier: Optional ``"secure"`` or ``"spot"``. ``None`` or ``"any"`` keeps every tier.
+            min_reliability: Optional minimum 0-100 provider reliability score.
+            include_unscored: When ``True`` (the default), nodes with no reliability score yet are kept
+                even if ``min_reliability`` is set — a missing score means "too new to measure", not "bad".
+            min_uptime_minutes: Optional minimum current uptime, in minutes.
+            min_vram_gb: Optional minimum VRAM per GPU, in GiB.
+            min_vram_total_gb: Optional minimum VRAM across the whole node, in GiB.
+            min_ports: Optional minimum number of open ports. Nodes with an unknown port count are
+                excluded once this is set.
+            countries: Optional list of ISO country codes, matched case-insensitively.
+            max_price_total: Optional maximum $/hour for the whole rental. When ``gpu_count`` is set and
+                the node is splittable, this prices the split the caller would actually rent, not the
+                whole node.
+            max_price_per_gpu: Optional maximum $/GPU-hour.
 
         Returns:
             A list of :class:`ExecutorInfo` objects that satisfy the filters.
@@ -571,7 +603,18 @@ class Lium:
                 if e.max_cuda_version is not None and e.max_cuda_version >= min_cuda_version
             ]
 
-        return executors
+        return [
+            e for e in executors
+            if matches_tier(e, tier)
+            and matches_min_reliability(e, min_reliability, include_unscored)
+            and matches_min_uptime(e, min_uptime_minutes)
+            and matches_min_vram(e, min_vram_gb)
+            and matches_min_vram_total(e, min_vram_total_gb)
+            and matches_min_ports(e, min_ports)
+            and matches_countries(e, countries)
+            and matches_max_price(e, max_price_total, "total", gpu_count)
+            and matches_max_price(e, max_price_per_gpu, "gpu", gpu_count)
+        ]
 
     def ps(self) -> List[PodInfo]:
         """List active pods.
