@@ -6,7 +6,13 @@ import click
 
 from lium.sdk import Lium, ExecutorInfo
 from lium.cli import ui
-from lium.cli.utils import handle_errors, store_executor_selection, calculate_pareto_frontier
+from lium.cli.utils import (
+    CliFailure,
+    EXIT_CONFIGURATION_ERROR,
+    calculate_pareto_frontier,
+    handle_errors,
+    store_executor_selection,
+)
 from lium.cli.completion import get_gpu_completions
 from . import validation, display
 from .actions import GetExecutorsAction
@@ -69,16 +75,9 @@ def ls_command(
 ):
     """List available GPU nodes."""
 
-    # Validate
-    # No --sort means "default view": stars first. An explicit --sort is an
-    # instruction, so it must outrank them.
-    pareto_first = sort_by is None
-    sort_by = sort_by or "download"
-
-    _, error = validation.validate(sort_by, limit, lat, lon, max_distance, min_cuda_version)
+    _, error = validation.validate(limit, lat, lon, max_distance, min_cuda_version)
     if error:
-        ui.error(error)
-        return
+        raise CliFailure("invalid_arguments", error, EXIT_CONFIGURATION_ERROR)
 
     # Load data
     lium = Lium()
@@ -120,7 +119,7 @@ def ls_command(
 
     if output_format == "json":
         sorted_executors, pareto_flags = display.sort_executors(
-            executors, sort_by=sort_by, limit=limit, pareto_first=pareto_first
+            executors, sort_by=sort_by, limit=limit
         )
         payload = [
             display.compact_executor(exe, is_pareto, idx)
@@ -135,7 +134,6 @@ def ls_command(
         executors,
         sort_by=sort_by,
         limit=limit,
-        pareto_first=pareto_first,
     )
 
     # Display

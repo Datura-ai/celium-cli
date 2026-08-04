@@ -168,9 +168,7 @@ def test_explicit_sort_is_not_overridden_by_the_pareto_star(sort_by):
     cheap = _executor("cheap-node", price_per_hour=0.30, download=10)
     expensive_but_starred = _executor("starred-node", price_per_hour=64.00, download=9999)
 
-    ordered, _ = ls_display.sort_executors(
-        [cheap, expensive_but_starred], sort_by=sort_by, pareto_first=False
-    )
+    ordered, _ = ls_display.sort_executors([cheap, expensive_but_starred], sort_by=sort_by)
 
     assert ordered[0].huid == "cheap-node"
 
@@ -321,10 +319,16 @@ def test_exec_json_keeps_stdout_clean_when_the_api_fails(monkeypatch):
 def test_up_fails_when_ssh_is_unavailable(monkeypatch):
     """A pod that is rented but unreachable must not report success — DAH-2556."""
     from lium.cli.up import actions as up_actions
+    from lium.cli.utils import CliFailure, EXIT_SSH_ERROR
 
-    monkeypatch.setattr(
-        "lium.cli.ssh.command.get_ssh_method_and_pod", lambda pod_name: (None, None)
-    )
+    def _no_ssh(pod_name):
+        raise CliFailure(
+            "ssh_unavailable",
+            f"No SSH connection available for pod '{pod_name}'",
+            EXIT_SSH_ERROR,
+        )
+
+    monkeypatch.setattr("lium.cli.ssh.command.get_ssh_method_and_pod", _no_ssh)
 
     result = up_actions.PrepareSSHAction().execute({"pod_name": "brave-orbit-b9"})
 
@@ -332,12 +336,15 @@ def test_up_fails_when_ssh_is_unavailable(monkeypatch):
     assert "brave-orbit-b9" in result.error
 
 
-def test_ssh_to_pod_returns_the_connection_status(monkeypatch):
-    """up needs the status: a connection that never opened is not a closed session."""
+@pytest.mark.parametrize(
+    "returncode, connected", [(0, True), (3, True), (255, False)]
+)
+def test_ssh_session_connected_reports_only_connection_failure(monkeypatch, returncode, connected):
+    """A remote shell exiting non-zero is the user's business; 255 is ours."""
     from lium.cli.ssh import command as ssh_module
 
     monkeypatch.setattr(
-        ssh_module.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=255)
+        ssh_module.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=returncode)
     )
 
-    assert ssh_module.ssh_to_pod("ssh root@x", _pod()) == ssh_module.SSH_CONNECTION_FAILED
+    assert ssh_module.ssh_session_connected("ssh root@x") is connected

@@ -338,6 +338,7 @@ def up_command(
         raise CliFailure("pod_not_ready", result.error, EXIT_GENERAL_ERROR)
 
     pod = result.data["pod"]
+    pod_label = f"Pod {ui.styled(pod.huid, 'pod_id')} (name: {pod_name}, id: {pod_id})"
 
     if termination_time:
         action = ScheduleTerminationAction()
@@ -351,7 +352,7 @@ def up_command(
         )
 
         if not result.ok:
-            ui.info(f"Pod {ui.styled(pod.huid, 'pod_id')} (name: {pod_name}, id: {pod_id})")
+            ui.info(pod_label)
             raise CliFailure(
                 "termination_not_scheduled",
                 f"Pod is running but auto-termination was NOT scheduled: {result.error}",
@@ -370,7 +371,7 @@ def up_command(
         )
 
         if not result.ok:
-            ui.info(f"Pod {ui.styled(pod.huid, 'pod_id')} (name: {pod_name}, id: {pod_id})")
+            ui.info(pod_label)
             raise CliFailure(
                 "jupyter_install_failed",
                 f"Pod is running but Jupyter was NOT installed: {result.error}",
@@ -379,7 +380,7 @@ def up_command(
 
     # Always state what was created: a caller that only gets an SSH banner or a
     # log stream has no way to name the pod it is now paying for.
-    ui.info(f"Pod {ui.styled(pod.huid, 'pod_id')} ready  (name: {pod_name}, id: {pod_id})")
+    ui.info(f"{pod_label} ready")
 
     if no_ssh:
         return
@@ -415,9 +416,9 @@ def up_command(
     ssh_cmd = result.data["ssh_cmd"]
     pod = result.data["pod"]
 
-    from lium.cli.ssh.command import SSH_CONNECTION_FAILED, ssh_to_pod
+    from lium.cli.ssh.command import ssh_session_connected
 
-    if ssh_to_pod(ssh_cmd, pod) == SSH_CONNECTION_FAILED:
+    if not ssh_session_connected(ssh_cmd):
         raise CliFailure(
             "ssh_connection_failed",
             f"Pod {pod.huid} is running but the SSH connection failed",

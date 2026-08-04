@@ -113,28 +113,30 @@ def _specs_row(executor: ExecutorInfo) -> Dict[str, str]:
     }
 
 
+_SORT_KEY_FUNCS: Dict[str, Callable[[ExecutorInfo], Any]] = {
+    "price_gpu": lambda e: e.price_per_gpu or 0.0,
+    "price_total": lambda e: e.price_per_hour or 0.0,
+    "loc": lambda e: _country_name(e.location),
+    "id": lambda e: e.huid,
+    "gpu": lambda e: (e.gpu_type, e.gpu_count),
+    "download": lambda e: -(e.specs.get("network", {}).get("download_speed", 0) or 0),
+    "upload": lambda e: -(e.specs.get("network", {}).get("upload_speed", 0) or 0),
+}
+
+# Aliases let a caller sort by the field name `--format json` emits.
 SORT_KEY_ALIASES = {
     "price_per_gpu_hour": "price_gpu",
     "price_per_hour": "price_total",
 }
 
-SORT_KEYS = ["download", "upload", "price_gpu", "price_total", "loc", "id", "gpu"]
+DEFAULT_SORT_KEY = "download"
+SORT_KEYS = list(_SORT_KEY_FUNCS)
 
 
 def _sort_key_factory(name: str) -> Callable[[ExecutorInfo], Any]:
     """Get sort key function by name."""
-    # Aliases let a caller sort by the field name `--format json` emits.
     name = SORT_KEY_ALIASES.get(name, name)
-    mapping = {
-        "price_gpu": lambda e: e.price_per_gpu or 0.0,
-        "price_total": lambda e: e.price_per_hour or 0.0,
-        "loc": lambda e: _country_name(e.location),
-        "id": lambda e: e.huid,
-        "gpu": lambda e: (e.gpu_type, e.gpu_count),
-        "download": lambda e: -(e.specs.get("network", {}).get("download_speed", 0) or 0),
-        "upload": lambda e: -(e.specs.get("network", {}).get("upload_speed", 0) or 0),
-    }
-    return mapping.get(name, mapping["download"])
+    return _SORT_KEY_FUNCS.get(name, _SORT_KEY_FUNCS[DEFAULT_SORT_KEY])
 
 
 def _add_table_columns(t: Table) -> None:
@@ -195,24 +197,23 @@ def compact_executor(exe: ExecutorInfo, is_pareto: bool, index: int) -> Dict[str
 
 def sort_executors(
     executors: List[ExecutorInfo],
-    sort_by: str = "download",
+    sort_by: Optional[str] = None,
     limit: Optional[int] = None,
     show_pareto: bool = True,
-    pareto_first: bool = True,
 ) -> tuple[List[ExecutorInfo], List[bool]]:
     """Apply Pareto-aware sort and limit. Returns (sorted_executors, pareto_flags).
 
-    ``pareto_first`` floats starred nodes to the top, which is the right default
-    for a human skimming the table. Pass ``False`` when the caller asked for an
-    explicit order: otherwise the star outranks the sort key and "cheapest
-    first" returns the most expensive node.
+    ``sort_by=None`` is the default view a human skims, where starred nodes float
+    to the top. An explicit key is an instruction and outranks the star —
+    otherwise "cheapest first" returns the most expensive node.
     """
     if not executors:
         return [], []
 
+    pareto_first = sort_by is None
     pareto_flags = calculate_pareto_frontier(executors) if show_pareto else [False] * len(executors)
     pairs = list(zip(executors, pareto_flags))
-    sort_key = _sort_key_factory(sort_by)
+    sort_key = _sort_key_factory(sort_by or DEFAULT_SORT_KEY)
 
     if pareto_first:
         pairs.sort(key=lambda x: (not x[1], sort_key(x[0])))
@@ -227,10 +228,9 @@ def sort_executors(
 
 def build_executors_table(
     executors: List[ExecutorInfo],
-    sort_by: str = "download",
+    sort_by: Optional[str] = None,
     limit: Optional[int] = None,
     show_pareto: bool = True,
-    pareto_first: bool = True,
 ) -> tuple[Table, List[ExecutorInfo], str, str]:
     """Build executors table, returns (table, sorted_executors, header, tip)."""
 
@@ -238,8 +238,7 @@ def build_executors_table(
         return None, [], "", ""
 
     sorted_executors, pareto_flags = sort_executors(
-        executors, sort_by=sort_by, limit=limit, show_pareto=show_pareto,
-        pareto_first=pareto_first,
+        executors, sort_by=sort_by, limit=limit, show_pareto=show_pareto
     )
 
     # Count Pareto-optimal in shown results

@@ -2,7 +2,6 @@
 
 
 def validate(
-    sort_by: str,
     limit: int | None,
     lat: float | None,
     lon: float | None,
@@ -10,8 +9,6 @@ def validate(
     min_cuda_version: float | None = None,
 ) -> tuple[bool, str | None]:
     """Validate ls command options, returns (is_valid, error_message)."""
-
-    # sort_by membership is enforced by click.Choice at parse time.
 
     # Validate limit
     if limit is not None and limit <= 0:

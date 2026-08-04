@@ -73,20 +73,20 @@ def human_approved_removing_every_pod(pods: List[PodInfo]) -> bool:
     """
     if not sys.stdin.isatty():
         return True
-    listed = ", ".join(pod.huid for pod in pods)
-    return ui.confirm(f"Remove all {len(pods)} pods ({listed})?")
+    listed_huids = ", ".join(pod.huid for pod in pods)
+    return ui.confirm(f"Remove all {len(pods)} pods ({listed_huids})?")
 
 
 @click.command("rm")
 @click.argument("targets", required=False)
-@click.option("--all", "-a", is_flag=True, help="Remove all active pods")
+@click.option("--all", "-a", "remove_all", is_flag=True, help="Remove all active pods")
 @click.option("--yes", "-y", is_flag=True, help="Skip the confirmation prompt")
 @click.option("--in", "in_duration", help="Schedule removal after duration")
 @click.option("--at", "at_time", help="Schedule removal at time")
 @handle_errors
 def rm_command(
     targets: Optional[str],
-    all: bool,
+    remove_all: bool,
     yes: bool,
     in_duration: Optional[str],
     at_time: Optional[str],
@@ -98,11 +98,11 @@ def rm_command(
     typo cannot look like a successful teardown.
     """
     lium = Lium()
-    plan = build_removal_plan(lium, targets, all, in_duration, at_time)
+    plan = build_removal_plan(lium, targets, remove_all, in_duration, at_time)
     if plan is None:
         return
 
-    if all and not yes and not human_approved_removing_every_pod(plan.pods):
+    if remove_all and not yes and not human_approved_removing_every_pod(plan.pods):
         return
 
     context = {"pods": plan.pods, "lium": lium}

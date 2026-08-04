@@ -24,6 +24,10 @@ from ..utils import (
     parse_targets,
 )
 
+# The remote command failed but said nothing about how. Its own status space, not
+# the lium process exit table.
+UNKNOWN_REMOTE_FAILURE = 1
+
 
 @dataclass(frozen=True)
 class PodExecution:
@@ -38,12 +42,12 @@ class PodExecution:
     @classmethod
     def from_sdk_result(cls, pod: PodInfo, result: Mapping[str, object]) -> "PodExecution":
         # The SDK omits exit_code only when it could not run the command at all.
-        exit_code = result.get("exit_code", EXIT_GENERAL_ERROR)
+        exit_code = result.get("exit_code")
         return cls(
             pod=pod.huid,
             stdout=str(result.get("stdout") or ""),
             stderr=str(result.get("stderr") or ""),
-            exit_code=int(exit_code) if isinstance(exit_code, int) else EXIT_GENERAL_ERROR,
+            exit_code=exit_code if isinstance(exit_code, int) else UNKNOWN_REMOTE_FAILURE,
             error=str(result["error"]) if result.get("error") else None,
         )
 
