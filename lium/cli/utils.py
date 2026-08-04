@@ -243,7 +243,18 @@ def timed_step_status(step: int = 0, total_steps: int = 0, message: str = ""):
         raise
 
 
-def _emit_json_error(code: str, message: str) -> None:
+# Exit codes published in docs/developers/cli/reference/index.md. Commands import
+# these rather than spelling the numbers, so the published table stays the one
+# source of truth.
+EXIT_GENERAL_ERROR = 1
+EXIT_CONFIGURATION_ERROR = 2
+EXIT_API_ERROR = 3
+EXIT_SSH_ERROR = 4
+EXIT_POD_NOT_FOUND = 5
+EXIT_PERMISSION_DENIED = 6
+
+
+def _emit_json_error(code: str, message: str, exit_code: int = EXIT_GENERAL_ERROR) -> None:
     """Print a machine-readable error envelope to stderr and exit non-zero.
 
     Keeps stdout clean for JSON consumers (agents): on success stdout carries
@@ -252,17 +263,20 @@ def _emit_json_error(code: str, message: str) -> None:
     """
     envelope = {"ok": False, "error": {"code": code, "message": message}}
     click.echo(json.dumps(envelope, sort_keys=True), err=True)
-    raise SystemExit(1)
+    raise SystemExit(exit_code)
 
 
 def handle_errors(func):
     """Decorator to handle CLI errors gracefully.
 
+    Every handled error exits non-zero. A caller chaining commands with ``&&``
+    can only see failure through the exit code, so reporting an error and then
+    exiting 0 tells it the command worked.
+
     When the wrapped command was invoked with ``--json`` (a ``json_output``
-    flag), errors are rendered as a JSON envelope on stderr and the process
-    exits non-zero, so machine consumers get parseable output instead of
-    Rich-formatted text on stdout. Otherwise the human-readable rendering is
-    preserved.
+    flag), errors are rendered as a JSON envelope on stderr, so machine
+    consumers get parseable output instead of Rich-formatted text on stdout.
+    Otherwise the human-readable rendering is preserved.
     """
     @wraps(func)
     def wrapper(*args, **kwargs):
@@ -283,14 +297,17 @@ def handle_errors(func):
                 console.dim("Or set LIUM_API_KEY environment variable")
             else:
                 console.error(f"Error: {e}")
+            raise SystemExit(EXIT_CONFIGURATION_ERROR)
         except LiumError as e:
             if json_output:
                 _emit_json_error("lium_error", str(e))
             console.error(f"Error: {e}")
+            raise SystemExit(EXIT_GENERAL_ERROR)
         except Exception as e:
             if json_output:
                 _emit_json_error("unexpected_error", str(e))
             console.error(f"Unexpected error: {e}")
+            raise SystemExit(EXIT_GENERAL_ERROR)
     return wrapper
 
 

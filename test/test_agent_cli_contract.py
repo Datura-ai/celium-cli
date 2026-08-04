@@ -11,12 +11,15 @@ cheapest node" hands back the most expensive one.
 import json
 from types import SimpleNamespace
 
+import pytest
 from click.testing import CliRunner
 
 from lium.cli.cli import cli
 from lium.cli.commands import exec as exec_module
+from lium.cli.ls import command as ls_command_module
 from lium.cli.ls import display as ls_display
 from lium.cli.rm import command as rm_module
+from lium.cli.utils import EXIT_POD_NOT_FOUND
 
 
 def _pod(huid: str = "eager-wolf-aa", name: str = "my-pod") -> SimpleNamespace:
@@ -35,13 +38,16 @@ def _executor(huid: str, price_per_hour: float, download: int) -> SimpleNamespac
         download_speed=download,
         upload_speed=download,
         specs={"network": {"download_speed": download, "upload_speed": download}},
+        docker_in_docker=False,
+        max_cuda_version=12.4,
+        tier="secure",
     )
 
 
 class _FakeLium:
     """Stands in for the SDK: one pod, and an exec result the test dictates."""
 
-    result: dict = {}
+    result: dict[str, object] = {}
 
     def __init__(self, *args, **kwargs):
         pass
@@ -49,14 +55,25 @@ class _FakeLium:
     def ps(self):
         return [_pod()]
 
-    def exec(self, pod, command=None, env=None, timeout=None):
+    def exec(self, pod, command=None, env=None):
         return dict(self.result)
 
 
-def _run_exec(monkeypatch, result: dict, extra_args: list[str] | None = None):
+def _run_exec(
+    monkeypatch,
+    result: dict[str, object],
+    extra_args: list[str] | None = None,
+    target: str = "my-pod",
+):
     _FakeLium.result = result
     monkeypatch.setattr(exec_module, "Lium", _FakeLium)
-    return CliRunner().invoke(cli, ["exec", "my-pod", "echo hi", *(extra_args or [])])
+    return CliRunner().invoke(cli, ["exec", target, "echo hi", *(extra_args or [])])
+
+
+def _run_rm(monkeypatch, target: str = "my-pod"):
+    _FakeRmLium.removed = []
+    monkeypatch.setattr(rm_module, "Lium", _FakeRmLium)
+    return CliRunner().invoke(cli, ["rm", target, "-y"])
 
 
 def test_exec_keeps_stdout_when_the_remote_command_fails(monkeypatch):
@@ -97,24 +114,26 @@ def test_exec_json_carries_stdout_stderr_and_exit_code(monkeypatch):
     )
 
     payload = json.loads(result.output)
-    assert payload["stdout"] == "out\n"
-    assert payload["stderr"] == "err\n"
-    assert payload["exit_code"] == 7
+    assert payload["ok"] is False
+    assert payload["results"] == [
+        {"pod": "eager-wolf-aa", "stdout": "out\n", "stderr": "err\n", "exit_code": 7, "error": None}
+    ]
     assert result.exit_code == 7
 
 
 def test_exec_fails_loudly_when_no_pod_matches(monkeypatch):
     """A typo must not read as a successful run on a pod that was never touched."""
-    _FakeLium.result = {"success": True, "exit_code": 0, "stdout": "", "stderr": ""}
-    monkeypatch.setattr(exec_module, "Lium", _FakeLium)
+    result = _run_exec(
+        monkeypatch,
+        {"success": True, "exit_code": 0, "stdout": "", "stderr": ""},
+        target="no-such-pod-zz",
+    )
 
-    result = CliRunner().invoke(cli, ["exec", "no-such-pod-zz", "echo hi"])
-
-    assert result.exit_code != 0
+    assert result.exit_code == EXIT_POD_NOT_FOUND
 
 
 class _FakeRmLium:
-    removed: list = []
+    removed: list[str] = []
 
     def __init__(self, *args, **kwargs):
         pass
@@ -126,57 +145,74 @@ class _FakeRmLium:
         _FakeRmLium.removed.append(pod.huid)
 
 
-def test_rm_accepts_yes_flag(monkeypatch):
-    """Agents learn `-y` on `up`; the same idiom must not fail on teardown."""
-    _FakeRmLium.removed = []
-    monkeypatch.setattr(rm_module, "Lium", _FakeRmLium)
-
-    result = CliRunner().invoke(cli, ["rm", "my-pod", "-y"])
+def test_rm_accepts_yes_and_reports_what_it_removed(monkeypatch):
+    """Agents learn `-y` on `up`, and silence on teardown reads like a no-op."""
+    result = _run_rm(monkeypatch)
 
     assert result.exit_code == 0
     assert _FakeRmLium.removed == ["eager-wolf-aa"]
-
-
-def test_rm_reports_what_it_removed(monkeypatch):
-    """Silence on the one mandatory step is indistinguishable from a no-op."""
-    _FakeRmLium.removed = []
-    monkeypatch.setattr(rm_module, "Lium", _FakeRmLium)
-
-    result = CliRunner().invoke(cli, ["rm", "my-pod", "-y"])
-
     assert "eager-wolf-aa" in result.output
 
 
 def test_rm_fails_loudly_when_no_pod_matches(monkeypatch):
     """`lium rm <typo>` must not look exactly like a successful termination."""
-    _FakeRmLium.removed = []
-    monkeypatch.setattr(rm_module, "Lium", _FakeRmLium)
+    result = _run_rm(monkeypatch, target="no-such-pod-zz")
 
-    result = CliRunner().invoke(cli, ["rm", "no-such-pod-zz", "-y"])
-
-    assert result.exit_code != 0
+    assert result.exit_code == EXIT_POD_NOT_FOUND
     assert _FakeRmLium.removed == []
 
 
-def test_explicit_sort_is_not_overridden_by_the_pareto_star():
+@pytest.mark.parametrize("sort_by", ["price_total", "price_per_hour"])
+def test_explicit_sort_is_not_overridden_by_the_pareto_star(sort_by):
     """"Cheapest first" must mean cheapest first, star or no star."""
     cheap = _executor("cheap-node", price_per_hour=0.30, download=10)
     expensive_but_starred = _executor("starred-node", price_per_hour=64.00, download=9999)
 
     ordered, _ = ls_display.sort_executors(
-        [cheap, expensive_but_starred], sort_by="price_total", pareto_first=False
+        [cheap, expensive_but_starred], sort_by=sort_by, pareto_first=False
     )
 
     assert ordered[0].huid == "cheap-node"
 
 
-def test_price_per_hour_is_accepted_as_a_sort_key():
-    """The JSON field is price_per_hour; --sort must accept the name it emits."""
+@pytest.mark.parametrize("sort_by", ["price_total", "price_per_hour"])
+def test_cheapest_sort_survives_the_whole_ls_command(monkeypatch, sort_by):
+    """End to end: the option a caller types must reach the sort it names."""
     cheap = _executor("cheap-node", price_per_hour=0.30, download=10)
-    pricey = _executor("pricey-node", price_per_hour=64.00, download=9999)
+    expensive_but_starred = _executor("starred-node", price_per_hour=64.00, download=9999)
 
-    ordered, _ = ls_display.sort_executors(
-        [cheap, pricey], sort_by="price_per_hour", pareto_first=False
-    )
+    class _FakeLsLium:
+        def __init__(self, *args, **kwargs):
+            pass
 
-    assert ordered[0].huid == "cheap-node"
+        def ls(self, **kwargs):
+            return [expensive_but_starred, cheap]
+
+    monkeypatch.setattr(ls_command_module, "Lium", _FakeLsLium)
+    monkeypatch.setattr(ls_command_module, "store_executor_selection", lambda executors: None)
+
+    result = CliRunner().invoke(cli, ["ls", "--sort", sort_by, "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    assert [row["huid"] for row in json.loads(result.output)][0] == "cheap-node"
+
+
+def test_default_ls_ordering_still_puts_the_starred_node_first(monkeypatch):
+    """Without --sort the ★ ordering a human reads is unchanged."""
+    cheap = _executor("cheap-node", price_per_hour=0.30, download=10)
+    expensive_but_starred = _executor("starred-node", price_per_hour=64.00, download=9999)
+
+    class _FakeLsLium:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def ls(self, **kwargs):
+            return [cheap, expensive_but_starred]
+
+    monkeypatch.setattr(ls_command_module, "Lium", _FakeLsLium)
+    monkeypatch.setattr(ls_command_module, "store_executor_selection", lambda executors: None)
+
+    result = CliRunner().invoke(cli, ["ls", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)[0]["huid"] == "starred-node"

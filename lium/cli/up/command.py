@@ -357,6 +357,13 @@ def up_command(
         if not result.ok:
             ui.error(result.error)
 
+    # Always state what was created: a caller that only gets an SSH banner or a
+    # log stream has no way to name the pod it is now paying for.
+    ui.info(f"Pod {ui.styled(pod.huid, 'pod_id')} ready  (name: {pod_name}, id: {pod_id})")
+
+    if no_ssh:
+        return
+
     # Docker-run mode: stream logs instead of SSH
     if docker_run_mode:
         from lium.cli.logs.actions import StreamLogsAction
@@ -371,13 +378,6 @@ def up_command(
                 click.echo(line)
         except KeyboardInterrupt:
             ui.dim("\nStopped following logs")
-        return
-
-    # Always state what was created: a caller that only gets an SSH banner has
-    # no way to name the pod it is now paying for.
-    ui.info(f"Pod {ui.styled(pod.huid, 'pod_id')} ready  (name: {pod_name}, id: {pod_id})")
-
-    if no_ssh:
         return
 
     # Standard mode: SSH into the pod

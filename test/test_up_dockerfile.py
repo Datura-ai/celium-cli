@@ -255,7 +255,7 @@ def test_up_command_reads_dockerfile_and_forwards_content(monkeypatch, tmp_path)
         available_port_count=10,
         download_speed=1000,
     )
-    pod = SimpleNamespace(id="pod-1", name="custom-pod")
+    pod = SimpleNamespace(id="pod-1", name="custom-pod", huid="brave-fox-3a")
 
     class _FakeResolveExecutor:
         def execute(self, ctx):

@@ -113,15 +113,21 @@ def _specs_row(executor: ExecutorInfo) -> Dict[str, str]:
     }
 
 
+SORT_KEY_ALIASES = {
+    "price_per_gpu_hour": "price_gpu",
+    "price_per_hour": "price_total",
+}
+
+SORT_KEYS = ["download", "upload", "price_gpu", "price_total", "loc", "id", "gpu"]
+
+
 def _sort_key_factory(name: str) -> Callable[[ExecutorInfo], Any]:
     """Get sort key function by name."""
+    # Aliases let a caller sort by the field name `--format json` emits.
+    name = SORT_KEY_ALIASES.get(name, name)
     mapping = {
-        # Aliases match the field names `--format json` emits, so a caller can
-        # sort by the same name it reads back.
         "price_gpu": lambda e: e.price_per_gpu or 0.0,
-        "price_per_gpu_hour": lambda e: e.price_per_gpu or 0.0,
         "price_total": lambda e: e.price_per_hour or 0.0,
-        "price_per_hour": lambda e: e.price_per_hour or 0.0,
         "loc": lambda e: _country_name(e.location),
         "id": lambda e: e.huid,
         "gpu": lambda e: (e.gpu_type, e.gpu_count),
@@ -206,11 +212,12 @@ def sort_executors(
 
     pareto_flags = calculate_pareto_frontier(executors) if show_pareto else [False] * len(executors)
     pairs = list(zip(executors, pareto_flags))
+    sort_key = _sort_key_factory(sort_by)
 
-    if show_pareto and pareto_first:
-        pairs.sort(key=lambda x: (not x[1], _sort_key_factory(sort_by)(x[0])))
+    if pareto_first:
+        pairs.sort(key=lambda x: (not x[1], sort_key(x[0])))
     else:
-        pairs.sort(key=lambda x: _sort_key_factory(sort_by)(x[0]))
+        pairs.sort(key=lambda x: sort_key(x[0]))
 
     if isinstance(limit, int) and limit > 0:
         pairs = pairs[:limit]

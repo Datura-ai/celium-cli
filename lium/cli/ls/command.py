@@ -3,7 +3,6 @@
 import json
 from typing import Optional, List
 import click
-from click.core import ParameterSource
 
 from lium.sdk import Lium, ExecutorInfo
 from lium.cli import ui
@@ -45,11 +44,8 @@ def ls_store_executor(gpu_type: Optional[str] = None, sort_by: str = "download")
 @click.option(
     "--sort",
     "sort_by",
-    type=click.Choice([
-        "download", "upload", "price_gpu", "price_total", "loc", "id", "gpu",
-        "price_per_gpu_hour", "price_per_hour",
-    ]),
-    default="download",
+    type=click.Choice(display.SORT_KEYS + list(display.SORT_KEY_ALIASES)),
+    default=None,
     help="Sort result by the chosen field. An explicit --sort wins over the ★ optimal ordering.",
 )
 @click.option("--limit", type=int, default=None, help="Limit number of rows shown.")
@@ -66,7 +62,7 @@ def ls_command(
     lat: Optional[float],
     lon: Optional[float],
     max_distance: Optional[int],
-    sort_by: str,
+    sort_by: Optional[str],
     limit: Optional[int],
     output_format: str,
     min_cuda_version: Optional[float],
@@ -74,6 +70,11 @@ def ls_command(
     """List available GPU nodes."""
 
     # Validate
+    # No --sort means "default view": stars first. An explicit --sort is an
+    # instruction, so it must outrank them.
+    pareto_first = sort_by is None
+    sort_by = sort_by or "download"
+
     _, error = validation.validate(sort_by, limit, lat, lon, max_distance, min_cuda_version)
     if error:
         ui.error(error)
@@ -116,8 +117,6 @@ def ls_command(
             ui.info("Check back later or contact support if this persists")
         return
 
-    # An explicit --sort is an instruction, not a hint: don't let ★ outrank it.
-    pareto_first = click.get_current_context().get_parameter_source("sort_by") == ParameterSource.DEFAULT
 
     if output_format == "json":
         sorted_executors, pareto_flags = display.sort_executors(

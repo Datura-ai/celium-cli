@@ -1,14 +1,72 @@
 """Remove (rm) command implementation."""
 
 import sys
-from typing import Optional
+from dataclasses import dataclass
+from datetime import datetime
+from typing import List, Optional
 import click
 
-from lium.sdk import Lium
+from lium.sdk import Lium, PodInfo
 from lium.cli import ui
-from lium.cli.utils import handle_errors
+from lium.cli.utils import (
+    EXIT_CONFIGURATION_ERROR,
+    EXIT_GENERAL_ERROR,
+    EXIT_POD_NOT_FOUND,
+    handle_errors,
+)
 from . import validation, parsing
 from .actions import RemovePodsAction, ScheduleRemovalAction
+
+
+@dataclass(frozen=True)
+class RemovalPlan:
+    """Which pods to remove, and when — now if no time was given."""
+
+    pods: List[PodInfo]
+    termination_time: Optional[datetime]
+
+
+def build_removal_plan_or_exit(
+    lium: Lium,
+    targets: Optional[str],
+    remove_all: bool,
+    in_duration: Optional[str],
+    at_time: Optional[str],
+) -> Optional[RemovalPlan]:
+    """Resolve TARGETS into a plan. None means there was nothing to remove."""
+    is_valid, error = validation.validate(targets, remove_all, in_duration, at_time)
+    if not is_valid:
+        ui.error(error)
+        raise SystemExit(EXIT_CONFIGURATION_ERROR)
+
+    all_pods = ui.load("Loading pods", lambda: lium.ps())
+    if not all_pods:
+        ui.warning("No active pods")
+        return None
+
+    parsed, error = parsing.parse(targets, remove_all, all_pods, in_duration, at_time)
+    if error:
+        ui.error(error)
+        raise SystemExit(
+            EXIT_POD_NOT_FOUND
+            if error.startswith(parsing.NO_MATCHING_PODS)
+            else EXIT_CONFIGURATION_ERROR
+        )
+
+    return RemovalPlan(
+        pods=parsed["selected_pods"], termination_time=parsed.get("termination_time")
+    )
+
+
+def human_approved_removing_every_pod(pods: List[PodInfo]) -> bool:
+    """Ask before wiping the whole account — but only ask a human.
+
+    A piped caller has already said what it wants and cannot answer a prompt.
+    """
+    if not sys.stdin.isatty():
+        return True
+    listed = ", ".join(pod.huid for pod in pods)
+    return ui.confirm(f"Remove all {len(pods)} pods ({listed})?")
 
 
 @click.command("rm")
@@ -31,58 +89,30 @@ def rm_command(
     Removal is irreversible. Exits non-zero when nothing matched TARGETS, so a
     typo cannot look like a successful teardown.
     """
-
-    # Validate
-    valid, error = validation.validate(targets, all, in_duration, at_time)
-    if not valid:
-        ui.error(error)
-        raise SystemExit(2)
-
-    # Load data
     lium = Lium()
-    all_pods = ui.load("Loading pods", lambda: lium.ps())
-
-    if not all_pods:
-        ui.warning("No active pods")
+    plan = build_removal_plan_or_exit(lium, targets, all, in_duration, at_time)
+    if plan is None:
         return
 
-    # Parse
-    parsed, error = parsing.parse(targets, all, all_pods, in_duration, at_time)
-    if error:
-        ui.error(error)
-        raise SystemExit(2)
+    if all and not yes and not human_approved_removing_every_pod(plan.pods):
+        return
 
-    selected_pods = parsed.get("selected_pods")
-
-    if not selected_pods:
-        ui.error(f"No pods match targets: {targets}")
-        raise SystemExit(2)
-
-    # --all on a shared account can wipe a colleague's work, so it asks once.
-    if all and not yes and sys.stdin.isatty():
-        listed = ", ".join(pod.huid for pod in selected_pods)
-        click.confirm(f"Remove all {len(selected_pods)} pods ({listed})?", abort=True)
-    termination_time = parsed.get("termination_time")
-
-    # Execute
-    ctx = {"pods": selected_pods, "lium": lium}
-
-    if termination_time:
-        ctx["termination_time"] = termination_time.isoformat()
+    context = {"pods": plan.pods, "lium": lium}
+    if plan.termination_time:
+        context["termination_time"] = plan.termination_time.isoformat()
         action = ScheduleRemovalAction()
+        done_verb = "Scheduled removal for"
     else:
         action = RemovePodsAction()
+        done_verb = "Removed"
 
-    result = action.execute(ctx)
-
-    failed_huids = result.data.get("failed_huids", []) if not result.ok else []
-    removed_huids = [pod.huid for pod in selected_pods if pod.huid not in failed_huids]
+    failed_huids = action.execute(context).data["failed_huids"]
+    removed_huids = [pod.huid for pod in plan.pods if pod.huid not in failed_huids]
 
     # Say what happened: silence is indistinguishable from having done nothing.
     if removed_huids:
-        verb = "Scheduled removal for" if termination_time else "Removed"
-        ui.info(f"{verb} {len(removed_huids)} pod(s): {', '.join(removed_huids)}")
+        ui.success(f"{done_verb} {len(removed_huids)} pod(s): {', '.join(removed_huids)}")
 
     if failed_huids:
         ui.error(f"Failed to remove pods: {', '.join(failed_huids)}")
-        raise SystemExit(1)
+        raise SystemExit(EXIT_GENERAL_ERROR)
