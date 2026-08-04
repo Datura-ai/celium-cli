@@ -254,6 +254,21 @@ EXIT_POD_NOT_FOUND = 5
 EXIT_PERMISSION_DENIED = 6
 
 
+class CliFailure(Exception):
+    """A command failing for a reason it can name.
+
+    Raised instead of exiting inline so that rendering — JSON envelope for a
+    machine caller, Rich text for a human — and the exit code are decided in one
+    place, ``handle_errors``, rather than at every error site in every command.
+    """
+
+    def __init__(self, code: str, message: str, exit_code: int = EXIT_GENERAL_ERROR) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.exit_code = exit_code
+
+
 def _emit_json_error(code: str, message: str, exit_code: int = EXIT_GENERAL_ERROR) -> None:
     """Print a machine-readable error envelope to stderr and exit non-zero.
 
@@ -285,11 +300,18 @@ def handle_errors(func):
             return func(*args, **kwargs)
         except (click.ClickException, click.Abort):
             raise
+        except CliFailure as e:
+            if json_output:
+                _emit_json_error(e.code, e.message, e.exit_code)
+            console.error(e.message)
+            raise SystemExit(e.exit_code)
         except ValueError as e:
             is_missing_api_key = "No API key found" in str(e)
             if json_output:
                 _emit_json_error(
-                    "no_api_key" if is_missing_api_key else "value_error", str(e)
+                    "no_api_key" if is_missing_api_key else "value_error",
+                    str(e),
+                    EXIT_CONFIGURATION_ERROR,
                 )
             elif is_missing_api_key:
                 console.error("No API key configured")

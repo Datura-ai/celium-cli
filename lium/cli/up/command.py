@@ -3,7 +3,13 @@ import click
 
 from lium.sdk import Lium
 from lium.cli import ui
-from lium.cli.utils import handle_errors, ensure_config
+from lium.cli.utils import (
+    CliFailure,
+    EXIT_GENERAL_ERROR,
+    EXIT_SSH_ERROR,
+    ensure_config,
+    handle_errors,
+)
 from lium.cli.completion import get_gpu_completions
 from . import validation, parsing
 from .actions import (
@@ -192,8 +198,7 @@ def up_command(
     )
 
     if not result.ok:
-        ui.error(result.error)
-        return
+        raise CliFailure("node_selection_failed", result.error, EXIT_GENERAL_ERROR)
 
     executor = result.data["executor"]
 
@@ -236,8 +241,7 @@ def up_command(
             })
         )
         if not result.ok:
-            ui.error(result.error)
-            return
+            raise CliFailure("template_failed", result.error, EXIT_GENERAL_ERROR)
         template = result.data["template"]
     else:
         action = ResolveTemplateAction()
@@ -247,8 +251,7 @@ def up_command(
             "executor": executor
         })
         if not result.ok:
-            ui.error(result.error)
-            return
+            raise CliFailure("template_failed", result.error, EXIT_GENERAL_ERROR)
         template = result.data["template"]
         # API-based estimate using resolved template ID
         try:
@@ -286,8 +289,7 @@ def up_command(
         )
 
         if not result.ok:
-            ui.error(result.error)
-            return
+            raise CliFailure("volume_failed", result.error, EXIT_GENERAL_ERROR)
 
         volume_id = result.data["volume_id"]
 
@@ -308,8 +310,7 @@ def up_command(
     )
 
     if not result.ok:
-        ui.error(result.error)
-        return
+        raise CliFailure("rent_failed", result.error, EXIT_GENERAL_ERROR)
 
     pod_id = result.data["pod_id"]
     pod_name = result.data["pod_name"]
@@ -324,8 +325,10 @@ def up_command(
     )
 
     if not result.ok:
-        ui.error(result.error)
-        return
+        # The pod is rented and already billing. Name it before failing, or the
+        # caller cannot clean up what it is now paying for.
+        ui.error(f"Pod {pod_name} (id: {pod_id}) was created but did not become ready")
+        raise CliFailure("pod_not_ready", result.error, EXIT_GENERAL_ERROR)
 
     pod = result.data["pod"]
 
@@ -341,7 +344,12 @@ def up_command(
         )
 
         if not result.ok:
-            ui.error(result.error)
+            ui.info(f"Pod {ui.styled(pod.huid, 'pod_id')} (name: {pod_name}, id: {pod_id})")
+            raise CliFailure(
+                "termination_not_scheduled",
+                f"Pod is running but auto-termination was NOT scheduled: {result.error}",
+                EXIT_GENERAL_ERROR,
+            )
 
     if jupyter:
         action = InstallJupyterAction()
@@ -355,7 +363,12 @@ def up_command(
         )
 
         if not result.ok:
-            ui.error(result.error)
+            ui.info(f"Pod {ui.styled(pod.huid, 'pod_id')} (name: {pod_name}, id: {pod_id})")
+            raise CliFailure(
+                "jupyter_install_failed",
+                f"Pod is running but Jupyter was NOT installed: {result.error}",
+                EXIT_GENERAL_ERROR,
+            )
 
     # Always state what was created: a caller that only gets an SSH banner or a
     # log stream has no way to name the pod it is now paying for.
@@ -390,8 +403,7 @@ def up_command(
     )
 
     if not result.ok:
-        ui.error(result.error)
-        return
+        raise CliFailure("ssh_unavailable", result.error, EXIT_SSH_ERROR)
 
     ssh_cmd = result.data["ssh_cmd"]
     pod = result.data["pod"]

@@ -12,6 +12,7 @@ from lium.cli.utils import (
     EXIT_CONFIGURATION_ERROR,
     EXIT_GENERAL_ERROR,
     EXIT_POD_NOT_FOUND,
+    CliFailure,
     handle_errors,
 )
 from . import validation, parsing
@@ -26,7 +27,7 @@ class RemovalPlan:
     termination_time: Optional[datetime]
 
 
-def build_removal_plan_or_exit(
+def build_removal_plan(
     lium: Lium,
     targets: Optional[str],
     remove_all: bool,
@@ -36,21 +37,28 @@ def build_removal_plan_or_exit(
     """Resolve TARGETS into a plan. None means there was nothing to remove."""
     is_valid, error = validation.validate(targets, remove_all, in_duration, at_time)
     if not is_valid:
-        ui.error(error)
-        raise SystemExit(EXIT_CONFIGURATION_ERROR)
+        raise CliFailure("invalid_arguments", error, EXIT_CONFIGURATION_ERROR)
 
     all_pods = ui.load("Loading pods", lambda: lium.ps())
     if not all_pods:
-        ui.warning("No active pods")
-        return None
+        # Removing everything from an empty account is a no-op, not a failure.
+        # Naming a pod that is not there is a failure — that is a typo, and it
+        # must not read like a successful teardown.
+        if remove_all:
+            ui.warning("No active pods")
+            return None
+        raise CliFailure(
+            "pod_not_found", f"{parsing.NO_MATCHING_PODS}: {targets}", EXIT_POD_NOT_FOUND
+        )
 
     parsed, error = parsing.parse(targets, remove_all, all_pods, in_duration, at_time)
     if error:
-        ui.error(error)
-        raise SystemExit(
+        raise CliFailure(
+            "pod_not_found" if error.startswith(parsing.NO_MATCHING_PODS) else "invalid_arguments",
+            error,
             EXIT_POD_NOT_FOUND
             if error.startswith(parsing.NO_MATCHING_PODS)
-            else EXIT_CONFIGURATION_ERROR
+            else EXIT_CONFIGURATION_ERROR,
         )
 
     return RemovalPlan(
@@ -90,7 +98,7 @@ def rm_command(
     typo cannot look like a successful teardown.
     """
     lium = Lium()
-    plan = build_removal_plan_or_exit(lium, targets, all, in_duration, at_time)
+    plan = build_removal_plan(lium, targets, all, in_duration, at_time)
     if plan is None:
         return
 
@@ -114,5 +122,8 @@ def rm_command(
         ui.success(f"{done_verb} {len(removed_huids)} pod(s): {', '.join(removed_huids)}")
 
     if failed_huids:
-        ui.error(f"Failed to remove pods: {', '.join(failed_huids)}")
-        raise SystemExit(EXIT_GENERAL_ERROR)
+        raise CliFailure(
+            "removal_failed",
+            f"Failed to remove pods: {', '.join(failed_huids)}",
+            EXIT_GENERAL_ERROR,
+        )

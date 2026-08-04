@@ -1,10 +1,12 @@
 """Execute commands on pods using Lium SDK."""
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Mapping, Optional, Tuple
 
 import click
@@ -15,7 +17,7 @@ from ..utils import (
     EXIT_CONFIGURATION_ERROR,
     EXIT_GENERAL_ERROR,
     EXIT_POD_NOT_FOUND,
-    _emit_json_error,
+    CliFailure,
     console,
     handle_errors,
     loading_status,
@@ -63,7 +65,9 @@ def print_execution_for_a_human(execution: PodExecution, show_pod_header: bool) 
     if execution.stdout:
         print(execution.stdout, end="")
     if execution.stderr:
-        print(f"[{console.theme.get('warning', 'yellow')}]{execution.stderr}[/]", end="")
+        # Real stderr, unstyled: a caller reading the stream must not have to
+        # strip Rich markup out of the command's own output.
+        click.echo(execution.stderr, err=True, nl=False)
 
     if not execution.succeeded:
         if execution.error:
@@ -75,12 +79,18 @@ def print_execution_for_a_human(execution: PodExecution, show_pod_header: bool) 
 def resolve_command_to_run(command: Optional[str], script: Optional[str]) -> str:
     """The command text to run remotely, from either COMMAND or --script."""
     if not command and not script:
-        console.error("Error: Either COMMAND or --script must be provided")
-        raise SystemExit(EXIT_CONFIGURATION_ERROR)
+        raise CliFailure(
+            "missing_command",
+            "Either COMMAND or --script must be provided",
+            EXIT_CONFIGURATION_ERROR,
+        )
 
     if command and script:
-        console.error("Error: Cannot use both COMMAND and --script")
-        raise SystemExit(EXIT_CONFIGURATION_ERROR)
+        raise CliFailure(
+            "conflicting_command",
+            "Cannot use both COMMAND and --script",
+            EXIT_CONFIGURATION_ERROR,
+        )
 
     if command:
         return command
@@ -88,8 +98,7 @@ def resolve_command_to_run(command: Optional[str], script: Optional[str]) -> str
     try:
         return Path(script).read_text()
     except OSError as e:
-        console.error(f"Error reading script: {e}")
-        raise SystemExit(EXIT_CONFIGURATION_ERROR)
+        raise CliFailure("unreadable_script", f"Error reading script: {e}", EXIT_CONFIGURATION_ERROR)
 
 
 def parse_environment_variables(env: Tuple[str, ...]) -> dict[str, str]:
@@ -97,27 +106,31 @@ def parse_environment_variables(env: Tuple[str, ...]) -> dict[str, str]:
     env_dict: dict[str, str] = {}
     for env_var in env:
         if "=" not in env_var:
-            console.error(f"Error: Invalid env format '{env_var}' (use KEY=VALUE)")
-            raise SystemExit(EXIT_CONFIGURATION_ERROR)
+            raise CliFailure(
+                "invalid_env",
+                f"Invalid env format '{env_var}' (use KEY=VALUE)",
+                EXIT_CONFIGURATION_ERROR,
+            )
         key, value = env_var.split("=", 1)
         env_dict[key] = value
     return env_dict
 
 
-def resolve_pods_or_exit(lium: Lium, targets: str, json_output: bool) -> list[PodInfo]:
-    """Pods matching TARGETS. A target that matches nothing is a hard failure."""
-    with loading_status("Loading pods", ""):
+def resolve_pods_or_fail(lium: Lium, targets: str, show_progress: bool) -> list[PodInfo]:
+    """Pods matching TARGETS. A target that matches nothing is a hard failure.
+
+    The progress spinner writes to stdout, which belongs to the JSON consumer.
+    """
+    with loading_status("Loading pods", "") if show_progress else contextlib.nullcontext():
         all_pods = lium.ps()
 
     selected_pods = parse_targets(targets, all_pods)
     if selected_pods:
         return selected_pods
 
-    message = f"No pods match targets: {targets}"
-    if json_output:
-        _emit_json_error("pod_not_found", message, EXIT_POD_NOT_FOUND)
-    console.error(message)
-    raise SystemExit(EXIT_POD_NOT_FOUND)
+    raise CliFailure(
+        "pod_not_found", f"No pods match targets: {targets}", EXIT_POD_NOT_FOUND
+    )
 
 
 def report_executions(executions: list[PodExecution], json_output: bool) -> None:
@@ -142,7 +155,7 @@ def report_executions(executions: list[PodExecution], json_output: bool) -> None
 @click.command("exec")
 @click.argument("targets")
 @click.argument("command", required=False)
-@click.option("--script", "-s", type=click.Path(exists=True), help="Execute a script file")
+@click.option("--script", "-s", help="Execute a script file")
 @click.option("--env", "-e", multiple=True, help="Set environment variables (KEY=VALUE)")
 @click.option(
     "--json", "json_output", is_flag=True,
@@ -185,7 +198,7 @@ def exec_command(
     env_dict = parse_environment_variables(env)
 
     lium = Lium()
-    selected_pods = resolve_pods_or_exit(lium, targets, json_output)
+    selected_pods = resolve_pods_or_fail(lium, targets, show_progress=not json_output)
 
     if not json_output:
         if len(selected_pods) == 1:

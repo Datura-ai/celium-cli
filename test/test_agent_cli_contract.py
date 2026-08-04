@@ -19,7 +19,7 @@ from lium.cli.commands import exec as exec_module
 from lium.cli.ls import command as ls_command_module
 from lium.cli.ls import display as ls_display
 from lium.cli.rm import command as rm_module
-from lium.cli.utils import EXIT_POD_NOT_FOUND
+from lium.cli.utils import EXIT_CONFIGURATION_ERROR, EXIT_POD_NOT_FOUND
 
 
 def _pod(huid: str = "eager-wolf-aa", name: str = "my-pod") -> SimpleNamespace:
@@ -216,3 +216,103 @@ def test_default_ls_ordering_still_puts_the_starred_node_first(monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)[0]["huid"] == "starred-node"
+
+
+def test_exec_script_flag_reads_the_file(monkeypatch, tmp_path):
+    """--script is the documented way to send a multi-line job; it must work."""
+    script = tmp_path / "job.sh"
+    script.write_text("echo from-script\n")
+    _FakeLium.result = {"success": True, "exit_code": 0, "stdout": "ran\n", "stderr": ""}
+    monkeypatch.setattr(exec_module, "Lium", _FakeLium)
+
+    result = CliRunner().invoke(cli, ["exec", "my-pod", "--script", str(script)])
+
+    assert result.exit_code == 0, result.output
+
+
+def test_exec_config_errors_stay_json_under_json(monkeypatch):
+    """A machine caller must get the envelope on every failure, not just some."""
+    _FakeLium.result = {"success": True, "exit_code": 0, "stdout": "", "stderr": ""}
+    monkeypatch.setattr(exec_module, "Lium", _FakeLium)
+
+    result = CliRunner().invoke(cli, ["exec", "my-pod", "-e", "NOT_A_PAIR", "cmd", "--json"])
+
+    assert result.exit_code == EXIT_CONFIGURATION_ERROR
+    assert json.loads(result.stderr)["ok"] is False
+
+
+def test_exec_stderr_carries_no_rich_markup(monkeypatch):
+    """The command's own stderr must reach the caller unstyled."""
+    result = _run_exec(
+        monkeypatch,
+        {"success": False, "exit_code": 3, "stdout": "", "stderr": "boom\n"},
+    )
+
+    assert "boom" in result.output
+    assert "[/]" not in result.output
+
+
+def test_rm_named_pod_on_an_empty_account_fails(monkeypatch):
+    """A typo must fail even when the account happens to hold no pods."""
+
+    class _EmptyLium:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def ps(self):
+            return []
+
+    monkeypatch.setattr(rm_module, "Lium", _EmptyLium)
+
+    result = CliRunner().invoke(cli, ["rm", "no-such-pod-zz", "-y"])
+
+    assert result.exit_code == EXIT_POD_NOT_FOUND
+
+
+def test_rm_all_on_an_empty_account_is_a_no_op(monkeypatch):
+    """Removing everything when there is nothing is success, not failure."""
+
+    class _EmptyLium:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def ps(self):
+            return []
+
+    monkeypatch.setattr(rm_module, "Lium", _EmptyLium)
+
+    result = CliRunner().invoke(cli, ["rm", "--all", "-y"])
+
+    assert result.exit_code == 0
+
+
+def test_exec_missing_script_still_speaks_json(monkeypatch):
+    """A bad --script path must not fall out as click usage text under --json."""
+    _FakeLium.result = {"success": True, "exit_code": 0, "stdout": "", "stderr": ""}
+    monkeypatch.setattr(exec_module, "Lium", _FakeLium)
+
+    result = CliRunner().invoke(
+        cli, ["exec", "my-pod", "--script", "/no/such/file.sh", "--json"]
+    )
+
+    assert result.exit_code == EXIT_CONFIGURATION_ERROR
+    assert json.loads(result.stderr)["error"]["code"] == "unreadable_script"
+
+
+def test_exec_json_keeps_stdout_clean_when_the_api_fails(monkeypatch):
+    """stdout belongs to the JSON consumer; the progress spinner must stay off it."""
+
+    class _BrokenLium:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def ps(self):
+            raise RuntimeError("api down")
+
+    monkeypatch.setattr(exec_module, "Lium", _BrokenLium)
+
+    result = CliRunner().invoke(cli, ["exec", "my-pod", "echo hi", "--json"])
+
+    assert result.exit_code != 0
+    assert result.stdout == ""
+    assert json.loads(result.stderr)["ok"] is False
