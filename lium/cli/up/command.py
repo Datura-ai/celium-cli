@@ -32,6 +32,7 @@ from .actions import (
 @click.option("--ttl", help="Auto-terminate after duration (e.g., 6h, 45m, 2d)")
 @click.option("--until", help="Auto-terminate at time in local timezone (e.g., 'today 23:00', 'tomorrow 01:00', '2025-10-20 15:30')")
 @click.option("--jupyter", is_flag=True, help="Install Jupyter Notebook (automatically selects available port)")
+@click.option("--no-ssh", "no_ssh", is_flag=True, help="Create the pod and return instead of opening an SSH session")
 @click.option("--image", help="Docker image to run (e.g., pytorch/pytorch:2.0, nvidia/cuda:12.0)")
 @click.option("--internal-ports", help="Internal ports to expose (comma-separated, e.g., 22,8000,8080)")
 @click.option("--dockerfile", type=click.Path(exists=True, dir_okay=False, readable=True), help="Path to a Dockerfile to build the pod image from (custom build; mutually exclusive with --image/--template_id)")
@@ -58,6 +59,7 @@ def up_command(
     ttl: Optional[str],
     until: Optional[str],
     jupyter: bool,
+    no_ssh: bool,
     image: Optional[str],
     internal_ports: Optional[str],
     dockerfile: Optional[str],
@@ -369,6 +371,13 @@ def up_command(
                 click.echo(line)
         except KeyboardInterrupt:
             ui.dim("\nStopped following logs")
+        return
+
+    # Always state what was created: a caller that only gets an SSH banner has
+    # no way to name the pod it is now paying for.
+    ui.info(f"Pod {ui.styled(pod.huid, 'pod_id')} ready  (name: {pod_name}, id: {pod_id})")
+
+    if no_ssh:
         return
 
     # Standard mode: SSH into the pod

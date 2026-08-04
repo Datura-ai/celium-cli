@@ -116,9 +116,12 @@ def _specs_row(executor: ExecutorInfo) -> Dict[str, str]:
 def _sort_key_factory(name: str) -> Callable[[ExecutorInfo], Any]:
     """Get sort key function by name."""
     mapping = {
-        "download": lambda e: -e.download_speed,
+        # Aliases match the field names `--format json` emits, so a caller can
+        # sort by the same name it reads back.
         "price_gpu": lambda e: e.price_per_gpu or 0.0,
+        "price_per_gpu_hour": lambda e: e.price_per_gpu or 0.0,
         "price_total": lambda e: e.price_per_hour or 0.0,
+        "price_per_hour": lambda e: e.price_per_hour or 0.0,
         "loc": lambda e: _country_name(e.location),
         "id": lambda e: e.huid,
         "gpu": lambda e: (e.gpu_type, e.gpu_count),
@@ -189,15 +192,22 @@ def sort_executors(
     sort_by: str = "download",
     limit: Optional[int] = None,
     show_pareto: bool = True,
+    pareto_first: bool = True,
 ) -> tuple[List[ExecutorInfo], List[bool]]:
-    """Apply Pareto-aware sort and limit. Returns (sorted_executors, pareto_flags)."""
+    """Apply Pareto-aware sort and limit. Returns (sorted_executors, pareto_flags).
+
+    ``pareto_first`` floats starred nodes to the top, which is the right default
+    for a human skimming the table. Pass ``False`` when the caller asked for an
+    explicit order: otherwise the star outranks the sort key and "cheapest
+    first" returns the most expensive node.
+    """
     if not executors:
         return [], []
 
     pareto_flags = calculate_pareto_frontier(executors) if show_pareto else [False] * len(executors)
     pairs = list(zip(executors, pareto_flags))
 
-    if show_pareto:
+    if show_pareto and pareto_first:
         pairs.sort(key=lambda x: (not x[1], _sort_key_factory(sort_by)(x[0])))
     else:
         pairs.sort(key=lambda x: _sort_key_factory(sort_by)(x[0]))
@@ -212,7 +222,8 @@ def build_executors_table(
     executors: List[ExecutorInfo],
     sort_by: str = "download",
     limit: Optional[int] = None,
-    show_pareto: bool = True
+    show_pareto: bool = True,
+    pareto_first: bool = True,
 ) -> tuple[Table, List[ExecutorInfo], str, str]:
     """Build executors table, returns (table, sorted_executors, header, tip)."""
 
@@ -220,7 +231,8 @@ def build_executors_table(
         return None, [], "", ""
 
     sorted_executors, pareto_flags = sort_executors(
-        executors, sort_by=sort_by, limit=limit, show_pareto=show_pareto
+        executors, sort_by=sort_by, limit=limit, show_pareto=show_pareto,
+        pareto_first=pareto_first,
     )
 
     # Count Pareto-optimal in shown results

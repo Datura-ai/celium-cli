@@ -3,6 +3,7 @@
 import json
 from typing import Optional, List
 import click
+from click.core import ParameterSource
 
 from lium.sdk import Lium, ExecutorInfo
 from lium.cli import ui
@@ -44,9 +45,12 @@ def ls_store_executor(gpu_type: Optional[str] = None, sort_by: str = "download")
 @click.option(
     "--sort",
     "sort_by",
-    type=click.Choice(["download", "upload", "price_gpu", "price_total", "loc", "id", "gpu"]),
+    type=click.Choice([
+        "download", "upload", "price_gpu", "price_total", "loc", "id", "gpu",
+        "price_per_gpu_hour", "price_per_hour",
+    ]),
     default="download",
-    help="Sort result by the chosen field.",
+    help="Sort result by the chosen field. An explicit --sort wins over the ★ optimal ordering.",
 )
 @click.option("--limit", type=int, default=None, help="Limit number of rows shown.")
 @click.option(
@@ -112,9 +116,12 @@ def ls_command(
             ui.info("Check back later or contact support if this persists")
         return
 
+    # An explicit --sort is an instruction, not a hint: don't let ★ outrank it.
+    pareto_first = click.get_current_context().get_parameter_source("sort_by") == ParameterSource.DEFAULT
+
     if output_format == "json":
         sorted_executors, pareto_flags = display.sort_executors(
-            executors, sort_by=sort_by, limit=limit
+            executors, sort_by=sort_by, limit=limit, pareto_first=pareto_first
         )
         payload = [
             display.compact_executor(exe, is_pareto, idx)
@@ -128,7 +135,8 @@ def ls_command(
     table, sorted_executors, header, tip = display.build_executors_table(
         executors,
         sort_by=sort_by,
-        limit=limit
+        limit=limit,
+        pareto_first=pareto_first,
     )
 
     # Display
