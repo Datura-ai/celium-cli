@@ -5,6 +5,7 @@ from lium.sdk import Lium
 from lium.cli import ui
 from lium.cli.utils import (
     CliFailure,
+    EXIT_CONFIGURATION_ERROR,
     EXIT_GENERAL_ERROR,
     EXIT_SSH_ERROR,
     ensure_config,
@@ -120,21 +121,18 @@ def up_command(
         executor_id, gpu, count, country, ttl, until, image, template_id, dockerfile
     )
     if not valid:
-        ui.error(error)
-        return
+        raise CliFailure("invalid_arguments", error, EXIT_CONFIGURATION_ERROR)
 
     # Parse env vars if provided
     env_dict = {}
     if env:
         env_dict, error = validation.parse_env_vars(env)
         if error:
-            ui.error(error)
-            return
+            raise CliFailure("invalid_arguments", error, EXIT_CONFIGURATION_ERROR)
 
     parsed, error = parsing.parse(ttl, until, volume)
     if error:
-        ui.error(error)
-        return
+        raise CliFailure("invalid_arguments", error, EXIT_CONFIGURATION_ERROR)
 
     termination_time = parsed.get("termination_time")
     volume_id = parsed.get("volume_id")
@@ -160,20 +158,25 @@ def up_command(
             if supplied
         ]
         if unsupported:
-            ui.error(
+            raise CliFailure(
+                "invalid_arguments",
                 f"{', '.join(unsupported)} cannot be combined with --dockerfile "
-                "(the Dockerfile defines the image's env, entrypoint, command, and ports)"
+                "(the Dockerfile defines the image's env, entrypoint, command, and ports)",
+                EXIT_CONFIGURATION_ERROR,
             )
-            return
 
         try:
             dockerfile_content = Path(dockerfile).read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as exc:
-            ui.error(f"Could not read Dockerfile: {exc}")
-            return
+            raise CliFailure(
+                "unreadable_dockerfile",
+                f"Could not read Dockerfile: {exc}",
+                EXIT_CONFIGURATION_ERROR,
+            )
         if not dockerfile_content.strip():
-            ui.error("Dockerfile is empty")
-            return
+            raise CliFailure(
+                "empty_dockerfile", "Dockerfile is empty", EXIT_CONFIGURATION_ERROR
+            )
         max_bytes = 64 * 1024
         size_bytes = len(dockerfile_content.encode("utf-8"))
         if size_bytes > max_bytes:
@@ -225,8 +228,11 @@ def up_command(
                 if 22 not in ports_list:
                     ports_list.insert(0, 22)
             except ValueError:
-                ui.error("Invalid port format. Use comma-separated integers (e.g., 22,8000,8080)")
-                return
+                raise CliFailure(
+                    "invalid_ports",
+                    "Invalid port format. Use comma-separated integers (e.g., 22,8000,8080)",
+                    EXIT_CONFIGURATION_ERROR,
+                )
 
         action = CreateEphemeralTemplateAction()
         result = ui.load(

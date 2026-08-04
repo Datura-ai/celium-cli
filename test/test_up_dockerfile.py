@@ -305,7 +305,8 @@ def test_up_command_rejects_dockerfile_with_image(monkeypatch, tmp_path):
         ["brave-fox-3a", "--dockerfile", str(dockerfile), "--image", "pytorch/pytorch:2.0"],
     )
 
-    assert result.exit_code == 0
+    # A rejected invocation must not report success — DAH-2556.
+    assert result.exit_code == 2
     assert "Cannot specify both --dockerfile and --image" in result.output
 
 
@@ -321,7 +322,7 @@ def test_up_command_rejects_env_with_dockerfile(monkeypatch, tmp_path):
         ["brave-fox-3a", "--dockerfile", str(dockerfile), "-e", "KEY=VAL"],
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 2
     assert "--env" in result.output
     assert "--dockerfile" in result.output
 
@@ -338,5 +339,5 @@ def test_up_command_reports_non_utf8_dockerfile(monkeypatch, tmp_path):
         ["brave-fox-3a", "--dockerfile", str(dockerfile)],
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 2
     assert "Could not read Dockerfile" in result.output
