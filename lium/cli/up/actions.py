@@ -309,6 +309,10 @@ class PrepareSSHAction:
         try:
             from lium.cli.ssh.command import get_ssh_method_and_pod
             ssh_cmd, pod = get_ssh_method_and_pod(pod_name)
+            if not ssh_cmd or not pod:
+                return ActionResult(
+                    ok=False, data={}, error=f"No SSH connection available for pod '{pod_name}'"
+                )
             return ActionResult(ok=True, data={"ssh_cmd": ssh_cmd, "pod": pod})
 
         except Exception as e:

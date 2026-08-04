@@ -2,7 +2,7 @@
 
 import shutil
 import subprocess
-from typing import Tuple
+from typing import Optional, Tuple
 import click
 
 from lium.sdk import Lium, PodInfo
@@ -12,8 +12,13 @@ from . import validation, parsing
 from .actions import SshAction
 
 
-def get_ssh_method_and_pod(target: str) -> Tuple[str, PodInfo]:
-    """Helper function that check method for SSH."""
+# ssh(1) uses 255 for its own connection failures; anything else is the remote
+# shell's own exit status, which is not a failure of the lium command.
+SSH_CONNECTION_FAILED = 255
+
+
+def get_ssh_method_and_pod(target: str) -> Tuple[Optional[str], Optional[PodInfo]]:
+    """The ssh command line for a pod, or (None, None) when SSH is not possible."""
     if not shutil.which("ssh"):
         ui.error("Error: 'ssh' command not found. Please install an SSH client.")
         return None, None
@@ -40,17 +45,24 @@ def get_ssh_method_and_pod(target: str) -> Tuple[str, PodInfo]:
         return ssh_cmd, pod
 
 
-def ssh_to_pod(ssh_cmd: str, pod: PodInfo) -> None:
-    """Helper function to SSH to a pod."""
+def ssh_to_pod(ssh_cmd: str, pod: PodInfo) -> int:
+    """Open the session and return ssh's exit status.
+
+    The caller needs the status: a connection that never opened must not look
+    like a session the user closed.
+    """
     try:
         result = subprocess.run(ssh_cmd, shell=True, check=False)
 
-        if result.returncode != 0 and result.returncode != 255:
+        if result.returncode not in (0, SSH_CONNECTION_FAILED):
             ui.dim(f"\nSSH session ended with exit code {result.returncode}")
+        return result.returncode
     except KeyboardInterrupt:
         ui.warning("\nSSH session interrupted")
+        return 0
     except Exception as e:
         ui.error(f"Error executing SSH: {e}")
+        return SSH_CONNECTION_FAILED
 
 
 @click.command("ssh")

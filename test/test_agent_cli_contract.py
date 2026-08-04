@@ -316,3 +316,28 @@ def test_exec_json_keeps_stdout_clean_when_the_api_fails(monkeypatch):
     assert result.exit_code != 0
     assert result.stdout == ""
     assert json.loads(result.stderr)["ok"] is False
+
+
+def test_up_fails_when_ssh_is_unavailable(monkeypatch):
+    """A pod that is rented but unreachable must not report success — DAH-2556."""
+    from lium.cli.up import actions as up_actions
+
+    monkeypatch.setattr(
+        "lium.cli.ssh.command.get_ssh_method_and_pod", lambda pod_name: (None, None)
+    )
+
+    result = up_actions.PrepareSSHAction().execute({"pod_name": "brave-orbit-b9"})
+
+    assert result.ok is False
+    assert "brave-orbit-b9" in result.error
+
+
+def test_ssh_to_pod_returns_the_connection_status(monkeypatch):
+    """up needs the status: a connection that never opened is not a closed session."""
+    from lium.cli.ssh import command as ssh_module
+
+    monkeypatch.setattr(
+        ssh_module.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=255)
+    )
+
+    assert ssh_module.ssh_to_pod("ssh root@x", _pod()) == ssh_module.SSH_CONNECTION_FAILED
