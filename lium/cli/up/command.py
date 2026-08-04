@@ -180,10 +180,11 @@ def up_command(
         max_bytes = 64 * 1024
         size_bytes = len(dockerfile_content.encode("utf-8"))
         if size_bytes > max_bytes:
-            ui.error(
-                f"Dockerfile is too large ({size_bytes} bytes); max is {max_bytes} bytes (64 KiB)"
+            raise CliFailure(
+                "dockerfile_too_large",
+                f"Dockerfile is too large ({size_bytes} bytes); max is {max_bytes} bytes (64 KiB)",
+                EXIT_CONFIGURATION_ERROR,
             )
-            return
 
     lium = Lium(source="cli")
 
