@@ -9,7 +9,7 @@ from rich.prompt import Prompt
 
 from lium.sdk import Lium, LiumError
 from lium.cli import ui
-from lium.cli.utils import handle_errors, _emit_json_error
+from lium.cli.utils import CliFailure, EXIT_CONFIGURATION_ERROR, handle_errors, _emit_json_error
 from lium.cli.settings import config
 from . import validation
 from .actions import (
@@ -34,10 +34,12 @@ def _legacy_tao_fund(wallet: Optional[str], amount: Optional[str], yes: bool) ->
     """Run the Bittensor TAO funding flow."""
     try:
         import bittensor as bt
-    except ImportError:
-        ui.error("Bittensor library not installed")
-        ui.dim("Install with: pip install bittensor")
-        return
+    except ImportError as e:
+        raise CliFailure(
+            "provider_extra_missing",
+            r'TAO funding needs the chain stack: pip install "lium.io\[provider]"',
+            EXIT_CONFIGURATION_ERROR,
+        ) from e
 
     if not wallet:
         default_wallet = config.get("funding.default_wallet", "default")
@@ -126,7 +128,7 @@ def _alpha_fund(
     try:
         import bittensor as bt
     except ImportError:
-        raise LiumError("Bittensor library not installed (pip install bittensor)")
+        raise LiumError('TAO funding needs the chain stack: pip install "lium.io[provider]"')
 
     # In non-interactive (--json) mode we never prompt, so every required arg must be
     # supplied up front. Validate presence here — hotkey, then wallet, then amount —

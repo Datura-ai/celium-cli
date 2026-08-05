@@ -6,8 +6,6 @@ block_cipher = None
 hiddenimports = [
     *collect_submodules("lium"),
     *collect_submodules("bittensor"),
-    *collect_submodules("bittensor_cli"),
-    *collect_submodules("async_substrate_interface"),
     # cyscale and py-scale-codec both expose the "scalecodec" import namespace.
     *collect_submodules("scalecodec"),
     *collect_submodules("Crypto"),
@@ -93,31 +91,4 @@ coll = COLLECT(
     upx=False,
     upx_exclude=[],
     name="lium",
-)
-
-# Legacy onefile build (dist/lium-onefile), published under the bare
-# lium-<os>-<arch> asset name. The self-update shipped in pre-onedir releases
-# downloads a single-file asset; keeping it lets those installs keep
-# auto-updating instead of 404ing. Reuses the same Analysis as the onedir
-# build, so it adds only the EXE assembly step. Remove once old installs have
-# migrated off the single-file layout.
-exe_onefile = EXE(
-    pyz,
-    a.scripts,
-    a.binaries,
-    a.datas,
-    [],
-    name="lium-onefile",
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=False,
-    upx_exclude=[],
-    runtime_tmpdir=None,
-    console=True,
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
 )
