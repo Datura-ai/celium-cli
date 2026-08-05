@@ -92,6 +92,30 @@ class LoadWalletAction:
             return ActionResult(ok=False, data={}, error=str(e))
 
 
+class UnlockColdkeyAction:
+    """Decrypt the coldkey up front, so its password prompt is never hidden.
+
+    ``bittensor_wallet`` prints ``Enter your password:`` straight to the terminal the
+    first time the coldkey is read (registration signs with it, so do the funding
+    transfers). Under a Rich ``Status`` that line is repainted away ~12x/s and the
+    run looks hung while it blindly waits for input. Unlocking before any spinner
+    starts keeps the prompt on screen; the decrypted key is cached on the wallet, so
+    the later signing never asks a second time.
+    """
+
+    def execute(self, ctx: dict) -> ActionResult:
+        """Unlock the coldkey.
+
+        Context:
+            bt_wallet: bittensor wallet
+        """
+        try:
+            ctx["bt_wallet"].unlock_coldkey()
+            return ActionResult(ok=True, data={})
+        except Exception as e:
+            return ActionResult(ok=False, data={}, error=str(e))
+
+
 class CheckWalletRegistrationAction:
     """Check if wallet is registered with Lium."""
 

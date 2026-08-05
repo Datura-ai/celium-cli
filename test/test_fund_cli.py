@@ -22,6 +22,31 @@ from lium.sdk import AlphaQuote, Config, Lium
 from lium.sdk.exceptions import LiumNotFoundError, LiumServerError
 
 
+def _fake_bt_wallet(events=None, unlock_error=None):
+    """Wallet double whose coldkey unlock is observable, and optionally fails."""
+    def unlock_coldkey():
+        if unlock_error is not None:
+            raise unlock_error
+        if events is not None:
+            events.append("unlock_coldkey")
+
+    return types.SimpleNamespace(
+        coldkeypub=types.SimpleNamespace(ss58_address="coldkey"),
+        unlock_coldkey=unlock_coldkey,
+    )
+
+
+def _spy_ui_load(monkeypatch, events):
+    """Record every spinner `ui.load` opens in ``events``, keeping the real behaviour."""
+    real_load = fund_module.ui.load
+
+    def spy(message, fn):
+        events.append(f"ui.load:{message}")
+        return real_load(message, fn)
+
+    monkeypatch.setattr(fund_module.ui, "load", spy)
+
+
 def test_fund_help_documents_tao_flow():
     result = CliRunner().invoke(cli, ["fund", "--help"])
 
@@ -43,7 +68,7 @@ def test_fund_tao_dispatch_runs(monkeypatch):
         def execute(self, ctx):
             return ActionResult(
                 ok=True,
-                data={"wallet": object(), "address": "coldkey"},
+                data={"wallet": _fake_bt_wallet(), "address": "coldkey"},
             )
 
     class FakeCheckWalletRegistrationAction:
@@ -66,6 +91,89 @@ def test_fund_tao_dispatch_runs(monkeypatch):
 
     assert result.exit_code == 0
     assert "Done." in result.output
+
+
+def test_fund_tao_unlocks_coldkey_before_any_spinner(monkeypatch):
+    # DAH-2585: bittensor prints "Enter your password:" straight to the terminal, and a
+    # Rich spinner repaints that line away ~12x/s — so `lium fund` looked hung while it
+    # blindly waited for input. The unlock must happen before any ui.load spinner.
+    events = []
+    monkeypatch.setitem(sys.modules, "bittensor", types.SimpleNamespace())
+    bt_wallet = _fake_bt_wallet(events)
+
+    class FakeLium:
+        def balance(self):
+            return 10.0
+
+    class FakeLoadWalletAction:
+        def execute(self, ctx):
+            return ActionResult(
+                ok=True, data={"wallet": bt_wallet, "address": "coldkey"}
+            )
+
+    class FakeCheckWalletRegistrationAction:
+        def execute(self, ctx):
+            return ActionResult(ok=True, data={"registered": True})
+
+    class FakeExecuteTransferAction:
+        def execute(self, ctx):
+            return ActionResult(ok=True, data={})
+
+    monkeypatch.setattr(fund_module, "Lium", FakeLium)
+    monkeypatch.setattr(fund_module, "LoadWalletAction", FakeLoadWalletAction)
+    monkeypatch.setattr(
+        fund_module, "CheckWalletRegistrationAction", FakeCheckWalletRegistrationAction
+    )
+    monkeypatch.setattr(fund_module, "ExecuteTransferAction", FakeExecuteTransferAction)
+    _spy_ui_load(monkeypatch, events)
+
+    result = CliRunner().invoke(cli, ["fund", "-w", "default", "-a", "1.5", "-y"])
+
+    assert result.exit_code == 0, result.output
+    assert events[0] == "unlock_coldkey"
+    assert events.count("unlock_coldkey") == 1
+    # Pin the spinner the unlock has to come before, so de-spinnering the registration
+    # step can't leave this test vacuously green.
+    assert "ui.load:Checking wallet registration" in events
+
+
+def test_fund_tao_unlock_failure_aborts(monkeypatch):
+    # A coldkey that won't decrypt must stop the run right there — nothing downstream
+    # may go on to sign (or try to) with a still-locked key.
+    monkeypatch.setitem(sys.modules, "bittensor", types.SimpleNamespace())
+    calls = []
+    bt_wallet = _fake_bt_wallet(
+        unlock_error=ValueError("Wrong password for decryption")
+    )
+
+    class FakeLoadWalletAction:
+        def execute(self, ctx):
+            return ActionResult(
+                ok=True, data={"wallet": bt_wallet, "address": "coldkey"}
+            )
+
+    class FakeCheckWalletRegistrationAction:
+        def execute(self, ctx):
+            calls.append("register")
+            return ActionResult(ok=True, data={"registered": True})
+
+    class FakeExecuteTransferAction:
+        def execute(self, ctx):
+            calls.append("transfer")
+            return ActionResult(ok=True, data={})
+
+    monkeypatch.setattr(fund_module, "Lium", lambda: types.SimpleNamespace())
+    monkeypatch.setattr(fund_module, "LoadWalletAction", FakeLoadWalletAction)
+    monkeypatch.setattr(
+        fund_module, "CheckWalletRegistrationAction", FakeCheckWalletRegistrationAction
+    )
+    monkeypatch.setattr(fund_module, "ExecuteTransferAction", FakeExecuteTransferAction)
+
+    result = CliRunner().invoke(cli, ["fund", "-w", "default", "-a", "1.5", "-y"])
+
+    assert "Failed to unlock coldkey for wallet 'default'" in result.output
+    assert "Wrong password for decryption" in result.output
+    assert calls == []
 
 
 def test_fund_crypto_subcommand_is_retired():
@@ -222,7 +330,7 @@ class _RaisingKey:
         raise FileNotFoundError(f"no hotkey '{self._name}'")
 
 
-def _make_bt(subtensor, valid_ss58=True, hotkey_names=None):
+def _make_bt(subtensor, valid_ss58=True, hotkey_names=None, events=None):
     bt = types.SimpleNamespace()
     bt.Balance = FakeBalance
     # Real bittensor >=8 exposes ``bt.Subtensor``; mirror that (lowercase alias kept
@@ -236,9 +344,7 @@ def _make_bt(subtensor, valid_ss58=True, hotkey_names=None):
     names = hotkey_names or {}
 
     def _wallet(name=None, hotkey=None, path=None):
-        ns = types.SimpleNamespace(
-            coldkeypub=types.SimpleNamespace(ss58_address="coldkey")
-        )
+        ns = _fake_bt_wallet(events)
         if hotkey is not None:
             ss58 = names.get(hotkey)
             if ss58 is None:
@@ -274,6 +380,7 @@ def _patch_common(
     convert_error=None,
     company_error=None,
     hotkey_names=None,
+    events=None,
 ):
     """Patch bittensor + the SDK/registration seams; keep the real alpha actions.
 
@@ -284,7 +391,7 @@ def _patch_common(
       - ``_discover_app_id`` -> a fixed app id.
     """
     monkeypatch.setitem(
-        sys.modules, "bittensor", _make_bt(subtensor, valid_ss58, hotkey_names)
+        sys.modules, "bittensor", _make_bt(subtensor, valid_ss58, hotkey_names, events)
     )
     netuids = list(convert_netuids)
 
@@ -347,6 +454,24 @@ def test_alpha_happy_path(monkeypatch):
     assert kw["hotkey_ss58"] == HK
     assert kw["origin_netuid"] == 51 and kw["destination_netuid"] == 51
     assert kw["amount"].tao == 2.0 and kw["amount"].netuid == 51
+
+
+def test_alpha_unlocks_coldkey_before_any_spinner(monkeypatch):
+    # DAH-2585, alpha path: same invariant as the TAO path — the coldkey password
+    # prompt must be raised before the first spinner can repaint it away.
+    events = []
+    sub = FakeSubtensor([[_stake(stake=5.0)]], fee=0.01)
+    _patch_common(monkeypatch, sub, events=events)
+    _spy_ui_load(monkeypatch, events)
+
+    result = CliRunner().invoke(
+        cli, ["fund", "--alpha", "-k", HK, "-w", "default", "-a", "2", "-y"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert events[0] == "unlock_coldkey"
+    assert events.count("unlock_coldkey") == 1
+    assert "ui.load:Checking wallet registration" in events
 
 
 def test_alpha_insufficient_free_alpha_aborts(monkeypatch):
