@@ -5,15 +5,9 @@ import click
 
 from lium.sdk import Lium
 from lium.cli import ui
-from lium.cli.utils import (
-    CliFailure,
-    EXIT_API_ERROR,
-    EXIT_POD_NOT_FOUND,
-    ensure_config,
-    handle_errors,
-)
+from lium.cli.utils import ensure_config, handle_errors
 from . import display
-from .actions import GetPodAction
+from .actions import resolve_pod_or_fail
 
 
 @click.command("describe")
@@ -29,20 +23,8 @@ def describe_command(pod_id: str, json_output: bool):
     if not json_output:
         ensure_config()
 
-    action = GetPodAction()
-    ctx = {"lium": Lium(), "target": pod_id}
-
-    if json_output:
-        result = action.execute(ctx)
-    else:
-        result = ui.load("Loading pod", lambda: action.execute(ctx))
-
-    if not result.ok:
-        if "not found" in result.error:
-            raise CliFailure("pod_not_found", result.error, EXIT_POD_NOT_FOUND)
-        raise CliFailure("api_error", result.error, EXIT_API_ERROR)
-
-    manifest = display.build_manifest(result.data["pod"])
+    pod = resolve_pod_or_fail(Lium(), pod_id, show_progress=not json_output)
+    manifest = display.build_manifest(pod)
 
     if json_output:
         click.echo(json.dumps(manifest, indent=2, ensure_ascii=False))

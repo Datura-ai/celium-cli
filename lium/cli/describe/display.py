@@ -21,23 +21,38 @@ def _uptime_hours(created_at: str) -> Optional[float]:
     return round((datetime.now(timezone.utc) - dt_created).total_seconds() / 3600, 2)
 
 
+def _port_number(port) -> object:
+    """Port as a number when it is one; left untouched otherwise (e.g. "22/tcp")."""
+    try:
+        return int(port)
+    except (TypeError, ValueError):
+        return port
+
+
 def _ports_section(ports: dict) -> dict:
     """Port mapping split into the SSH port and the ports left for services.
 
     Keys of the mapping are ports *inside* the container, values are the ports
     reachable from outside. Getting that direction wrong is the single most
     common way an agent loses time on a pod, so the manifest states it.
+
+    Keys are compared as strings: the backend sends them as JSON keys today, but
+    a mapping built in Python carries real ints, and neither may drop the SSH port.
     """
     mapping = ports or {}
     service_ports = [
-        {"internal": int(internal), "external": external}
+        {"internal": _port_number(internal), "external": external}
         for internal, external in mapping.items()
         if str(internal) != SSH_INTERNAL_PORT
     ]
+    ssh_external = next(
+        (external for internal, external in mapping.items() if str(internal) == SSH_INTERNAL_PORT),
+        None,
+    )
     return {
         "mapping": mapping,
         "direction": "internal -> external",
-        "ssh_external": mapping.get(SSH_INTERNAL_PORT),
+        "ssh_external": ssh_external,
         "service_ports": service_ports,
     }
 
@@ -139,7 +154,7 @@ def build_manifest_table(manifest: dict) -> Table:
         table.add_row("Template", template["name"] or "—")
         table.add_row("Image", template["docker_image"] or "—")
 
-    table.add_row("Ports", _format_ports(manifest["ports"]))
+    table.add_row("Ports ext→int", _format_ports(manifest["ports"]))
     table.add_row("SSH", manifest["access"]["ssh_command"] or "—")
 
     price = billing["price_per_hour"]
