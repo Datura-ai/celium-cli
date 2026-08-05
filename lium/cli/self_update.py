@@ -131,7 +131,7 @@ def maybe_perform_startup_update() -> UpdateResult:
             f"  {REINSTALL_COMMAND}"
         )
     elif result.error:
-        ui.debug(f"Managed binary auto-update skipped after error: {result.error}")
+        ui.notice_debug(f"Managed binary auto-update skipped after error: {result.error}")
 
     return result
 

@@ -109,12 +109,18 @@ def info(message: str) -> None:
 
 def notice(message: str) -> None:
     """Display an informational startup notice on stderr."""
-    notice_console.info(message)
+    notice_console().info(message)
 
 
 def notice_warning(message: str) -> None:
     """Display a warning startup notice on stderr."""
-    notice_console.warning(message)
+    notice_console().warning(message)
+
+
+def notice_debug(message: str) -> None:
+    """Display a debug startup notice on stderr, only if LIUM_DEBUG=1."""
+    if is_debug():
+        notice_console().dim(f"[DEBUG] {message}")
 
 
 def dim(message: str) -> None:

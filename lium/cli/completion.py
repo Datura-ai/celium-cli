@@ -47,7 +47,8 @@ def ensure_completion() -> None:
         marker_file.touch()
 
         # stderr, so a command invoked with --json still emits clean stdout
-        from .utils import notice_console as console
+        from .utils import notice_console
+        console = notice_console()
         console.success("✓ Shell completions have been configured for tab support")
         console.info("✓ Please restart your terminal or run:")
         console.info(f"  source {config_file}")

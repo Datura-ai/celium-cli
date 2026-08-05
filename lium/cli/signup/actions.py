@@ -25,6 +25,15 @@ def base_url() -> str:
     return os.getenv("LIUM_BASE_URL", DEFAULT_BASE_URL)
 
 
+def _json_object(response: requests.Response) -> dict:
+    # a proxy between us and the backend can answer with valid JSON that is not an object
+    try:
+        body = response.json()
+    except ValueError:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
 class SignupAction:
     """Register an account and return the API key minted for it.
 
@@ -85,11 +94,7 @@ class SignupAction:
         if response.status_code >= 400:
             return ActionResult(ok=False, data={}, error=self._describe_failure(response))
 
-        try:
-            body = response.json()
-        except ValueError:
-            body = {}
-        return ActionResult(ok=True, data={"api_key": body.get("api_key")})
+        return ActionResult(ok=True, data={"api_key": _json_object(response).get("api_key")})
 
     def _read_minted_key(self) -> str | None:
         try:
@@ -121,10 +126,7 @@ class SignupAction:
 
     @staticmethod
     def _describe_failure(response: requests.Response) -> str:
-        try:
-            detail = response.json().get("detail")
-        except ValueError:
-            detail = None
+        detail = _json_object(response).get("detail")
 
         if isinstance(detail, dict):
             detail = "; ".join(f"{k}: {v}" for k, v in detail.items())

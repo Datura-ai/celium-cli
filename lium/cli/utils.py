@@ -16,9 +16,20 @@ from rich.prompt import Prompt
 T = TypeVar("T")
 
 console = ThemedConsole()
-# startup notices print before argument parsing, so they must not pollute the
-# stdout of a command invoked with --json
-notice_console = ThemedConsole(stderr=True)
+_notice_console = None
+
+
+def notice_console() -> ThemedConsole:
+    """Return the stderr console for startup notices, building it on first use.
+
+    Startup notices print before argument parsing, so they must not pollute the
+    stdout of a command invoked with ``--json``. Built lazily because resolving
+    the theme costs a subprocess on macOS and most commands never print one.
+    """
+    global _notice_console
+    if _notice_console is None:
+        _notice_console = ThemedConsole(stderr=True)
+    return _notice_console
 
 
 # Text formatting helpers
