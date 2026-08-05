@@ -51,7 +51,7 @@ def signup_command(email: str, display_name: str | None, password: str | None, j
         if signup_result.data.get("account_may_exist"):
             raise CliFailure(
                 "signup_failed",
-                f"{signup_result.error} The account may have been created — log in at https://lium.io with "
+                f"{signup_result.error} Log in at https://lium.io with "
                 f"{email} / {password} and copy your API key from the dashboard.",
                 data={"email": email, "password": password},
             )
@@ -68,7 +68,7 @@ def signup_command(email: str, display_name: str | None, password: str | None, j
             "ssh_key_configured": ssh_result.ok,
             "signup_credit_granted": credit_granted,
             "next_steps": [
-                "Ask the user to click the verification link in the welcome email — renting is blocked until then.",
+                "Ask the user to click the verification link in the confirmation email — renting is blocked until then.",
                 _credit_line(credit_granted),
                 "Then: lium ls, lium up <node-id>.",
             ],
@@ -84,6 +84,6 @@ def signup_command(email: str, display_name: str | None, password: str | None, j
 
     ui.print("")
     ui.info("Before the first rental:")
-    ui.print("  1. Click the verification link in the welcome email — renting is blocked until then.")
+    ui.print("  1. Click the verification link in the confirmation email — renting is blocked until then.")
     ui.print(f"  2. {_credit_line(credit_granted)}")
     ui.print("  3. Then 'lium ls' and 'lium up <node-id>'.")

@@ -161,9 +161,10 @@ def test_signup_reports_credentials_when_the_key_cannot_be_read_back(monkeypatch
     result = CliRunner().invoke(cli, ["signup", "--email", "ada@example.com", "--password", "s3cret-pw"])
 
     assert result.exit_code != 0
-    assert "s3cret-pw" in result.output
-    assert "ada@example.com" in result.output
-    assert "copy your API key from the dashboard" in result.output
+    plain = " ".join(result.output.split())
+    assert "s3cret-pw" in plain
+    assert "ada@example.com" in plain
+    assert "copy your API key from the dashboard" in plain
 
 
 def test_signup_reports_credentials_when_the_request_times_out(monkeypatch, stored_config, ssh_setup_ok):
@@ -178,6 +179,21 @@ def test_signup_reports_credentials_when_the_request_times_out(monkeypatch, stor
     assert result.exit_code != 0
     assert "s3cret-pw" in result.output
     assert "may have been created" in result.output
+
+
+def test_signup_reports_credentials_when_the_connection_drops(monkeypatch, stored_config, ssh_setup_ok):
+    """A reset connection can drop the response of a request the backend already acted on."""
+    def failing_post(url, **kwargs):
+        raise signup_actions.requests.ConnectionError("connection reset by peer")
+
+    monkeypatch.setattr(signup_actions.requests, "post", failing_post)
+
+    result = CliRunner().invoke(cli, ["signup", "--email", "ada@example.com", "--password", "s3cret-pw"])
+
+    assert result.exit_code != 0
+    plain = " ".join(result.output.split())
+    assert "s3cret-pw" in plain
+    assert "may have been created" in plain
 
 
 def test_signup_json_error_envelope_carries_credentials(monkeypatch, stored_config, ssh_setup_ok):
@@ -290,6 +306,19 @@ def test_signup_refuses_when_a_key_is_already_configured(monkeypatch, stored_con
 
     assert result.exit_code != 0
     assert stored_config["api.api_key"] == "sk_existing"
+
+
+def test_signup_names_the_env_var_when_the_key_comes_from_the_environment(
+    monkeypatch, stored_config, ssh_setup_ok
+):
+    """'lium config unset' cannot clear a key that an env var supplies."""
+    stored_config["api.api_key"] = "sk_from_env"
+    monkeypatch.setenv("LIUM_API_KEY", "sk_from_env")
+
+    result = CliRunner().invoke(cli, ["signup", "--email", "ada@example.com"])
+
+    assert result.exit_code != 0
+    assert "unset LIUM_API_KEY" in " ".join(result.output.split())
 
 
 def test_signup_surfaces_backend_rejection(monkeypatch, stored_config, ssh_setup_ok):

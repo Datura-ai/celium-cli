@@ -81,6 +81,14 @@ class SignupAction:
     def execute(self, ctx: dict) -> ActionResult:
         # a second account would be unreachable — nothing here can switch between keys
         if config.get("api.api_key"):
+            if os.environ.get("LIUM_API_KEY"):
+                return ActionResult(
+                    ok=False,
+                    data={},
+                    error="An API key is already configured through the LIUM_API_KEY environment "
+                          "variable. Run 'unset LIUM_API_KEY' first, or use 'lium init' to "
+                          "re-authenticate.",
+                )
             return ActionResult(
                 ok=False,
                 data={},
@@ -114,11 +122,12 @@ class SignupAction:
                 timeout=REQUEST_TIMEOUT,
             )
         except requests.RequestException as e:
-            # the backend sends the welcome mail inside the request, so a timeout can still leave an account behind
+            # the account is created and its mail sent inside the call, so any transport failure
+            # after the request left can still leave an account behind
             return ActionResult(
                 ok=False,
-                data={"account_may_exist": isinstance(e, requests.Timeout)},
-                error=f"Signup request failed: {e}",
+                data={"account_may_exist": True},
+                error=f"Signup request failed: {e}. The account may have been created.",
             )
 
         if response.status_code == 429:
