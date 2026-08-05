@@ -8,15 +8,24 @@ import click
 from lium.sdk import Lium, PodInfo
 from lium.cli import ui
 from lium.cli.utils import handle_errors, parse_targets
+from lium.cli.utils import CliFailure, EXIT_POD_NOT_FOUND, EXIT_SSH_ERROR
 from . import validation, parsing
 from .actions import SshAction
 
 
+# ssh(1) uses 255 for its own connection failures; anything else is the remote
+# shell's own exit status, which is not a failure of the lium command.
+_SSH_CONNECTION_FAILED = 255
+
+
 def get_ssh_method_and_pod(target: str) -> Tuple[str, PodInfo]:
-    """Helper function that check method for SSH."""
+    """The ssh command line for a pod. Raises when SSH is not possible."""
     if not shutil.which("ssh"):
-        ui.error("Error: 'ssh' command not found. Please install an SSH client.")
-        return None, None
+        raise CliFailure(
+            "ssh_client_missing",
+            "'ssh' command not found. Please install an SSH client.",
+            EXIT_SSH_ERROR,
+        )
 
     lium = Lium()
     all_pods = lium.ps()
@@ -25,11 +34,14 @@ def get_ssh_method_and_pod(target: str) -> Tuple[str, PodInfo]:
     pod = pods[0] if pods else None
 
     if not pod:
-        return None, None
+        raise CliFailure("pod_not_found", f"No pods match targets: {target}", EXIT_POD_NOT_FOUND)
 
     if not pod.ssh_cmd:
-        ui.error(f"No SSH connection available for pod '{pod.huid}'")
-        return None, None
+        raise CliFailure(
+            "ssh_unavailable",
+            f"No SSH connection available for pod '{pod.huid}'",
+            EXIT_SSH_ERROR,
+        )
 
     try:
         ssh_cmd = lium.ssh(pod)
@@ -40,17 +52,23 @@ def get_ssh_method_and_pod(target: str) -> Tuple[str, PodInfo]:
         return ssh_cmd, pod
 
 
-def ssh_to_pod(ssh_cmd: str, pod: PodInfo) -> None:
-    """Helper function to SSH to a pod."""
+def ssh_session_connected(ssh_cmd: str) -> bool:
+    """Open the session; False when the connection never opened.
+
+    A remote shell exiting non-zero is the user's business, not a failure of the
+    lium command — only ssh's own connection failure is.
+    """
     try:
         result = subprocess.run(ssh_cmd, shell=True, check=False)
 
-        if result.returncode != 0 and result.returncode != 255:
+        if result.returncode not in (0, _SSH_CONNECTION_FAILED):
             ui.dim(f"\nSSH session ended with exit code {result.returncode}")
+        return result.returncode != _SSH_CONNECTION_FAILED
     except KeyboardInterrupt:
         ui.warning("\nSSH session interrupted")
+        return True
     except Exception as e:
-        ui.error(f"Error executing SSH: {e}")
+        raise CliFailure("ssh_failed", f"Error executing SSH: {e}", EXIT_SSH_ERROR)
 
 
 @click.command("ssh")

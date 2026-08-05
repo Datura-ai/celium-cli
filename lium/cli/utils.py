@@ -243,7 +243,33 @@ def timed_step_status(step: int = 0, total_steps: int = 0, message: str = ""):
         raise
 
 
-def _emit_json_error(code: str, message: str) -> None:
+# Exit codes published in docs/developers/cli/reference/index.md. Commands import
+# these rather than spelling the numbers, so the published table stays the one
+# source of truth.
+EXIT_GENERAL_ERROR = 1
+EXIT_CONFIGURATION_ERROR = 2
+EXIT_API_ERROR = 3
+EXIT_SSH_ERROR = 4
+EXIT_POD_NOT_FOUND = 5
+EXIT_PERMISSION_DENIED = 6
+
+
+class CliFailure(Exception):
+    """A command failing for a reason it can name.
+
+    Raised instead of exiting inline so that rendering — JSON envelope for a
+    machine caller, Rich text for a human — and the exit code are decided in one
+    place, ``handle_errors``, rather than at every error site in every command.
+    """
+
+    def __init__(self, code: str, message: str, exit_code: int = EXIT_GENERAL_ERROR) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.exit_code = exit_code
+
+
+def _emit_json_error(code: str, message: str, exit_code: int = EXIT_GENERAL_ERROR) -> None:
     """Print a machine-readable error envelope to stderr and exit non-zero.
 
     Keeps stdout clean for JSON consumers (agents): on success stdout carries
@@ -252,17 +278,20 @@ def _emit_json_error(code: str, message: str) -> None:
     """
     envelope = {"ok": False, "error": {"code": code, "message": message}}
     click.echo(json.dumps(envelope, sort_keys=True), err=True)
-    raise SystemExit(1)
+    raise SystemExit(exit_code)
 
 
 def handle_errors(func):
     """Decorator to handle CLI errors gracefully.
 
+    Every handled error exits non-zero. A caller chaining commands with ``&&``
+    can only see failure through the exit code, so reporting an error and then
+    exiting 0 tells it the command worked.
+
     When the wrapped command was invoked with ``--json`` (a ``json_output``
-    flag), errors are rendered as a JSON envelope on stderr and the process
-    exits non-zero, so machine consumers get parseable output instead of
-    Rich-formatted text on stdout. Otherwise the human-readable rendering is
-    preserved.
+    flag), errors are rendered as a JSON envelope on stderr, so machine
+    consumers get parseable output instead of Rich-formatted text on stdout.
+    Otherwise the human-readable rendering is preserved.
     """
     @wraps(func)
     def wrapper(*args, **kwargs):
@@ -271,11 +300,18 @@ def handle_errors(func):
             return func(*args, **kwargs)
         except (click.ClickException, click.Abort):
             raise
+        except CliFailure as e:
+            if json_output:
+                _emit_json_error(e.code, e.message, e.exit_code)
+            console.error(e.message)
+            raise SystemExit(e.exit_code)
         except ValueError as e:
             is_missing_api_key = "No API key found" in str(e)
             if json_output:
                 _emit_json_error(
-                    "no_api_key" if is_missing_api_key else "value_error", str(e)
+                    "no_api_key" if is_missing_api_key else "value_error",
+                    str(e),
+                    EXIT_CONFIGURATION_ERROR,
                 )
             elif is_missing_api_key:
                 console.error("No API key configured")
@@ -283,14 +319,17 @@ def handle_errors(func):
                 console.dim("Or set LIUM_API_KEY environment variable")
             else:
                 console.error(f"Error: {e}")
+            raise SystemExit(EXIT_CONFIGURATION_ERROR)
         except LiumError as e:
             if json_output:
                 _emit_json_error("lium_error", str(e))
             console.error(f"Error: {e}")
+            raise SystemExit(EXIT_GENERAL_ERROR)
         except Exception as e:
             if json_output:
                 _emit_json_error("unexpected_error", str(e))
             console.error(f"Unexpected error: {e}")
+            raise SystemExit(EXIT_GENERAL_ERROR)
     return wrapper
 
 

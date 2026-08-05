@@ -3,7 +3,14 @@ import click
 
 from lium.sdk import Lium
 from lium.cli import ui
-from lium.cli.utils import handle_errors, ensure_config
+from lium.cli.utils import (
+    CliFailure,
+    EXIT_CONFIGURATION_ERROR,
+    EXIT_GENERAL_ERROR,
+    EXIT_SSH_ERROR,
+    ensure_config,
+    handle_errors,
+)
 from lium.cli.completion import get_gpu_completions
 from . import validation, parsing
 from .actions import (
@@ -32,6 +39,7 @@ from .actions import (
 @click.option("--ttl", help="Auto-terminate after duration (e.g., 6h, 45m, 2d)")
 @click.option("--until", help="Auto-terminate at time in local timezone (e.g., 'today 23:00', 'tomorrow 01:00', '2025-10-20 15:30')")
 @click.option("--jupyter", is_flag=True, help="Install Jupyter Notebook (automatically selects available port)")
+@click.option("--no-ssh", "no_ssh", is_flag=True, help="Create the pod and return instead of opening an SSH session")
 @click.option("--image", help="Docker image to run (e.g., pytorch/pytorch:2.0, nvidia/cuda:12.0)")
 @click.option("--internal-ports", help="Internal ports to expose (comma-separated, e.g., 22,8000,8080)")
 @click.option("--dockerfile", type=click.Path(exists=True, dir_okay=False, readable=True), help="Path to a Dockerfile to build the pod image from (custom build; mutually exclusive with --image/--template_id)")
@@ -58,6 +66,7 @@ def up_command(
     ttl: Optional[str],
     until: Optional[str],
     jupyter: bool,
+    no_ssh: bool,
     image: Optional[str],
     internal_ports: Optional[str],
     dockerfile: Optional[str],
@@ -112,21 +121,18 @@ def up_command(
         executor_id, gpu, count, country, ttl, until, image, template_id, dockerfile
     )
     if not valid:
-        ui.error(error)
-        return
+        raise CliFailure("invalid_arguments", error, EXIT_CONFIGURATION_ERROR)
 
     # Parse env vars if provided
     env_dict = {}
     if env:
         env_dict, error = validation.parse_env_vars(env)
         if error:
-            ui.error(error)
-            return
+            raise CliFailure("invalid_arguments", error, EXIT_CONFIGURATION_ERROR)
 
     parsed, error = parsing.parse(ttl, until, volume)
     if error:
-        ui.error(error)
-        return
+        raise CliFailure("invalid_arguments", error, EXIT_CONFIGURATION_ERROR)
 
     termination_time = parsed.get("termination_time")
     volume_id = parsed.get("volume_id")
@@ -152,27 +158,33 @@ def up_command(
             if supplied
         ]
         if unsupported:
-            ui.error(
+            raise CliFailure(
+                "invalid_arguments",
                 f"{', '.join(unsupported)} cannot be combined with --dockerfile "
-                "(the Dockerfile defines the image's env, entrypoint, command, and ports)"
+                "(the Dockerfile defines the image's env, entrypoint, command, and ports)",
+                EXIT_CONFIGURATION_ERROR,
             )
-            return
 
         try:
             dockerfile_content = Path(dockerfile).read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as exc:
-            ui.error(f"Could not read Dockerfile: {exc}")
-            return
+            raise CliFailure(
+                "unreadable_dockerfile",
+                f"Could not read Dockerfile: {exc}",
+                EXIT_CONFIGURATION_ERROR,
+            )
         if not dockerfile_content.strip():
-            ui.error("Dockerfile is empty")
-            return
+            raise CliFailure(
+                "empty_dockerfile", "Dockerfile is empty", EXIT_CONFIGURATION_ERROR
+            )
         max_bytes = 64 * 1024
         size_bytes = len(dockerfile_content.encode("utf-8"))
         if size_bytes > max_bytes:
-            ui.error(
-                f"Dockerfile is too large ({size_bytes} bytes); max is {max_bytes} bytes (64 KiB)"
+            raise CliFailure(
+                "dockerfile_too_large",
+                f"Dockerfile is too large ({size_bytes} bytes); max is {max_bytes} bytes (64 KiB)",
+                EXIT_CONFIGURATION_ERROR,
             )
-            return
 
     lium = Lium(source="cli")
 
@@ -190,8 +202,7 @@ def up_command(
     )
 
     if not result.ok:
-        ui.error(result.error)
-        return
+        raise CliFailure("node_selection_failed", result.error, EXIT_GENERAL_ERROR)
 
     executor = result.data["executor"]
 
@@ -218,8 +229,11 @@ def up_command(
                 if 22 not in ports_list:
                     ports_list.insert(0, 22)
             except ValueError:
-                ui.error("Invalid port format. Use comma-separated integers (e.g., 22,8000,8080)")
-                return
+                raise CliFailure(
+                    "invalid_ports",
+                    "Invalid port format. Use comma-separated integers (e.g., 22,8000,8080)",
+                    EXIT_CONFIGURATION_ERROR,
+                )
 
         action = CreateEphemeralTemplateAction()
         result = ui.load(
@@ -234,8 +248,7 @@ def up_command(
             })
         )
         if not result.ok:
-            ui.error(result.error)
-            return
+            raise CliFailure("template_failed", result.error, EXIT_GENERAL_ERROR)
         template = result.data["template"]
     else:
         action = ResolveTemplateAction()
@@ -245,8 +258,7 @@ def up_command(
             "executor": executor
         })
         if not result.ok:
-            ui.error(result.error)
-            return
+            raise CliFailure("template_failed", result.error, EXIT_GENERAL_ERROR)
         template = result.data["template"]
         # API-based estimate using resolved template ID
         try:
@@ -284,8 +296,7 @@ def up_command(
         )
 
         if not result.ok:
-            ui.error(result.error)
-            return
+            raise CliFailure("volume_failed", result.error, EXIT_GENERAL_ERROR)
 
         volume_id = result.data["volume_id"]
 
@@ -306,8 +317,7 @@ def up_command(
     )
 
     if not result.ok:
-        ui.error(result.error)
-        return
+        raise CliFailure("rent_failed", result.error, EXIT_GENERAL_ERROR)
 
     pod_id = result.data["pod_id"]
     pod_name = result.data["pod_name"]
@@ -322,10 +332,13 @@ def up_command(
     )
 
     if not result.ok:
-        ui.error(result.error)
-        return
+        # The pod is rented and already billing. Name it before failing, or the
+        # caller cannot clean up what it is now paying for.
+        ui.error(f"Pod {pod_name} (id: {pod_id}) was created but did not become ready")
+        raise CliFailure("pod_not_ready", result.error, EXIT_GENERAL_ERROR)
 
     pod = result.data["pod"]
+    pod_label = f"Pod {ui.styled(pod.huid, 'pod_id')} (name: {pod_name}, id: {pod_id})"
 
     if termination_time:
         action = ScheduleTerminationAction()
@@ -339,7 +352,12 @@ def up_command(
         )
 
         if not result.ok:
-            ui.error(result.error)
+            ui.info(pod_label)
+            raise CliFailure(
+                "termination_not_scheduled",
+                f"Pod is running but auto-termination was NOT scheduled: {result.error}",
+                EXIT_GENERAL_ERROR,
+            )
 
     if jupyter:
         action = InstallJupyterAction()
@@ -353,7 +371,19 @@ def up_command(
         )
 
         if not result.ok:
-            ui.error(result.error)
+            ui.info(pod_label)
+            raise CliFailure(
+                "jupyter_install_failed",
+                f"Pod is running but Jupyter was NOT installed: {result.error}",
+                EXIT_GENERAL_ERROR,
+            )
+
+    # Always state what was created: a caller that only gets an SSH banner or a
+    # log stream has no way to name the pod it is now paying for.
+    ui.info(f"{pod_label} ready")
+
+    if no_ssh:
+        return
 
     # Docker-run mode: stream logs instead of SSH
     if docker_run_mode:
@@ -381,11 +411,16 @@ def up_command(
     )
 
     if not result.ok:
-        ui.error(result.error)
-        return
+        raise CliFailure("ssh_unavailable", result.error, EXIT_SSH_ERROR)
 
     ssh_cmd = result.data["ssh_cmd"]
     pod = result.data["pod"]
 
-    from lium.cli.ssh.command import ssh_to_pod
-    ssh_to_pod(ssh_cmd, pod)
+    from lium.cli.ssh.command import ssh_session_connected
+
+    if not ssh_session_connected(ssh_cmd):
+        raise CliFailure(
+            "ssh_connection_failed",
+            f"Pod {pod.huid} is running but the SSH connection failed",
+            EXIT_SSH_ERROR,
+        )

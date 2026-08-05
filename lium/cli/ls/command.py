@@ -6,7 +6,13 @@ import click
 
 from lium.sdk import Lium, ExecutorInfo
 from lium.cli import ui
-from lium.cli.utils import handle_errors, store_executor_selection, calculate_pareto_frontier
+from lium.cli.utils import (
+    CliFailure,
+    EXIT_CONFIGURATION_ERROR,
+    calculate_pareto_frontier,
+    handle_errors,
+    store_executor_selection,
+)
 from lium.cli.completion import get_gpu_completions
 from . import validation, display
 from .actions import GetExecutorsAction
@@ -44,9 +50,9 @@ def ls_store_executor(gpu_type: Optional[str] = None, sort_by: str = "download")
 @click.option(
     "--sort",
     "sort_by",
-    type=click.Choice(["download", "upload", "price_gpu", "price_total", "loc", "id", "gpu"]),
-    default="download",
-    help="Sort result by the chosen field.",
+    type=click.Choice(display.SORT_KEYS + list(display.SORT_KEY_ALIASES)),
+    default=None,
+    help="Sort result by the chosen field. An explicit --sort wins over the ★ optimal ordering.",
 )
 @click.option("--limit", type=int, default=None, help="Limit number of rows shown.")
 @click.option(
@@ -62,18 +68,16 @@ def ls_command(
     lat: Optional[float],
     lon: Optional[float],
     max_distance: Optional[int],
-    sort_by: str,
+    sort_by: Optional[str],
     limit: Optional[int],
     output_format: str,
     min_cuda_version: Optional[float],
 ):
     """List available GPU nodes."""
 
-    # Validate
-    _, error = validation.validate(sort_by, limit, lat, lon, max_distance, min_cuda_version)
+    _, error = validation.validate(limit, lat, lon, max_distance, min_cuda_version)
     if error:
-        ui.error(error)
-        return
+        raise CliFailure("invalid_arguments", error, EXIT_CONFIGURATION_ERROR)
 
     # Load data
     lium = Lium()
@@ -112,6 +116,7 @@ def ls_command(
             ui.info("Check back later or contact support if this persists")
         return
 
+
     if output_format == "json":
         sorted_executors, pareto_flags = display.sort_executors(
             executors, sort_by=sort_by, limit=limit
@@ -128,7 +133,7 @@ def ls_command(
     table, sorted_executors, header, tip = display.build_executors_table(
         executors,
         sort_by=sort_by,
-        limit=limit
+        limit=limit,
     )
 
     # Display

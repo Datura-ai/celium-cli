@@ -7,6 +7,9 @@ from typing import List
 from lium.sdk import PodInfo
 from lium.cli.utils import parse_targets
 
+# Shared with the command layer, which maps this one error to a distinct exit code.
+NO_MATCHING_PODS = "No pods match targets"
+
 
 def parse_duration(duration_str: str) -> tuple[timedelta | None, str | None]:
     """Parse duration string like '6h', '45m', '2d', returns (timedelta, error_message)."""
@@ -117,7 +120,7 @@ def parse(
     elif targets:
         selected_pods = parse_targets(targets, all_pods)
         if not selected_pods:
-            return None, f"No pods match targets: {targets}"
+            return None, f"{NO_MATCHING_PODS}: {targets}"
     else:
         # No targets specified - will need interactive selection in command
         return None, "No targets specified"
