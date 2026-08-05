@@ -86,6 +86,9 @@ class SetupSshKeyAction:
         if not available_keys:
             key_path = ssh_dir / "id_ed25519"
             try:
+                # ssh-keygen refuses to create the key when ~/.ssh is missing —
+                # the normal state of a fresh machine or container
+                ssh_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
                 subprocess.run(
                     ["ssh-keygen", "-t", "ed25519", "-f", str(key_path), "-N", "", "-q"],
                     check=True, capture_output=True

@@ -1,12 +1,15 @@
 """DAH-2587: `lium signup` creates an account and stores the API key it mints."""
 
 import json
+import pathlib
+from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
 from lium.cli.actions import ActionResult
 from lium.cli.cli import cli
+from lium.cli.init.actions import SetupSshKeyAction
 from lium.cli.signup import actions as signup_actions
 
 
@@ -178,3 +181,34 @@ def test_signup_targets_the_configured_base_url(monkeypatch, stored_config, ssh_
 
     assert result.exit_code == 0
     assert seen == ["https://staging.lium.io/api/users"]
+
+
+def test_completion_notice_goes_to_stderr(tmp_path, monkeypatch, capsys):
+    """The first run configures shell completions; that notice must not land in --json stdout."""
+    from lium.cli import completion
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setenv("SHELL", "/bin/zsh")
+
+    completion.ensure_completion()
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Shell completions" in captured.err
+
+
+def test_ssh_setup_creates_the_ssh_directory_when_missing(tmp_path, monkeypatch):
+    """A fresh machine has no ~/.ssh; ssh-keygen fails unless it is created first."""
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    stored = {}
+    monkeypatch.setattr(
+        "lium.cli.init.actions.config",
+        type("C", (), {"get": lambda self, k, d=None: stored.get(k, d),
+                       "set": lambda self, k, v: stored.__setitem__(k, v)})(),
+    )
+
+    result = SetupSshKeyAction().execute({})
+
+    assert result.ok, result.error
+    assert (tmp_path / ".ssh" / "id_ed25519").exists()
+    assert stored["ssh.key_path"] == str(tmp_path / ".ssh" / "id_ed25519")

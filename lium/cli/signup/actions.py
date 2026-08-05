@@ -64,7 +64,7 @@ class SignupAction:
             )
 
         config.set("api.api_key", api_key)
-        return ActionResult(ok=True, data={"api_key": api_key, "email": self.email})
+        return ActionResult(ok=True, data={"api_key": api_key})
 
     def _create_account(self) -> ActionResult:
         try:
@@ -110,10 +110,10 @@ class SignupAction:
                 timeout=REQUEST_TIMEOUT,
             )
             keys.raise_for_status()
+            entries = keys.json()
         except (requests.RequestException, ValueError):
             return None
 
-        entries = keys.json()
         if not isinstance(entries, list) or not entries:
             return None
 
