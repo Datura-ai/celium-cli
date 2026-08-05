@@ -6,6 +6,7 @@ from importlib.metadata import version, PackageNotFoundError
 from lium.__about__ import __version__ as fallback_version
 from .themed_console import ThemedConsole
 from .init.command import init_command
+from .signup import signup_command
 from .ls import ls_command
 from .templates import templates_command
 from .up import up_command
@@ -65,6 +66,7 @@ def cli(ctx):
 
 
 # Register core commands
+cli.add_command(signup_command)
 cli.add_command(init_command)
 cli.add_command(ls_command)
 cli.add_command(templates_command)

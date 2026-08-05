@@ -1,0 +1,64 @@
+"""Signup command implementation."""
+
+import json
+
+import click
+
+from lium.cli import ui
+from lium.cli.init.actions import SetupSshKeyAction
+from lium.cli.utils import CliFailure, handle_errors
+from .actions import SignupAction, generate_password
+
+
+@click.command("signup")
+@click.option("--email", required=True, help="The user's real email — the verification link is sent there.")
+@click.option("--name", default=None, help="Display name (defaults to the email's local part).")
+@click.option("--password", default=None, help="Account password (generated when omitted).")
+@click.option("--json", "json_output", is_flag=True, help="Print machine-readable JSON")
+@handle_errors
+def signup_command(email: str, name: str | None, password: str | None, json_output: bool):
+    """Create a Lium account and store the API key it mints.
+
+    Non-interactive: safe to run from an agent. The API key is written to
+    ~/.lium/config.ini, so `lium ls` and `lium up` work right after.
+
+    \b
+    Examples:
+      lium signup --email ada@example.com
+      lium signup --email ada@example.com --json
+    """
+    password = password or generate_password()
+    name = name or email.split("@")[0]
+
+    result = SignupAction(email=email, password=password, name=name).execute({})
+    if not result.ok:
+        raise CliFailure("signup_failed", result.error)
+
+    ssh_result = SetupSshKeyAction().execute({})
+
+    if json_output:
+        click.echo(json.dumps({
+            "email": email,
+            "password": password,
+            "api_key": result.data["api_key"],
+            "ssh_key_configured": ssh_result.ok,
+            "next_steps": [
+                "Ask the user to click the verification link in the welcome email — renting is blocked until then.",
+                "A $5 signup credit is granted once per IP address; check it with 'lium balance'.",
+                "Then: lium ls, lium up <node-id>.",
+            ],
+        }, sort_keys=True))
+        return
+
+    ui.success(f"Account created for {email}")
+    ui.print(f"\n  password: {password}")
+    ui.dim("  Save it — it is the dashboard login at https://lium.io\n")
+    ui.info("API key stored in ~/.lium/config.ini")
+    if not ssh_result.ok:
+        ui.warning(f"SSH key not configured: {ssh_result.error}")
+
+    ui.print("")
+    ui.info("Before the first rental:")
+    ui.print("  1. Click the verification link in the welcome email — renting is blocked until then.")
+    ui.print("  2. A $5 signup credit is granted once per IP address — check with 'lium balance'.")
+    ui.print("  3. Then 'lium ls' and 'lium up <node-id>'.")
