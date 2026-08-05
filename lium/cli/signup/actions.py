@@ -12,7 +12,7 @@ from lium.cli.settings import config
 PASSWORD_ALPHABET = string.ascii_letters + string.digits + "!@#$%^&*-_"
 PASSWORD_LENGTH = 20
 REQUEST_TIMEOUT = 30
-DEFAULT_KEY_NAME = "Default"
+MINTED_KEY_NAME = "Default"
 DEFAULT_BASE_URL = "https://lium.io/api"
 
 
@@ -34,14 +34,13 @@ class SignupAction:
     are skipped.
     """
 
-    def __init__(self, email: str, password: str, name: str):
+    def __init__(self, email: str, password: str, display_name: str):
         self.email = email
         self.password = password
-        self.name = name
+        self.display_name = display_name
 
     def execute(self, ctx: dict) -> ActionResult:
-        # a stored key means an account is already wired up here — refuse rather than
-        # strand the caller with a second account they cannot reach
+        # a second account would be unreachable — nothing here can switch between keys
         if config.get("api.api_key"):
             return ActionResult(
                 ok=False,
@@ -50,11 +49,11 @@ class SignupAction:
                       "or use 'lium init' to re-authenticate.",
             )
 
-        created = self._create_account()
-        if not created.ok:
-            return created
+        creation_result = self._create_account()
+        if not creation_result.ok:
+            return creation_result
 
-        api_key = created.data.get("api_key") or self._read_minted_key()
+        api_key = creation_result.data.get("api_key") or self._read_minted_key()
         if not api_key:
             return ActionResult(
                 ok=False,
@@ -70,7 +69,7 @@ class SignupAction:
         try:
             response = requests.post(
                 f"{base_url()}/users",
-                json={"name": self.name, "email": self.email, "password": self.password},
+                json={"name": self.display_name, "email": self.email, "password": self.password},
                 timeout=REQUEST_TIMEOUT,
             )
         except requests.RequestException as e:
@@ -94,31 +93,31 @@ class SignupAction:
 
     def _read_minted_key(self) -> str | None:
         try:
-            login = requests.post(
+            login_response = requests.post(
                 f"{base_url()}/users/login",
                 json={"email": self.email, "password": self.password},
                 timeout=REQUEST_TIMEOUT,
             )
-            login.raise_for_status()
-            token = login.json().get("token")
+            login_response.raise_for_status()
+            token = login_response.json().get("token")
             if not token:
                 return None
 
-            keys = requests.get(
+            keys_response = requests.get(
                 f"{base_url()}/keys",
                 headers={"Authorization": f"Bearer {token}"},
                 timeout=REQUEST_TIMEOUT,
             )
-            keys.raise_for_status()
-            entries = keys.json()
+            keys_response.raise_for_status()
+            api_keys = keys_response.json()
         except (requests.RequestException, ValueError):
             return None
 
-        if not isinstance(entries, list) or not entries:
+        if not isinstance(api_keys, list) or not api_keys:
             return None
 
-        default = next((e for e in entries if e.get("name") == DEFAULT_KEY_NAME), entries[0])
-        return default.get("key")
+        minted_key = next((k for k in api_keys if k.get("name") == MINTED_KEY_NAME), api_keys[0])
+        return minted_key.get("key")
 
     @staticmethod
     def _describe_failure(response: requests.Response) -> str:

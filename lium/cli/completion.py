@@ -46,10 +46,8 @@ def ensure_completion() -> None:
         # Mark as installed
         marker_file.touch()
 
-        # Notify on stderr: this runs before argument parsing, so a command
-        # invoked with --json must still emit machine-readable stdout.
-        from .themed_console import ThemedConsole
-        console = ThemedConsole(stderr=True)
+        # stderr, so a command invoked with --json still emits clean stdout
+        from .utils import notice_console as console
         console.success("✓ Shell completions have been configured for tab support")
         console.info("✓ Please restart your terminal or run:")
         console.info(f"  source {config_file}")

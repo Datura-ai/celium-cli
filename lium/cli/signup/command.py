@@ -12,11 +12,11 @@ from .actions import SignupAction, generate_password
 
 @click.command("signup")
 @click.option("--email", required=True, help="The user's real email — the verification link is sent there.")
-@click.option("--name", default=None, help="Display name (defaults to the email's local part).")
+@click.option("--name", "display_name", default=None, help="Display name (defaults to the email's local part).")
 @click.option("--password", default=None, help="Account password (generated when omitted).")
 @click.option("--json", "json_output", is_flag=True, help="Print machine-readable JSON")
 @handle_errors
-def signup_command(email: str, name: str | None, password: str | None, json_output: bool):
+def signup_command(email: str, display_name: str | None, password: str | None, json_output: bool):
     """Create a Lium account and store the API key it mints.
 
     Non-interactive: safe to run from an agent. The API key is written to
@@ -28,11 +28,11 @@ def signup_command(email: str, name: str | None, password: str | None, json_outp
       lium signup --email ada@example.com --json
     """
     password = password or generate_password()
-    name = name or email.split("@")[0]
+    display_name = display_name or email.split("@")[0]
 
-    result = SignupAction(email=email, password=password, name=name).execute({})
-    if not result.ok:
-        raise CliFailure("signup_failed", result.error)
+    signup_result = SignupAction(email=email, password=password, display_name=display_name).execute({})
+    if not signup_result.ok:
+        raise CliFailure("signup_failed", signup_result.error)
 
     ssh_result = SetupSshKeyAction().execute({})
 
@@ -40,7 +40,7 @@ def signup_command(email: str, name: str | None, password: str | None, json_outp
         click.echo(json.dumps({
             "email": email,
             "password": password,
-            "api_key": result.data["api_key"],
+            "api_key": signup_result.data["api_key"],
             "ssh_key_configured": ssh_result.ok,
             "next_steps": [
                 "Ask the user to click the verification link in the welcome email — renting is blocked until then.",

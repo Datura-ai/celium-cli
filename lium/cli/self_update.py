@@ -117,19 +117,14 @@ def maybe_perform_startup_update() -> UpdateResult:
     """Attempt a managed-binary update without interrupting CLI startup."""
 
     result = perform_startup_update()
-    # stderr: this runs before argument parsing, so a command invoked with
-    # --json must still emit machine-readable stdout.
-    from .themed_console import ThemedConsole
-
-    notify = ThemedConsole(stderr=True)
 
     if result.updated and result.latest_version and result.current_version:
-        notify.info(
+        ui.notice(
             f"Updated Lium CLI from {result.current_version} to {result.latest_version}; "
             "the new version will be used on the next launch."
         )
     elif result.needs_reinstall:
-        notify.warning(
+        ui.notice_warning(
             "Lium CLI could not auto-update: this release no longer ships the "
             "package format your installed binary expects. Reinstall to keep "
             "getting updates:\n"

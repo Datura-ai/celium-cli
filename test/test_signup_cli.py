@@ -187,6 +187,7 @@ def test_completion_notice_goes_to_stderr(tmp_path, monkeypatch, capsys):
     """The first run configures shell completions; that notice must not land in --json stdout."""
     from lium.cli import completion
 
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setenv("SHELL", "/bin/zsh")
 

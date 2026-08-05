@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
-from lium.cli.utils import console, loading_status
+from lium.cli.utils import console, loading_status, notice_console
 
 T = TypeVar("T")
 
@@ -105,6 +105,16 @@ def warning(message: str) -> None:
 def info(message: str) -> None:
     """Display info message (cyan/blue)."""
     console.info(message)
+
+
+def notice(message: str) -> None:
+    """Display an informational startup notice on stderr."""
+    notice_console.info(message)
+
+
+def notice_warning(message: str) -> None:
+    """Display a warning startup notice on stderr."""
+    notice_console.warning(message)
 
 
 def dim(message: str) -> None:

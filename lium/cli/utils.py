@@ -16,6 +16,9 @@ from rich.prompt import Prompt
 T = TypeVar("T")
 
 console = ThemedConsole()
+# startup notices print before argument parsing, so they must not pollute the
+# stdout of a command invoked with --json
+notice_console = ThemedConsole(stderr=True)
 
 
 # Text formatting helpers
