@@ -163,7 +163,7 @@ def test_signup_reports_credentials_when_the_key_cannot_be_read_back(monkeypatch
     assert result.exit_code != 0
     assert "s3cret-pw" in result.output
     assert "ada@example.com" in result.output
-    assert "https://lium.io" in result.output
+    assert "copy your API key from the dashboard" in result.output
 
 
 def test_signup_reports_credentials_when_the_request_times_out(monkeypatch, stored_config, ssh_setup_ok):
