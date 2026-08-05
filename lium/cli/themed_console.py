@@ -15,8 +15,8 @@ from lium.cli.settings import config
 class ThemedConsole(RichConsole):
     """Console with theme support and semantic color methods."""
     
-    def __init__(self):
-        super().__init__()
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         self.themes = self._load_themes()
         self.current_theme_name = config.get('ui.theme', 'auto')
         self.theme = self._resolve_theme()

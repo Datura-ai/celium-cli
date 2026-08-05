@@ -55,6 +55,8 @@ class ConfigManager:
         """Save configuration to file."""
         with open(self.config_file, 'w') as f:
             self._config.write(f)
+        # the file holds the API key — keep it readable by the owner only
+        os.chmod(self.config_file, 0o600)
     
     def _parse_key(self, key: str) -> tuple[str, str]:
         """Parse key into section and option."""

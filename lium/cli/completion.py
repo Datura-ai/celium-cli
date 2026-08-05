@@ -46,9 +46,9 @@ def ensure_completion() -> None:
         # Mark as installed
         marker_file.touch()
 
-        # Show success message using ThemedConsole
-        from .themed_console import ThemedConsole
-        console = ThemedConsole()
+        # stderr, so a command invoked with --json still emits clean stdout
+        from .utils import notice_console
+        console = notice_console()
         console.success("✓ Shell completions have been configured for tab support")
         console.info("✓ Please restart your terminal or run:")
         console.info(f"  source {config_file}")

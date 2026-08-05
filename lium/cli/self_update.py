@@ -119,19 +119,19 @@ def maybe_perform_startup_update() -> UpdateResult:
     result = perform_startup_update()
 
     if result.updated and result.latest_version and result.current_version:
-        ui.info(
+        ui.notice(
             f"Updated Lium CLI from {result.current_version} to {result.latest_version}; "
             "the new version will be used on the next launch."
         )
     elif result.needs_reinstall:
-        ui.warning(
+        ui.notice_warning(
             "Lium CLI could not auto-update: this release no longer ships the "
             "package format your installed binary expects. Reinstall to keep "
             "getting updates:\n"
             f"  {REINSTALL_COMMAND}"
         )
     elif result.error:
-        ui.debug(f"Managed binary auto-update skipped after error: {result.error}")
+        ui.notice_debug(f"Managed binary auto-update skipped after error: {result.error}")
 
     return result
 

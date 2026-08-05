@@ -209,8 +209,8 @@ def test_maybe_perform_startup_update_warns_with_reinstall_command(monkeypatch):
     )
     warnings: list[str] = []
     debugs: list[str] = []
-    monkeypatch.setattr(self_update.ui, "warning", warnings.append)
-    monkeypatch.setattr(self_update.ui, "debug", debugs.append)
+    monkeypatch.setattr(self_update.ui, "notice_warning", warnings.append)
+    monkeypatch.setattr(self_update.ui, "notice_debug", debugs.append)
 
     result = maybe_perform_startup_update()
 
