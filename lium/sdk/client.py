@@ -901,6 +901,9 @@ class Lium:
 
         with self.ssh_connection(pod) as client:
             stdin, stdout, stderr = client.exec_command(command)
+            # Send EOF: a remote command that reads stdin waits forever otherwise,
+            # and this call has no stdin to give it.
+            stdin.close()
             exit_code = stdout.channel.recv_exit_status()
             return {
                 "stdout": stdout.read().decode("utf-8", errors="replace"),

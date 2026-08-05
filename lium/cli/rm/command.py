@@ -74,7 +74,12 @@ def human_approved_removing_every_pod(pods: List[PodInfo]) -> bool:
     if not sys.stdin.isatty():
         return True
     listed_huids = ", ".join(pod.huid for pod in pods)
-    return ui.confirm(f"Remove all {len(pods)} pods ({listed_huids})?")
+    try:
+        return ui.confirm(f"Remove all {len(pods)} pods ({listed_huids})?")
+    except EOFError:
+        # The terminal went away mid-prompt. No answer is not a yes.
+        ui.warning("\nNo answer — nothing removed")
+        return False
 
 
 @click.command("rm")
