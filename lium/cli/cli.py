@@ -10,6 +10,7 @@ from .ls import ls_command
 from .templates import templates_command
 from .up import up_command
 from .ps import ps_command
+from .describe import describe_command
 from .commands.exec import exec_command
 from .ssh.command import ssh_command
 from .rm import rm_command
@@ -70,6 +71,7 @@ cli.add_command(ls_command)
 cli.add_command(templates_command)
 cli.add_command(up_command)
 cli.add_command(ps_command)
+cli.add_command(describe_command)
 cli.add_command(exec_command)
 cli.add_command(ssh_command)
 cli.add_command(rm_command)
