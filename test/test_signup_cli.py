@@ -94,6 +94,23 @@ def test_signup_skips_dead_keys_and_stores_the_newest_live_one(monkeypatch, stor
     assert stored_config["api.api_key"] == "sk_live"
 
 
+def test_signup_takes_the_password_from_the_environment(monkeypatch, stored_config, ssh_setup_ok):
+    """A password passed as a flag leaks into shell history and `ps`; the env var is the safer source."""
+    sent = {}
+
+    def fake_post(url, **kwargs):
+        sent.update(kwargs["json"])
+        return FakeResponse(200, {"api_key": "sk_inline"})
+
+    monkeypatch.setattr(signup_actions.requests, "post", fake_post)
+    monkeypatch.setenv("LIUM_SIGNUP_PASSWORD", "env-pw")
+
+    result = CliRunner().invoke(cli, ["signup", "--email", "ada@example.com", "--json"])
+
+    assert result.exit_code == 0
+    assert sent["password"] == "env-pw"
+
+
 def test_signup_uses_key_returned_by_signup_response(monkeypatch, stored_config, ssh_setup_ok):
     """A backend that returns the key inline makes login + GET /keys unnecessary."""
     posted = []

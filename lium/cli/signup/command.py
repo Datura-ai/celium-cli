@@ -23,7 +23,8 @@ def _credit_line(credit_granted: bool | None) -> str:
 @click.command("signup")
 @click.option("--email", required=True, help="The user's real email — the verification link is sent there.")
 @click.option("--name", "display_name", default=None, help="Display name (defaults to the email's local part).")
-@click.option("--password", default=None, help="Account password (generated when omitted).")
+@click.option("--password", default=None, envvar="LIUM_SIGNUP_PASSWORD",
+              help="Account password (generated when omitted). Falls back to LIUM_SIGNUP_PASSWORD.")
 @click.option("--json", "json_output", is_flag=True, help="Print machine-readable JSON")
 @handle_errors
 def signup_command(email: str, display_name: str | None, password: str | None, json_output: bool):
@@ -32,10 +33,14 @@ def signup_command(email: str, display_name: str | None, password: str | None, j
     Non-interactive: safe to run from an agent. The API key is written to
     ~/.lium/config.ini, so `lium ls` and `lium up` work right after.
 
+    To set your own password, prefer LIUM_SIGNUP_PASSWORD over --password:
+    a flag value is left behind in the shell history and in `ps` output.
+
     \b
     Examples:
       lium signup --email ada@example.com
       lium signup --email ada@example.com --json
+      LIUM_SIGNUP_PASSWORD=... lium signup --email ada@example.com
     """
     password = password or generate_password()
     display_name = display_name or email.split("@")[0]
