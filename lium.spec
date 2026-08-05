@@ -6,6 +6,8 @@ block_cipher = None
 hiddenimports = [
     *collect_submodules("lium"),
     *collect_submodules("bittensor"),
+    *collect_submodules("bittensor_cli"),
+    *collect_submodules("async_substrate_interface"),
     # cyscale and py-scale-codec both expose the "scalecodec" import namespace.
     *collect_submodules("scalecodec"),
     *collect_submodules("Crypto"),
