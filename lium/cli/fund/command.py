@@ -78,7 +78,8 @@ def _legacy_tao_fund(wallet: Optional[str], amount: Optional[str], yes: bool) ->
     }
 
     # Ask for the coldkey password here, outside every spinner — registration and the
-    # transfer both sign with it, and a prompt raised under ui.load is repainted away.
+    # transfer both sign with it, and a prompt raised under ui.load lands glued to a
+    # frozen spinner line, which reads as a hung command.
     result = UnlockColdkeyAction().execute({"bt_wallet": bt_wallet})
     if not result.ok:
         ui.error(f"Failed to unlock coldkey for wallet '{wallet_name}': {result.error}")
@@ -201,7 +202,8 @@ def _alpha_fund(
     lium = Lium()
 
     # Ask for the coldkey password here, outside every spinner — registration and the
-    # transfer both sign with it, and a prompt raised under ui.load is repainted away.
+    # transfer both sign with it, and a prompt raised under ui.load lands glued to a
+    # frozen spinner line, which reads as a hung command.
     result = UnlockColdkeyAction().execute({"bt_wallet": bt_wallet})
     if not result.ok:
         raise LiumError(

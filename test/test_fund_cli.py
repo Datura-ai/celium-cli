@@ -94,9 +94,9 @@ def test_fund_tao_dispatch_runs(monkeypatch):
 
 
 def test_fund_tao_unlocks_coldkey_before_any_spinner(monkeypatch):
-    # DAH-2585: bittensor prints "Enter your password:" straight to the terminal, and a
-    # Rich spinner repaints that line away ~12x/s — so `lium fund` looked hung while it
-    # blindly waited for input. The unlock must happen before any ui.load spinner.
+    # DAH-2585: bittensor prints "Enter your password:" straight to the terminal, and its
+    # reader holds the GIL — so under ui.load the prompt lands glued to a frozen spinner
+    # line and `lium fund` reads as hung. The unlock must precede every ui.load spinner.
     events = []
     monkeypatch.setitem(sys.modules, "bittensor", types.SimpleNamespace())
     bt_wallet = _fake_bt_wallet(events)
@@ -458,7 +458,7 @@ def test_alpha_happy_path(monkeypatch):
 
 def test_alpha_unlocks_coldkey_before_any_spinner(monkeypatch):
     # DAH-2585, alpha path: same invariant as the TAO path — the coldkey password
-    # prompt must be raised before the first spinner can repaint it away.
+    # prompt must be raised before the first spinner freezes on top of it.
     events = []
     sub = FakeSubtensor([[_stake(stake=5.0)]], fee=0.01)
     _patch_common(monkeypatch, sub, events=events)

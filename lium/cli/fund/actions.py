@@ -93,14 +93,16 @@ class LoadWalletAction:
 
 
 class UnlockColdkeyAction:
-    """Decrypt the coldkey up front, so its password prompt is never hidden.
+    """Decrypt the coldkey up front, so its password prompt lands on a clean line.
 
     ``bittensor_wallet`` prints ``Enter your password:`` straight to the terminal the
     first time the coldkey is read (registration signs with it, so do the funding
-    transfers). Under a Rich ``Status`` that line is repainted away ~12x/s and the
-    run looks hung while it blindly waits for input. Unlocking before any spinner
-    starts keeps the prompt on screen; the decrypted key is cached on the wallet, so
-    the later signing never asks a second time.
+    transfers), and its Rust reader holds the GIL — which stalls Rich's refresh
+    thread. Raised under a Rich ``Status``, the prompt therefore lands glued to the
+    tail of a frozen spinner line, with the cursor still hidden and nothing echoing:
+    a command waiting for input that reads as a hung one. Unlocking before any
+    spinner starts gives the prompt its own line; the decrypted key is cached on the
+    wallet, so the later signing never asks a second time.
     """
 
     def execute(self, ctx: dict) -> ActionResult:
