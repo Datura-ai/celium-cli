@@ -6,10 +6,13 @@ breaks the chain at step two, so the renter surface must import cleanly with the
 optional chain dependencies absent.
 """
 
+import inspect
 import subprocess
 import sys
 import tomllib
 from pathlib import Path
+
+import pytest
 
 PYPROJECT = tomllib.loads(Path("pyproject.toml").read_text())
 REQUIRED = PYPROJECT["project"]["dependencies"]
@@ -70,3 +73,40 @@ def test_renting_a_pod_does_not_import_bittensor():
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "False", "importing the CLI/SDK pulled in bittensor"
+
+
+def test_missing_chain_stack_is_named_not_swallowed(monkeypatch):
+    """`provider status` must say why subnet registration reads as unknown.
+
+    The branch is only reachable now that bittensor is an extra: before, the
+    import always succeeded, so the ImportError path was dead code that returned
+    (None, []) and the caller rendered "unknown" with nothing explaining it.
+    """
+    import builtins
+
+    from lium.provider.client import _read_metagraph
+    from lium.provider.errors import ProviderConfigError
+
+    real_import = builtins.__import__
+
+    def _no_bittensor(name, *args, **kwargs):
+        if name == "bittensor":
+            raise ImportError("No module named 'bittensor'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_bittensor)
+
+    with pytest.raises(ProviderConfigError) as raised:
+        _read_metagraph(hotkey_ss58="5FakeHotkey", netuid=51, factory=None)
+
+    assert "lium.io[provider]" in str(raised.value)
+
+
+def test_provider_status_surfaces_the_missing_stack_as_a_warning():
+    """The raised error must reach the user, not vanish into a bare status line."""
+    from lium.provider.client import ProviderClient
+
+    source = inspect.getsource(ProviderClient.status)
+
+    assert "except ProviderError as e:" in source
+    assert 'warnings.append(f"metagraph: {e}")' in source
