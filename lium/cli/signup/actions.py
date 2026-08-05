@@ -66,13 +66,15 @@ class SignupAction:
         if not api_key:
             return ActionResult(
                 ok=False,
-                data={},
-                error="Account created, but the API key could not be read back. "
-                      "Log in at https://lium.io and copy the key from the dashboard.",
+                data={"account_may_exist": True},
+                error="Account created, but the API key could not be read back.",
             )
 
         config.set("api.api_key", api_key)
-        return ActionResult(ok=True, data={"api_key": api_key})
+        return ActionResult(ok=True, data={
+            "api_key": api_key,
+            "signup_credit_granted": creation_result.data.get("signup_credit_granted"),
+        })
 
     def _create_account(self) -> ActionResult:
         try:
@@ -82,7 +84,12 @@ class SignupAction:
                 timeout=REQUEST_TIMEOUT,
             )
         except requests.RequestException as e:
-            return ActionResult(ok=False, data={}, error=f"Signup request failed: {e}")
+            # the backend sends the welcome mail inside the request, so a timeout can still leave an account behind
+            return ActionResult(
+                ok=False,
+                data={"account_may_exist": isinstance(e, requests.Timeout)},
+                error=f"Signup request failed: {e}",
+            )
 
         if response.status_code == 429:
             return ActionResult(
@@ -94,7 +101,11 @@ class SignupAction:
         if response.status_code >= 400:
             return ActionResult(ok=False, data={}, error=self._describe_failure(response))
 
-        return ActionResult(ok=True, data={"api_key": _json_object(response).get("api_key")})
+        body = _json_object(response)
+        return ActionResult(ok=True, data={
+            "api_key": body.get("api_key"),
+            "signup_credit_granted": body.get("signup_credit_granted"),
+        })
 
     def _read_minted_key(self) -> str | None:
         try:

@@ -276,21 +276,28 @@ class CliFailure(Exception):
     place, ``handle_errors``, rather than at every error site in every command.
     """
 
-    def __init__(self, code: str, message: str, exit_code: int = EXIT_GENERAL_ERROR) -> None:
+    def __init__(self, code: str, message: str, exit_code: int = EXIT_GENERAL_ERROR,
+                 data: dict | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.exit_code = exit_code
+        self.data = data or {}
 
 
-def _emit_json_error(code: str, message: str, exit_code: int = EXIT_GENERAL_ERROR) -> None:
+def _emit_json_error(code: str, message: str, exit_code: int = EXIT_GENERAL_ERROR,
+                     data: dict | None = None) -> None:
     """Print a machine-readable error envelope to stderr and exit non-zero.
 
     Keeps stdout clean for JSON consumers (agents): on success stdout carries
     the result JSON, on failure stdout is empty, the error JSON goes to stderr,
     and the process exits with a non-zero status so callers can detect it.
+    ``data`` carries whatever the caller must not lose along with the failure
+    (signup, for one, has to hand back the credentials it generated).
     """
     envelope = {"ok": False, "error": {"code": code, "message": message}}
+    if data:
+        envelope["data"] = data
     click.echo(json.dumps(envelope, sort_keys=True), err=True)
     raise SystemExit(exit_code)
 
@@ -316,7 +323,7 @@ def handle_errors(func):
             raise
         except CliFailure as e:
             if json_output:
-                _emit_json_error(e.code, e.message, e.exit_code)
+                _emit_json_error(e.code, e.message, e.exit_code, e.data)
             console.error(e.message)
             raise SystemExit(e.exit_code)
         except ValueError as e:

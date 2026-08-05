@@ -111,6 +111,119 @@ def test_signup_json_reports_credentials_and_next_steps(monkeypatch, stored_conf
     assert any("verification link" in step for step in payload["next_steps"])
 
 
+def test_signup_reports_credentials_when_the_key_cannot_be_read_back(monkeypatch, stored_config, ssh_setup_ok):
+    """The account exists server-side; without the password nobody can ever log into it."""
+    def fake_post(url, **kwargs):
+        if url.endswith("/users"):
+            return FakeResponse(200, {"msg": "success"})
+        return FakeResponse(200, {})
+
+    monkeypatch.setattr(signup_actions.requests, "post", fake_post)
+    monkeypatch.setattr(signup_actions.requests, "get", lambda url, **kwargs: FakeResponse(200, []))
+
+    result = CliRunner().invoke(cli, ["signup", "--email", "ada@example.com", "--password", "s3cret-pw"])
+
+    assert result.exit_code != 0
+    assert "s3cret-pw" in result.output
+    assert "ada@example.com" in result.output
+    assert "https://lium.io" in result.output
+
+
+def test_signup_reports_credentials_when_the_request_times_out(monkeypatch, stored_config, ssh_setup_ok):
+    """The backend mails the user inside the request, so a read timeout can still leave an account behind."""
+    def timing_out_post(url, **kwargs):
+        raise signup_actions.requests.Timeout("read timed out")
+
+    monkeypatch.setattr(signup_actions.requests, "post", timing_out_post)
+
+    result = CliRunner().invoke(cli, ["signup", "--email", "ada@example.com", "--password", "s3cret-pw"])
+
+    assert result.exit_code != 0
+    assert "s3cret-pw" in result.output
+    assert "may have been created" in result.output
+
+
+def test_signup_json_error_envelope_carries_credentials(monkeypatch, stored_config, ssh_setup_ok):
+    def timing_out_post(url, **kwargs):
+        raise signup_actions.requests.Timeout("read timed out")
+
+    monkeypatch.setattr(signup_actions.requests, "post", timing_out_post)
+
+    result = CliRunner().invoke(
+        cli, ["signup", "--email", "ada@example.com", "--password", "s3cret-pw", "--json"]
+    )
+
+    assert result.exit_code != 0
+    envelope = json.loads(result.stderr)
+    assert envelope["data"] == {"email": "ada@example.com", "password": "s3cret-pw"}
+
+
+def test_signup_json_error_envelope_omits_credentials_when_no_account_was_created(
+    monkeypatch, stored_config, ssh_setup_ok
+):
+    monkeypatch.setattr(
+        signup_actions.requests, "post",
+        lambda url, **kwargs: FakeResponse(400, {"detail": "User already exists with the same email"}),
+    )
+
+    result = CliRunner().invoke(cli, ["signup", "--email", "ada@example.com", "--json"])
+
+    assert result.exit_code != 0
+    assert "data" not in json.loads(result.stderr)
+
+
+def test_signup_announces_the_credit_only_when_it_was_granted(monkeypatch, stored_config, ssh_setup_ok):
+    monkeypatch.setattr(
+        signup_actions.requests, "post",
+        lambda url, **kwargs: FakeResponse(200, {"api_key": "sk_inline", "signup_credit_granted": True}),
+    )
+
+    result = CliRunner().invoke(cli, ["signup", "--email", "ada@example.com"])
+
+    assert result.exit_code == 0
+    assert "$5 signup credit was granted" in result.output
+
+
+def test_signup_says_no_credit_was_granted_when_the_flag_is_false(monkeypatch, stored_config, ssh_setup_ok):
+    monkeypatch.setattr(
+        signup_actions.requests, "post",
+        lambda url, **kwargs: FakeResponse(200, {"api_key": "sk_inline", "signup_credit_granted": False}),
+    )
+
+    result = CliRunner().invoke(cli, ["signup", "--email", "ada@example.com"])
+
+    assert result.exit_code == 0
+    assert "No signup credit was granted" in result.output
+    assert "$5" not in result.output
+
+
+def test_signup_asserts_nothing_about_the_credit_on_an_older_backend(monkeypatch, stored_config, ssh_setup_ok):
+    """A backend without signup_credit_granted leaves the credit unknown."""
+    monkeypatch.setattr(
+        signup_actions.requests, "post",
+        lambda url, **kwargs: FakeResponse(200, {"api_key": "sk_inline"}),
+    )
+
+    result = CliRunner().invoke(cli, ["signup", "--email", "ada@example.com", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["signup_credit_granted"] is None
+    assert not any("$5" in step or "No signup credit" in step for step in payload["next_steps"])
+
+
+def test_signup_json_reports_the_credit_flag(monkeypatch, stored_config, ssh_setup_ok):
+    monkeypatch.setattr(
+        signup_actions.requests, "post",
+        lambda url, **kwargs: FakeResponse(200, {"api_key": "sk_inline", "signup_credit_granted": True}),
+    )
+
+    result = CliRunner().invoke(cli, ["signup", "--email", "ada@example.com", "--json"])
+
+    assert result.exit_code == 0
+    assert json.loads(result.output)["signup_credit_granted"] is True
+
+
 def test_signup_generates_a_password_when_omitted(monkeypatch, stored_config, ssh_setup_ok):
     sent = {}
 
