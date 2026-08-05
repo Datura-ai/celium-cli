@@ -11,6 +11,7 @@ from rich.status import Status
 from lium.sdk import LiumError, ExecutorInfo, PodInfo,Lium
 from .themed_console import ThemedConsole
 from dataclasses import dataclass
+from rich.markup import escape
 from rich.prompt import Prompt
 
 T = TypeVar("T")
@@ -324,7 +325,7 @@ def handle_errors(func):
         except CliFailure as e:
             if json_output:
                 _emit_json_error(e.code, e.message, e.exit_code, e.data)
-            console.error(e.message)
+            console.error(escape(e.message))
             raise SystemExit(e.exit_code)
         except ValueError as e:
             is_missing_api_key = "No API key found" in str(e)

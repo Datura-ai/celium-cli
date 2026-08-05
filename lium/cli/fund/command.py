@@ -17,6 +17,7 @@ from lium.cli.utils import (
     handle_errors,
 )
 from lium.cli.settings import config
+from lium.provider.chain_stack import missing_chain_stack_message
 from . import validation
 from .actions import (
     LoadWalletAction,
@@ -43,7 +44,7 @@ def _legacy_tao_fund(wallet: Optional[str], amount: Optional[str], yes: bool) ->
     except ImportError as e:
         raise CliFailure(
             "provider_extra_missing",
-            r'TAO funding needs the chain stack: pip install "lium.io\[provider]"',
+            f"TAO funding needs the chain stack. Reason: {missing_chain_stack_message()}",
             EXIT_CONFIGURATION_ERROR,
         ) from e
 
@@ -138,7 +139,7 @@ def _alpha_fund(
     try:
         import bittensor as bt
     except ImportError:
-        raise LiumError('TAO funding needs the chain stack: pip install "lium.io[provider]"')
+        raise LiumError(f"TAO funding needs the chain stack. Reason: {missing_chain_stack_message()}")
 
     # In non-interactive (--json) mode we never prompt, so every required arg must be
     # supplied up front. Validate presence here — hotkey, then wallet, then amount —

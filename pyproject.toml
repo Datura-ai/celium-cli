@@ -42,10 +42,12 @@ dependencies = [
 
 [project.optional-dependencies]
 provider = [
-    # The chain stack. Renting a pod never touches it, and it is what breaks the
-    # install on Python 3.13/3.14 (bittensor -> bittensor-drand -> Rust build).
-    "bittensor>=9.10.1",
-    "bittensor-cli>=9.1.0",
+    # The chain stack. Renting a pod never touches it. bittensor-drand does not
+    # build on 3.14, and its traceback names cargo and an unrelated repo rather
+    # than lium, so the marker keeps the install quiet and the CLI explains the
+    # gap in its own words when a provider command is actually run.
+    "bittensor>=9.10.1; python_version < '3.14'",
+    "bittensor-cli>=9.1.0; python_version < '3.14'",
 ]
 dev = [
     "pytest",

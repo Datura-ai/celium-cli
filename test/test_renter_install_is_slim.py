@@ -110,3 +110,29 @@ def test_provider_status_surfaces_the_missing_stack_as_a_warning():
 
     assert "except ProviderError as e:" in source
     assert 'warnings.append(f"metagraph: {e}")' in source
+
+
+def test_the_missing_stack_message_names_the_right_fix(monkeypatch):
+    """Two different situations, two different fixes.
+
+    Absent because it was never installed: add the extra. Absent because it
+    cannot build on this interpreter: adding the extra will not help, so the
+    message has to say to change Python or take the binary.
+    """
+    from lium.provider import chain_stack
+
+    monkeypatch.setattr(chain_stack.sys, "version_info", (3, 12, 0, "final", 0))
+    assert 'pip install "lium.io[provider]"' in chain_stack.missing_chain_stack_message()
+
+    monkeypatch.setattr(chain_stack.sys, "version_info", (3, 14, 0, "final", 0))
+    on_new_python = chain_stack.missing_chain_stack_message()
+    assert "3.14" in on_new_python
+    assert "lium.io/install.sh" in on_new_python
+    assert "pip install" not in on_new_python
+
+
+def test_the_extra_is_gated_on_python_version():
+    """The 3.14 install must not die inside a Rust build with no mention of lium."""
+    provider_requirements = OPTIONAL["provider"]
+
+    assert all("python_version < '3.14'" in r for r in provider_requirements), provider_requirements

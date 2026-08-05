@@ -49,6 +49,7 @@ from lium.provider._routes import (
     UPDATE_PRICE,
 )
 from lium.provider.auth import LocalKeypairSigner, Signer, build_login_payload
+from lium.provider.chain_stack import missing_chain_stack_message
 from lium.provider.errors import (
     ARG_INVALID,
     PORTAL_AUTH_INVALID,
@@ -767,8 +768,8 @@ def _read_metagraph(
             # Reachable since DAH-2553 made bittensor an extra. Say so, or the
             # caller reports "registered: unknown" with no way to learn why.
             raise ProviderConfigError(
-                'subnet registration needs the chain stack; install with '
-                '`pip install "lium.io[provider]"`',
+                f"subnet registration needs the chain stack. Reason: "
+                f"{missing_chain_stack_message()}",
                 cause=e,
             )
         factory = bittensor.metagraph
