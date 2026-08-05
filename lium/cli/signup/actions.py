@@ -3,6 +3,7 @@
 import os
 import secrets
 import string
+from datetime import datetime, timezone
 
 import requests
 
@@ -32,6 +33,35 @@ def _json_object(response: requests.Response) -> dict:
     except ValueError:
         return {}
     return body if isinstance(body, dict) else {}
+
+
+def _is_expired(expires_at) -> bool:
+    # the backend stores naive UTC timestamps, so an offset-aware value is normalised before comparing
+    if not isinstance(expires_at, str):
+        return False
+    try:
+        expiry = datetime.fromisoformat(expires_at)
+    except ValueError:
+        return False
+    if expiry.tzinfo is not None:
+        expiry = expiry.astimezone(timezone.utc).replace(tzinfo=None)
+    return expiry <= datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _select_minted_key(api_keys: list) -> str | None:
+    # GET /keys lists dead keys too — a restored account can carry several rows named "Default"
+    usable = [
+        k for k in api_keys
+        if isinstance(k, dict)
+        and k.get("key")
+        and k.get("is_active", True)
+        and not _is_expired(k.get("expires_at"))
+    ]
+    if not usable:
+        return None
+
+    newest = max(usable, key=lambda k: (k.get("name") == MINTED_KEY_NAME, str(k.get("created_at") or "")))
+    return newest.get("key")
 
 
 class SignupAction:
@@ -129,11 +159,10 @@ class SignupAction:
         except (requests.RequestException, ValueError):
             return None
 
-        if not isinstance(api_keys, list) or not api_keys:
+        if not isinstance(api_keys, list):
             return None
 
-        minted_key = next((k for k in api_keys if k.get("name") == MINTED_KEY_NAME), api_keys[0])
-        return minted_key.get("key")
+        return _select_minted_key(api_keys)
 
     @staticmethod
     def _describe_failure(response: requests.Response) -> str:

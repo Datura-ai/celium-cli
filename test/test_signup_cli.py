@@ -74,6 +74,26 @@ def test_signup_stores_key_read_back_from_keys_endpoint(monkeypatch, stored_conf
     assert [c.rsplit("/api", 1)[-1] for c in calls] == ["/users", "/users/login", "/keys"]
 
 
+def test_signup_skips_dead_keys_and_stores_the_newest_live_one(monkeypatch, stored_config, ssh_setup_ok):
+    """GET /keys lists revoked and expired rows too; a restored account carries several named "Default"."""
+    monkeypatch.setattr(
+        signup_actions.requests, "post",
+        lambda url, **kwargs: FakeResponse(200, {"msg": "success"} if url.endswith("/users") else {"token": "jwt"}),
+    )
+    monkeypatch.setattr(signup_actions.requests, "get", lambda url, **kwargs: FakeResponse(200, [
+        {"name": "Default", "key": "sk_revoked", "is_active": False, "created_at": "2026-08-04T10:00:00"},
+        {"name": "Default", "key": "sk_expired", "is_active": True, "created_at": "2026-08-05T10:00:00",
+         "expires_at": "2020-01-01T00:00:00"},
+        {"name": "Default", "key": "sk_live", "is_active": True, "created_at": "2026-08-05T09:00:00"},
+        {"name": "ci", "key": "sk_other", "is_active": True, "created_at": "2030-01-01T00:00:00"},
+    ]))
+
+    result = CliRunner().invoke(cli, ["signup", "--email", "ada@example.com"])
+
+    assert result.exit_code == 0
+    assert stored_config["api.api_key"] == "sk_live"
+
+
 def test_signup_uses_key_returned_by_signup_response(monkeypatch, stored_config, ssh_setup_ok):
     """A backend that returns the key inline makes login + GET /keys unnecessary."""
     posted = []
