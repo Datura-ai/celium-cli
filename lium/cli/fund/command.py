@@ -9,7 +9,13 @@ from rich.prompt import Prompt
 
 from lium.sdk import Lium, LiumError
 from lium.cli import ui
-from lium.cli.utils import CliFailure, EXIT_CONFIGURATION_ERROR, handle_errors, _emit_json_error
+from lium.cli.utils import (
+    CliFailure,
+    EXIT_CONFIGURATION_ERROR,
+    EXIT_GENERAL_ERROR,
+    _emit_json_error,
+    handle_errors,
+)
 from lium.cli.settings import config
 from . import validation
 from .actions import (
@@ -53,8 +59,11 @@ def _legacy_tao_fund(wallet: Optional[str], amount: Optional[str], yes: bool) ->
     result = action.execute({"bt": bt, "wallet_name": wallet_name})
 
     if not result.ok:
-        ui.error(f"Failed to load wallet '{wallet_name}': {result.error}")
-        return
+        raise CliFailure(
+            "wallet_load_failed",
+            f"Failed to load wallet '{wallet_name}': {result.error}",
+            EXIT_CONFIGURATION_ERROR,
+        )
 
     bt_wallet = result.data["wallet"]
     wallet_address = result.data["address"]
@@ -70,8 +79,11 @@ def _legacy_tao_fund(wallet: Optional[str], amount: Optional[str], yes: bool) ->
     result = ui.load("Checking wallet registration", lambda: action.execute(ctx))
 
     if not result.ok:
-        ui.error(f"Failed to register wallet: {result.error}")
-        return
+        raise CliFailure(
+            "wallet_registration_failed",
+            f"Failed to register wallet: {result.error}",
+            EXIT_GENERAL_ERROR,
+        )
 
     if not amount:
         amount_str = Prompt.ask("Enter TAO amount to fund").strip()
@@ -80,8 +92,7 @@ def _legacy_tao_fund(wallet: Optional[str], amount: Optional[str], yes: bool) ->
 
     tao_amount, error = validation.validate_amount(amount_str)
     if error:
-        ui.error(error)
-        return
+        raise CliFailure("invalid_amount", error, EXIT_CONFIGURATION_ERROR)
 
     current_balance = ui.load("Loading balance", lambda: lium.balance())
     ui.info(f"Current balance: {current_balance} USD")
@@ -102,8 +113,7 @@ def _legacy_tao_fund(wallet: Optional[str], amount: Optional[str], yes: bool) ->
     result = action.execute(ctx)
 
     if not result.ok:
-        ui.error(f"Transfer failed: {result.error}")
-        return
+        raise CliFailure("transfer_failed", f"Transfer failed: {result.error}", EXIT_GENERAL_ERROR)
 
     ui.info("Done.")
 
