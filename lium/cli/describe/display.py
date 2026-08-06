@@ -21,7 +21,7 @@ def _uptime_hours(created_at: str) -> Optional[float]:
     return round((datetime.now(timezone.utc) - dt_created).total_seconds() / 3600, 2)
 
 
-def _port_number(port) -> object:
+def _port_number(port: str | int) -> int | str:
     """Port as a number when it is one; left untouched otherwise (e.g. "22/tcp")."""
     try:
         return int(port)

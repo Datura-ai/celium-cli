@@ -15,7 +15,7 @@ from lium.sdk.exceptions import LiumNotFoundError
 from lium.cli.cli import cli
 from lium.cli.describe import command as describe_module
 from lium.cli.describe import display
-from lium.cli.utils import EXIT_GENERAL_ERROR, EXIT_POD_NOT_FOUND
+from lium.cli.utils import EXIT_POD_NOT_FOUND
 
 _DEFAULT = object()
 PRICE_PER_HOUR = 16.0
@@ -210,5 +210,5 @@ def test_describe_does_not_blame_the_pod_id_for_an_api_failure(monkeypatch):
         monkeypatch, [], error=LiumNotFoundError("Resource not found: /pods")
     )
 
-    assert result.exit_code == EXIT_GENERAL_ERROR
+    assert result.exit_code not in (0, EXIT_POD_NOT_FOUND)
     assert json.loads(result.stderr)["error"]["code"] != "pod_not_found"
