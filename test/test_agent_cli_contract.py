@@ -430,7 +430,8 @@ def test_legacy_fund_reports_a_wallet_it_could_not_load(monkeypatch):
 
     result = CliRunner().invoke(cli, ["fund", "-w", "default", "-a", "1.5", "-y"])
 
-    assert result.exit_code == EXIT_API_ERROR
+    # An unreadable keyfile is a local setup problem, not the API refusing.
+    assert result.exit_code == EXIT_CONFIGURATION_ERROR
 
 
 def _run_up_past_the_rent(monkeypatch, extra_args, break_on):

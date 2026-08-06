@@ -354,7 +354,7 @@ def handle_errors(func):
         except LiumPermissionError as e:
             if json_output:
                 _emit_json_error("permission_denied", str(e), EXIT_PERMISSION_DENIED)
-            console.error(f"Error: {e}")
+            console.error(f"Error: {escape(str(e))}")
             raise SystemExit(EXIT_PERMISSION_DENIED)
         except LiumError as e:
             if json_output:
