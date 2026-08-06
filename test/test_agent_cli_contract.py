@@ -28,6 +28,7 @@ from lium.cli.utils import (
     EXIT_GENERAL_ERROR,
     EXIT_CONFIGURATION_ERROR,
     EXIT_PERMISSION_DENIED,
+    EXIT_SSH_ERROR,
     EXIT_POD_NOT_FOUND,
 )
 from lium.sdk import LiumPermissionError, LiumServerError
@@ -432,6 +433,61 @@ def test_legacy_fund_reports_a_wallet_it_could_not_load(monkeypatch):
     assert result.exit_code == EXIT_API_ERROR
 
 
+def _run_up_past_the_rent(monkeypatch, extra_args, break_on):
+    """Rent succeeds, then the named SDK call fails — the pod is already billing."""
+    from lium.cli.up import command as up_module
+
+    class _RentingLium:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def get_executor(self, executor_id):
+            return _executor("brave-orbit-b9", price_per_hour=1.0, download=100)
+
+        def default_docker_template(self, executor_id):
+            return SimpleNamespace(id="tpl-1", name="pytorch")
+
+        def get_deployment_estimate(self, executor_id, template_id):
+            return {}
+
+        def up(self, **kwargs):
+            return {"id": "pod-uuid-1234", "name": "brave-orbit-b9"}
+
+        def ps(self):
+            if break_on == "ps":
+                raise LiumServerError("Server error: 502")
+            return [SimpleNamespace(
+                id="pod-uuid-1234", huid="brave-orbit-b9", name="brave-orbit-b9",
+                status="RUNNING", ssh_cmd="ssh root@1.2.3.4",
+                # a second port, or InstallJupyterAction fails before it reaches the SDK
+                ports={"22": 10022, "8888": 18888},
+            )]
+
+        def schedule_termination(self, pod, termination_time=None):
+            raise LiumServerError("Server error: 502")
+
+        def install_jupyter(self, pod, jupyter_internal_port=None):
+            raise LiumServerError("Server error: 502")
+
+    monkeypatch.setattr(up_module, "Lium", _RentingLium)
+    monkeypatch.setattr(up_module, "ensure_config", lambda: None)
+    return CliRunner().invoke(cli, ["up", "some-node-id", "-y", "--no-ssh", *extra_args])
+
+
+@pytest.mark.parametrize(
+    "extra_args, break_on",
+    [([], "ps"), (["--ttl", "1h"], "schedule"), (["--jupyter"], "jupyter")],
+)
+def test_up_names_the_pod_it_already_rented_when_a_later_step_fails(
+    monkeypatch, extra_args, break_on
+):
+    """Past the rent the pod is billing: a failure that hides its id is unusable."""
+    result = _run_up_past_the_rent(monkeypatch, extra_args, break_on)
+
+    assert result.exit_code != 0
+    assert "pod-uuid-1234" in result.output or "brave-orbit-b9" in result.output
+
+
 def test_up_reports_an_api_failure_while_resolving_a_node(monkeypatch):
     """`up` used to flatten every SDK error into a generic exit 1."""
     from lium.cli.up import command as up_module
@@ -476,6 +532,48 @@ def test_ssh_to_a_missing_pod_fails(monkeypatch):
     result = CliRunner().invoke(cli, ["ssh", "no-such-pod-zz"])
 
     assert result.exit_code == EXIT_POD_NOT_FOUND
+
+
+def test_ssh_separates_its_own_failure_from_the_remote_shell(monkeypatch):
+    """255 is ssh failing to connect; anything else is the remote's own status."""
+    from lium.cli.ssh import actions as ssh_actions
+    from lium.cli.ssh import command as ssh_module
+
+    class _SshLium:
+        def __init__(self, *a, **kw):
+            pass
+
+        def ps(self):
+            return [SimpleNamespace(
+                id="pod-uuid-1", huid="eager-wolf-aa", name="my-pod",
+                status="RUNNING", ssh_cmd="ssh root@1.2.3.4",
+            )]
+
+        def ssh(self, pod):
+            return "ssh root@1.2.3.4"
+
+    monkeypatch.setattr(ssh_module, "Lium", _SshLium)
+
+    def _returncode(code):
+        monkeypatch.setattr(
+            ssh_actions.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=code)
+        )
+        return CliRunner().invoke(cli, ["ssh", "my-pod"])
+
+    assert _returncode(255).exit_code == EXIT_SSH_ERROR
+    assert _returncode(3).exit_code == 0
+
+
+def test_volumes_rm_without_a_cached_listing_fails(monkeypatch):
+    """"Run `lium volumes` first" is an instruction, not a completed removal."""
+    from lium.cli.volumes.rm import command as volumes_rm_module
+
+    monkeypatch.setattr(volumes_rm_module, "ensure_config", lambda: None)
+    monkeypatch.setattr(volumes_rm_module, "get_last_volume_selection", lambda: None)
+
+    result = CliRunner().invoke(cli, ["volumes", "rm", "1", "-y"])
+
+    assert result.exit_code == EXIT_GENERAL_ERROR
 
 
 def test_rsync_reports_a_pod_it_could_not_reach(tmp_path, monkeypatch):
