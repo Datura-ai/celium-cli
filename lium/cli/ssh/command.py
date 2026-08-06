@@ -103,12 +103,9 @@ def ssh_command(target: str):
         raise CliFailure("pod_not_found", "No active pods", EXIT_POD_NOT_FOUND)
 
     # Parse
-    parsed, error = parsing.parse(target, all_pods)
-    if error:
-        # "not found" is a miss; a pod that exists but cannot take a session is ssh's own failure.
-        if "not found" in error and "SSH connection" not in error:
-            raise CliFailure("pod_not_found", error, EXIT_POD_NOT_FOUND)
-        raise CliFailure("ssh_unavailable", error, EXIT_SSH_ERROR)
+    parsed, failure = parsing.parse(target, all_pods)
+    if failure:
+        raise failure
 
     pod = parsed.get("pod")
 

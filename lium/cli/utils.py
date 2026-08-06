@@ -260,15 +260,19 @@ def timed_step_status(step: int = 0, total_steps: int = 0, message: str = ""):
         raise
 
 
-# Exit codes published in docs/developers/cli/reference/index.md. Commands import
-# these rather than spelling the numbers, so the published table stays the one
-# source of truth.
-EXIT_GENERAL_ERROR = 1
-EXIT_CONFIGURATION_ERROR = 2
-EXIT_API_ERROR = 3
-EXIT_SSH_ERROR = 4
-EXIT_POD_NOT_FOUND = 5
-EXIT_PERMISSION_DENIED = 6
+# The exit-code taxonomy every command shares. Commands import these rather than
+# spelling the numbers, so this table is the one source of truth and
+# docs/developers/cli/reference/index.md mirrors it.
+#
+# ``lium provider …`` is the one exception: it keeps its own map in
+# lium/cli/provider/_render.py, where the same numbers carry different meanings
+# (2 auth, 3 portal, 5 ssh, 6 config missing, 7 token-cache contention).
+EXIT_GENERAL_ERROR = 1        # a failure with no better classification
+EXIT_CONFIGURATION_ERROR = 2  # bad arguments, missing or unreadable configuration
+EXIT_API_ERROR = 3            # the API refused or failed the call
+EXIT_SSH_ERROR = 4            # ssh could not connect, or no client is installed
+EXIT_POD_NOT_FOUND = 5        # the named pod does not exist
+EXIT_PERMISSION_DENIED = 6    # the account is not allowed to do this
 
 
 class CliFailure(Exception):
