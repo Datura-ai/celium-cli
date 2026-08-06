@@ -1134,7 +1134,7 @@ wheels = [
 
 [[package]]
 name = "lium-io"
-version = "0.0.29"
+version = "0.0.30"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
