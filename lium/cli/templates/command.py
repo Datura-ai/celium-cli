@@ -22,10 +22,6 @@ def templates_command(search: Optional[str]):
     action = GetTemplatesAction()
     result = ui.load("Loading templates", lambda: action.execute(ctx))
 
-    if not result.ok:
-        ui.error(result.error)
-        return
-
     templates = result.data["templates"]
 
     # Check if empty

@@ -107,28 +107,25 @@ class CheckWalletRegistrationAction:
         wallet_address = ctx["wallet_address"]
         bt_wallet = ctx["bt_wallet"]
 
-        try:
-            user_wallets = lium.wallets()
-            wallet_addresses = [w.get('wallet_hash', '') for w in user_wallets]
+        user_wallets = lium.wallets()
+        wallet_addresses = [w.get('wallet_hash', '') for w in user_wallets]
 
-            needs_registration = wallet_address not in wallet_addresses
+        needs_registration = wallet_address not in wallet_addresses
 
-            app_id = None
-            if needs_registration:
-                # add_wallet returns (app_id, customer_id) parsed from the same
-                # /tao/create-transfer round-trip; the alpha flow reuses app_id so
-                # it never issues a second create-transfer. The TAO flow ignores it.
-                registration = lium.add_wallet(bt_wallet)
-                if registration:
-                    app_id = registration[0]
-                time.sleep(2)  # Allow registration to complete
+        app_id = None
+        if needs_registration:
+            # add_wallet returns (app_id, customer_id) parsed from the same
+            # /tao/create-transfer round-trip; the alpha flow reuses app_id so
+            # it never issues a second create-transfer. The TAO flow ignores it.
+            registration = lium.add_wallet(bt_wallet)
+            if registration:
+                app_id = registration[0]
+            time.sleep(2)  # Allow registration to complete
 
-            return ActionResult(
-                ok=True,
-                data={"registered": not needs_registration, "app_id": app_id}
-            )
-        except Exception as e:
-            return ActionResult(ok=False, data={}, error=str(e))
+        return ActionResult(
+            ok=True,
+            data={"registered": not needs_registration, "app_id": app_id}
+        )
 
 
 class ExecuteTransferAction:

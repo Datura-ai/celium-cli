@@ -410,9 +410,6 @@ def up_command(
         })
     )
 
-    if not result.ok:
-        raise CliFailure("ssh_unavailable", result.error, EXIT_SSH_ERROR)
-
     ssh_cmd = result.data["ssh_cmd"]
     pod = result.data["pod"]
 

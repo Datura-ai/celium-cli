@@ -4,8 +4,7 @@ from typing import Optional
 
 import click
 
-from lium.cli import ui
-from lium.cli.utils import handle_errors
+from lium.cli.utils import CliFailure, EXIT_CONFIGURATION_ERROR, EXIT_GENERAL_ERROR, handle_errors
 from . import validation
 from .actions import SetConfigAction
 
@@ -27,8 +26,7 @@ def config_set_command(key: str, value: Optional[str]):
     # Validate
     valid, error = validation.validate(key)
     if not valid:
-        ui.error(error)
-        return
+        raise CliFailure("invalid_key", error, EXIT_CONFIGURATION_ERROR)
 
     # Execute
     ctx = {"key": key, "value": value or ""}
@@ -37,4 +35,4 @@ def config_set_command(key: str, value: Optional[str]):
     result = action.execute(ctx)
 
     if not result.ok:
-        ui.error(result.error)
+        raise CliFailure("config_set_failed", result.error, EXIT_GENERAL_ERROR)

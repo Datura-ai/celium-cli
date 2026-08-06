@@ -14,12 +14,23 @@ from types import SimpleNamespace
 import pytest
 from click.testing import CliRunner
 
+from lium.cli.actions import ActionResult
 from lium.cli.cli import cli
 from lium.cli.commands import exec as exec_module
 from lium.cli.ls import command as ls_command_module
 from lium.cli.ls import display as ls_display
+from lium.cli.ps import command as ps_module
+from lium.cli.reboot import command as reboot_module
+from lium.cli.rsync import command as rsync_module
 from lium.cli.rm import command as rm_module
-from lium.cli.utils import EXIT_CONFIGURATION_ERROR, EXIT_POD_NOT_FOUND
+from lium.cli.utils import (
+    EXIT_API_ERROR,
+    EXIT_GENERAL_ERROR,
+    EXIT_CONFIGURATION_ERROR,
+    EXIT_PERMISSION_DENIED,
+    EXIT_POD_NOT_FOUND,
+)
+from lium.sdk import LiumPermissionError, LiumServerError
 
 
 def _pod(huid: str = "eager-wolf-aa", name: str = "my-pod") -> SimpleNamespace:
@@ -330,10 +341,11 @@ def test_up_fails_when_ssh_is_unavailable(monkeypatch):
 
     monkeypatch.setattr("lium.cli.ssh.command.get_ssh_method_and_pod", _no_ssh)
 
-    result = up_actions.PrepareSSHAction().execute({"pod_name": "brave-orbit-b9"})
+    with pytest.raises(CliFailure) as raised:
+        up_actions.PrepareSSHAction().execute({"pod_name": "brave-orbit-b9"})
 
-    assert result.ok is False
-    assert "brave-orbit-b9" in result.error
+    assert raised.value.exit_code == EXIT_SSH_ERROR
+    assert "brave-orbit-b9" in raised.value.message
 
 
 @pytest.mark.parametrize(
@@ -356,3 +368,222 @@ def test_rm_all_treats_a_lost_terminal_as_no(monkeypatch):
     monkeypatch.setattr(rm_module.ui, "confirm", lambda message: (_ for _ in ()).throw(EOFError()))
 
     assert rm_module.human_approved_removing_every_pod([_pod()]) is False
+
+
+def _run_ps_raising(monkeypatch, error: Exception):
+    class _RaisingLium:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def ps(self):
+            raise error
+
+    monkeypatch.setattr(ps_module, "Lium", _RaisingLium)
+    return CliRunner().invoke(cli, ["ps"])
+
+
+def test_permission_denied_exits_with_its_own_code(monkeypatch):
+    """An unverified account is a fixable state, not a generic failure."""
+    result = _run_ps_raising(monkeypatch, LiumPermissionError("User is not verified"))
+
+    assert result.exit_code == EXIT_PERMISSION_DENIED
+
+
+def test_other_api_failures_exit_with_the_api_code(monkeypatch):
+    """Everything the API rejects for another reason is an API error, not code 1."""
+    result = _run_ps_raising(monkeypatch, LiumServerError("Server error: 502"))
+
+    assert result.exit_code == EXIT_API_ERROR
+
+
+@pytest.mark.parametrize("extra_args", [[], ["--format", "json"]])
+def test_ps_named_target_that_matches_nothing_fails(monkeypatch, extra_args):
+    """Asking for one pod by name and getting none is a miss in every format."""
+    monkeypatch.setattr(ps_module, "Lium", _FakeLium)
+
+    result = CliRunner().invoke(cli, ["ps", "no-such-pod-zz", *extra_args])
+
+    assert result.exit_code == EXIT_POD_NOT_FOUND
+
+
+def test_port_forward_to_a_missing_pod_fails(monkeypatch):
+    """A tunnel that was never opened must not report success to its caller."""
+    from lium.cli.port_forward import command as port_forward_module
+
+    monkeypatch.setattr(port_forward_module, "Lium", _FakeLium)
+
+    result = CliRunner().invoke(cli, ["port-forward", "no-such-pod-zz", "8000"])
+
+    assert result.exit_code == EXIT_POD_NOT_FOUND
+
+
+def test_legacy_fund_reports_a_wallet_it_could_not_load(monkeypatch):
+    """`lium fund` without --alpha is the default path, not dead code."""
+    from lium.cli.fund import command as fund_module
+
+    class _FailingLoadWallet:
+        def execute(self, ctx):
+            return ActionResult(ok=False, data={}, error="Keyfile not found")
+
+    monkeypatch.setattr(fund_module, "LoadWalletAction", _FailingLoadWallet)
+
+    result = CliRunner().invoke(cli, ["fund", "-w", "default", "-a", "1.5", "-y"])
+
+    assert result.exit_code == EXIT_API_ERROR
+
+
+def test_up_reports_an_api_failure_while_resolving_a_node(monkeypatch):
+    """`up` used to flatten every SDK error into a generic exit 1."""
+    from lium.cli.up import command as up_module
+
+    class _BrokenUpLium:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def get_executor(self, executor_id):
+            raise LiumServerError("Server error: 502")
+
+    monkeypatch.setattr(up_module, "Lium", _BrokenUpLium)
+    monkeypatch.setattr(up_module, "ensure_config", lambda: None)
+
+    result = CliRunner().invoke(cli, ["up", "some-node-id", "-y"])
+
+    assert result.exit_code == EXIT_API_ERROR
+
+
+def test_ls_reports_a_failed_market_listing(monkeypatch):
+    """"No nodes" and "the market is unreachable" must not look identical."""
+    class _BrokenLsLium:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def ls(self, **kwargs):
+            raise LiumServerError("Server error: 502")
+
+    monkeypatch.setattr(ls_command_module, "Lium", _BrokenLsLium)
+
+    result = CliRunner().invoke(cli, ["ls"])
+
+    assert result.exit_code == EXIT_API_ERROR
+
+
+def test_ssh_to_a_missing_pod_fails(monkeypatch):
+    """The ticket's own example: `lium ssh <typo>` printed a warning and exited 0."""
+    from lium.cli.ssh import command as ssh_module
+
+    monkeypatch.setattr(ssh_module, "Lium", _FakeLium)
+
+    result = CliRunner().invoke(cli, ["ssh", "no-such-pod-zz"])
+
+    assert result.exit_code == EXIT_POD_NOT_FOUND
+
+
+def test_rsync_reports_a_pod_it_could_not_reach(tmp_path, monkeypatch):
+    """A batch copy that skipped a pod must not read as "everything is in place"."""
+    class _RsyncLium:
+        def __init__(self, *a, **kw):
+            pass
+
+        def ps(self):
+            return [_pod()]
+
+        def rsync(self, *a, **kw):
+            raise LiumServerError("Server error: 502")
+
+    monkeypatch.setattr(rsync_module, "Lium", _RsyncLium)
+    local = tmp_path / "payload"
+    local.mkdir()
+
+    result = CliRunner().invoke(cli, ["rsync", "all", str(local)])
+
+    assert result.exit_code == EXIT_GENERAL_ERROR
+
+
+def _run_reboot(monkeypatch, args, pods):
+    class _RebootLium:
+        def __init__(self, *a, **kw):
+            pass
+
+        def ps(self):
+            return pods
+
+        def reboot(self, pod, volume_id=None):
+            raise LiumServerError("Server error: 502")
+
+    monkeypatch.setattr(reboot_module, "Lium", _RebootLium)
+    return CliRunner().invoke(cli, ["reboot", *args])
+
+
+def test_reboot_of_a_missing_pod_fails(monkeypatch):
+    """A named target that matches nothing is the `rm` asymmetry's failing half."""
+    result = _run_reboot(monkeypatch, ["no-such-pod-zz"], [])
+
+    assert result.exit_code == EXIT_POD_NOT_FOUND
+
+
+def test_reboot_all_on_an_empty_account_is_a_no_op(monkeypatch):
+    """`--all` says "whatever is there" — nothing there is the requested state."""
+    result = _run_reboot(monkeypatch, ["--all"], [])
+
+    assert result.exit_code == 0
+
+
+def test_reboot_reports_a_failed_item_after_finishing_the_batch(monkeypatch):
+    """Batch commands run to the end, then fail once — silence would hide it."""
+    result = _run_reboot(monkeypatch, ["--all"], [_pod()])
+
+    assert result.exit_code == EXIT_GENERAL_ERROR
+
+
+def test_bk_show_of_a_missing_pod_fails(monkeypatch):
+    """The whole bk family names one pod — a miss is a miss, not a silent skip."""
+    from lium.cli.bk.show import command as bk_show_module
+
+    monkeypatch.setattr(bk_show_module, "Lium", _FakeLium)
+    monkeypatch.setattr(bk_show_module, "ensure_config", lambda: None)
+
+    result = CliRunner().invoke(cli, ["bk", "show", "no-such-pod-zz"])
+
+    assert result.exit_code == EXIT_POD_NOT_FOUND
+
+
+def test_config_get_of_a_missing_key_fails(monkeypatch):
+    """`config get` is how a script reads state — a miss must not look like a hit."""
+    from lium.cli.config.get import actions as config_get_actions
+
+    monkeypatch.setattr(config_get_actions.config, "get", lambda key, default=None: None)
+
+    result = CliRunner().invoke(cli, ["config", "get", "api.api_key"])
+
+    assert result.exit_code == EXIT_GENERAL_ERROR
+
+
+def test_config_setup_failure_stops_the_command(monkeypatch):
+    """ensure_config() gates ~15 commands — a failed setup must not read as ready."""
+    from lium.cli import settings
+    from lium.cli.init import actions as init_actions
+
+    monkeypatch.setattr(settings.config, "get", lambda key, default=None: None)
+
+    class _FailingSetup:
+        def execute(self, ctx):
+            return ActionResult(ok=False, data={}, error="Invalid API key")
+
+    monkeypatch.setattr(init_actions, "SetupApiKeyAction", _FailingSetup)
+
+    result = CliRunner().invoke(cli, ["ps"])
+
+    assert result.exit_code == EXIT_CONFIGURATION_ERROR
+
+
+def test_ps_empty_account_is_not_a_failure(monkeypatch):
+    """Nothing rented is a legitimate state, not an error."""
+    class _EmptyLium(_FakeLium):
+        def ps(self):
+            return []
+
+    monkeypatch.setattr(ps_module, "Lium", _EmptyLium)
+
+    result = CliRunner().invoke(cli, ["ps"])
+
+    assert result.exit_code == 0

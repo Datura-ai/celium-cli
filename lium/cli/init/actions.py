@@ -33,10 +33,7 @@ class RequestAuthUrlAction:
         if current_key:
             return ActionResult(ok=True, data={"already_configured": True})
 
-        try:
-            browser_url, session_id = init_auth()
-        except Exception as e:
-            return ActionResult(ok=False, data={}, error=f"Failed to request auth URL: {e}")
+        browser_url, session_id = init_auth()
 
         ui.info("Open this URL to authenticate:")
         ui.print(f"\n  {browser_url}\n")

@@ -6,7 +6,7 @@ import click
 
 from lium.sdk import Lium
 from lium.cli import ui
-from lium.cli.utils import handle_errors, ensure_config
+from lium.cli.utils import CliFailure, EXIT_POD_NOT_FOUND, handle_errors, ensure_config
 from . import display
 from .actions import GetPodsAction
 
@@ -35,23 +35,14 @@ def ps_command(pod_id: Optional[str], output_format: str):
     else:
         result = ui.load("Loading pods", lambda: action.execute(ctx))
 
-    if not result.ok:
-        ui.error(result.error)
-        return
-
     pods = result.data["pods"]
 
     # Filter by pod_id if provided
-    if pod_id and pods:
+    if pod_id:
         pod = next((p for p in pods if p.id == pod_id or p.huid == pod_id or p.name == pod_id), None)
-        if pod:
-            pods = [pod]
-        else:
-            if output_format == "json":
-                click.echo("[]")
-            else:
-                ui.error(f"Pod '{pod_id}' not found")
-            return
+        if not pod:
+            raise CliFailure("pod_not_found", f"Pod '{pod_id}' not found", EXIT_POD_NOT_FOUND)
+        pods = [pod]
 
     # Check if empty
     if not pods:

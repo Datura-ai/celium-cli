@@ -20,10 +20,15 @@ class LiumNotFoundError(LiumError):
     """Resource not found (404)."""
 
 
+class LiumPermissionError(LiumError):
+    """The account is not allowed to do this (403)."""
+
+
 __all__ = [
     "LiumError",
     "LiumAuthError",
     "LiumRateLimitError",
     "LiumServerError",
     "LiumNotFoundError",
+    "LiumPermissionError",
 ]

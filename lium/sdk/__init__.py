@@ -7,6 +7,7 @@ from .exceptions import (
     LiumAuthError,
     LiumError,
     LiumNotFoundError,
+    LiumPermissionError,
     LiumRateLimitError,
     LiumServerError,
 )
@@ -38,5 +39,6 @@ __all__ = [
     "LiumRateLimitError",
     "LiumServerError",
     "LiumNotFoundError",
+    "LiumPermissionError",
     "machine",
 ]

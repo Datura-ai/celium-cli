@@ -8,7 +8,7 @@ import click
 from lium.cli.settings import config
 from datetime import datetime
 from rich.status import Status
-from lium.sdk import LiumError, ExecutorInfo, PodInfo,Lium
+from lium.sdk import LiumError, LiumPermissionError, ExecutorInfo, PodInfo,Lium
 from .themed_console import ThemedConsole
 from dataclasses import dataclass
 from rich.markup import escape
@@ -345,11 +345,16 @@ def handle_errors(func):
             else:
                 console.error(f"Error: {escape(str(e))}")
             raise SystemExit(EXIT_CONFIGURATION_ERROR)
+        except LiumPermissionError as e:
+            if json_output:
+                _emit_json_error("permission_denied", str(e), EXIT_PERMISSION_DENIED)
+            console.error(f"Error: {e}")
+            raise SystemExit(EXIT_PERMISSION_DENIED)
         except LiumError as e:
             if json_output:
-                _emit_json_error("lium_error", str(e))
+                _emit_json_error("lium_error", str(e), EXIT_API_ERROR)
             console.error(f"Error: {escape(str(e))}")
-            raise SystemExit(EXIT_GENERAL_ERROR)
+            raise SystemExit(EXIT_API_ERROR)
         except Exception as e:
             if json_output:
                 _emit_json_error("unexpected_error", str(e))
@@ -786,12 +791,16 @@ def ensure_config():
     if not config.get('api.api_key'):
         # Setup API key
         action = SetupApiKeyAction()
-        action.execute({})
+        result = action.execute({})
+        if not result.ok:
+            raise CliFailure("api_key_setup_failed", result.error, EXIT_CONFIGURATION_ERROR)
 
     if not config.get('ssh.key_path'):
         # Setup SSH key
         action = SetupSshKeyAction()
-        action.execute({})
+        result = action.execute({})
+        if not result.ok:
+            raise CliFailure("ssh_key_setup_failed", result.error, EXIT_CONFIGURATION_ERROR)
 
 
 def ensure_backup_params(

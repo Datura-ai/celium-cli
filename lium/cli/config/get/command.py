@@ -3,7 +3,7 @@
 import click
 
 from lium.cli import ui
-from lium.cli.utils import handle_errors
+from lium.cli.utils import CliFailure, EXIT_CONFIGURATION_ERROR, EXIT_GENERAL_ERROR, handle_errors
 from . import validation
 from .actions import GetConfigAction
 
@@ -24,8 +24,7 @@ def config_get_command(key: str):
     # Validate
     valid, error = validation.validate(key)
     if not valid:
-        ui.error(error)
-        return
+        raise CliFailure("invalid_key", error, EXIT_CONFIGURATION_ERROR)
 
     # Execute
     ctx = {"key": key}
@@ -34,8 +33,7 @@ def config_get_command(key: str):
     result = action.execute(ctx)
 
     if not result.ok:
-        ui.error(result.error)
-        return
+        raise CliFailure("key_not_found", result.error, EXIT_GENERAL_ERROR)
 
     value = result.data.get("value")
     styled_value = mask_value(value, key)
