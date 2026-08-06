@@ -136,3 +136,37 @@ def test_the_extra_is_gated_on_python_version():
     provider_requirements = OPTIONAL["provider"]
 
     assert all("python_version < '3.14'" in r for r in provider_requirements), provider_requirements
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["fund", "-w", "default", "-a", "1", "-y"],
+        ["fund", "--alpha", "-k", "test", "-w", "default", "-a", "1", "-y"],
+    ],
+)
+def test_every_error_path_keeps_the_extra_name_intact(monkeypatch, command):
+    """Rich reads square brackets as style tags, so `lium.io[provider]` is fragile.
+
+    The alpha path raises LiumError rather than CliFailure, and only escaping the
+    CliFailure branch left it advising `pip install "lium.io"` — the package the
+    caller already has.
+    """
+    import builtins
+
+    from click.testing import CliRunner
+
+    from lium.cli.cli import cli
+
+    real_import = builtins.__import__
+
+    def _no_bittensor(name, *args, **kwargs):
+        if name == "bittensor":
+            raise ImportError("No module named 'bittensor'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_bittensor)
+
+    result = CliRunner().invoke(cli, command)
+
+    assert 'lium.io[provider]' in result.output, result.output
