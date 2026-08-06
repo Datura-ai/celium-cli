@@ -152,16 +152,18 @@ class BackupParams:
 
 @contextmanager
 def loading_status(message: str, success_message: str = ""):
-    """Universal context manager to show loading status."""
+    """Universal context manager to show loading status.
+
+    A failure is not reported here. ``handle_errors`` is the one place that
+    renders an error, and a spinner that prints its own line first makes a
+    single failure read as two separate problems.
+    """
     status = Status(f"{console.get_styled(message + '...', 'info')}", console=console)
     status.start()
     try:
         yield
         if success_message:
             console.success(f"✓ {success_message}")
-    except Exception as e:
-        console.error(f"✗ Failed: {e}")
-        raise
     finally:
         status.stop()
 

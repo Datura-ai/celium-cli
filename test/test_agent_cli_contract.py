@@ -685,3 +685,40 @@ def test_ps_empty_account_is_not_a_failure(monkeypatch):
     result = CliRunner().invoke(cli, ["ps"])
 
     assert result.exit_code == 0
+
+
+def test_a_failure_under_the_spinner_is_reported_once(monkeypatch):
+    """The spinner printed its own line, so one failure read as two problems."""
+    class _BrokenLsLium:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def ls(self, **kwargs):
+            raise LiumServerError("Server error: 502")
+
+    monkeypatch.setattr(ls_command_module, "Lium", _BrokenLsLium)
+
+    result = CliRunner().invoke(cli, ["ls"])
+
+    assert result.exit_code == EXIT_API_ERROR
+    assert result.output.count("502") == 1
+
+
+def test_port_forward_lists_the_ports_it_has_below_the_error(monkeypatch):
+    """The hint explains the error, so it must not be printed above it."""
+    from lium.cli.port_forward import command as port_forward_module
+
+    class _PodWithPorts(_FakeLium):
+        def ps(self):
+            pod = _pod()
+            pod.status = "running"
+            pod.ports = {"22": 30022}
+            pod.executor = SimpleNamespace(ip="1.2.3.4")
+            return [pod]
+
+    monkeypatch.setattr(port_forward_module, "Lium", _PodWithPorts)
+
+    result = CliRunner().invoke(cli, ["port-forward", "my-pod", "8000"])
+
+    assert result.exit_code == EXIT_GENERAL_ERROR
+    assert result.output.index("not exposed") < result.output.index("Available internal ports")

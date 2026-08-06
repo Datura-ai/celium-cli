@@ -102,13 +102,12 @@ def port_forward_command(target: str, port: int, local_port: Optional[int]):
     external_port = get_port_mapping(pod, port)
     if not external_port:
         available_ports = list(pod.ports.keys()) if pod.ports else []
+        # The hint travels inside the message: printed on its own it would land
+        # above the error it explains, because the error is rendered on the way out.
+        message = f"Port {port} is not exposed on pod '{pod.huid}'"
         if available_ports:
-            ui.dim(f"Available internal ports: {', '.join(available_ports)}")
-        raise CliFailure(
-            "port_not_exposed",
-            f"Port {port} is not exposed on pod '{pod.huid}'",
-            EXIT_GENERAL_ERROR,
-        )
+            message += f"\nAvailable internal ports: {', '.join(available_ports)}"
+        raise CliFailure("port_not_exposed", message, EXIT_GENERAL_ERROR)
 
     host = pod.executor.ip if pod.executor else pod.host
     if not host:
