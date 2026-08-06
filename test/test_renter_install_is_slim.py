@@ -7,12 +7,15 @@ optional chain dependencies absent.
 """
 
 import inspect
+import json
 import subprocess
 import sys
 import tomllib
 from pathlib import Path
 
 import pytest
+
+from lium.cli.utils import EXIT_CONFIGURATION_ERROR
 
 PYPROJECT = tomllib.loads(Path("pyproject.toml").read_text())
 REQUIRED = PYPROJECT["project"]["dependencies"]
@@ -169,4 +172,36 @@ def test_every_error_path_keeps_the_extra_name_intact(monkeypatch, command):
 
     result = CliRunner().invoke(cli, command)
 
-    assert 'lium.io[provider]' in result.output, result.output
+    assert "lium.io[provider]" in result.output, result.output
+    assert result.exit_code == EXIT_CONFIGURATION_ERROR
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["fund", "-w", "default", "-a", "1", "-y", "--json"],
+        ["fund", "--alpha", "-k", "test", "-w", "default", "-a", "1", "-y", "--json"],
+    ],
+)
+def test_both_fund_paths_report_the_same_machine_readable_code(monkeypatch, command):
+    """A generic error code tells an agent nothing about what to install."""
+    import builtins
+
+    from click.testing import CliRunner
+
+    from lium.cli.cli import cli
+
+    real_import = builtins.__import__
+
+    def _no_bittensor(name, *args, **kwargs):
+        if name == "bittensor":
+            raise ImportError("No module named 'bittensor'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_bittensor)
+
+    result = CliRunner().invoke(cli, command)
+
+    envelope = json.loads(result.stderr)
+    assert envelope["error"]["code"] == "provider_extra_missing"
+    assert result.exit_code == EXIT_CONFIGURATION_ERROR

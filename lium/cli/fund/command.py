@@ -139,7 +139,11 @@ def _alpha_fund(
     try:
         import bittensor as bt
     except ImportError:
-        raise LiumError(f"TAO funding needs the chain stack. Reason: {missing_chain_stack_message()}")
+        raise CliFailure(
+            "provider_extra_missing",
+            f"TAO funding needs the chain stack. Reason: {missing_chain_stack_message()}",
+            EXIT_CONFIGURATION_ERROR,
+        )
 
     # In non-interactive (--json) mode we never prompt, so every required arg must be
     # supplied up front. Validate presence here — hotkey, then wallet, then amount —
