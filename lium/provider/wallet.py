@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from lium.provider.chain_stack import missing_chain_stack_message
 from lium.provider.errors import (
     WALLET_NOT_FOUND,
     ProviderConfigError,
@@ -46,7 +47,7 @@ def load_hotkey_keypair(
             import bittensor  # type: ignore[import-not-found]
         except ImportError as e:  # pragma: no cover - dep missing
             raise ProviderConfigError(
-                "bittensor is required to load wallets; install with `pip install lium.io`",
+                f"loading a wallet needs the chain stack. Reason: {missing_chain_stack_message()}",
                 cause=e,
             ) from e
         wallet_factory = bittensor.Wallet

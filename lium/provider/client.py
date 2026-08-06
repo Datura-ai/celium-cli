@@ -49,10 +49,12 @@ from lium.provider._routes import (
     UPDATE_PRICE,
 )
 from lium.provider.auth import LocalKeypairSigner, Signer, build_login_payload
+from lium.provider.chain_stack import missing_chain_stack_message
 from lium.provider.errors import (
     ARG_INVALID,
     PORTAL_AUTH_INVALID,
     ProviderAuthError,
+    ProviderConfigError,
     ProviderError,
 )
 from lium.provider.models import (
@@ -294,6 +296,8 @@ class ProviderClient:
             )
             out.registered_on_subnet = registered
             out.validator_weights = weights
+        except ProviderError as e:
+            warnings.append(f"metagraph: {e}")
         except Exception as e:  # pragma: no cover - bittensor path
             warnings.append(f"metagraph: {type(e).__name__}")
 
@@ -760,8 +764,14 @@ def _read_metagraph(
     if factory is None:
         try:
             import bittensor  # type: ignore[import-not-found]
-        except ImportError:
-            return None, []
+        except ImportError as e:
+            # Reachable since DAH-2553 made bittensor an extra. Say so, or the
+            # caller reports "registered: unknown" with no way to learn why.
+            raise ProviderConfigError(
+                f"subnet registration needs the chain stack. Reason: "
+                f"{missing_chain_stack_message()}",
+                cause=e,
+            )
         factory = bittensor.metagraph
 
     metagraph = factory(netuid=netuid) if callable(factory) else factory

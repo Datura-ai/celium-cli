@@ -161,19 +161,23 @@ def test_install_script_resolves_version_from_release_url_override():
     assert result.stdout.strip() == "0.1.3"
 
 
-def test_release_workflow_publishes_onedir_and_legacy_assets():
+def test_release_workflow_publishes_only_the_onedir_bundle():
+    """The bare single-file asset is gone (DAH-2553).
+
+    It existed for the self-update shipped before the onedir switch in 0.0.25.
+    GitHub download counts show it was fetched zero times across 0.0.26, 0.0.27
+    and 0.0.28, and anyone still on an older build gets the reinstall prompt.
+    """
     workflow_text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
 
     for base in SUPPORTED_TARGETS.values():
         asset = base + ASSET_SUFFIX
         assert f"name: {base}" in workflow_text
-        # Primary onedir bundle.
         assert asset in workflow_text
         assert f"{asset}.sha256" in workflow_text
-        # Legacy single-file asset kept for the self-update shipped in
-        # pre-onedir releases. f"{base}.sha256" is not a substring of
-        # f"{base}.tar.gz.sha256", so this genuinely asserts the bare checksum.
-        assert f"{base}.sha256" in workflow_text
+        # f"{base}.sha256" is not a substring of f"{base}.tar.gz.sha256", so this
+        # genuinely asserts the bare checksum is no longer produced.
+        assert f"{base}.sha256" not in workflow_text
 
 
 def test_install_script_fresh_install_uses_versioned_symlink_layout(tmp_path: Path):

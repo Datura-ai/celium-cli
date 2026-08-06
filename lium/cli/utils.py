@@ -11,6 +11,7 @@ from rich.status import Status
 from lium.sdk import LiumError, ExecutorInfo, PodInfo,Lium
 from .themed_console import ThemedConsole
 from dataclasses import dataclass
+from rich.markup import escape
 from rich.prompt import Prompt
 
 T = TypeVar("T")
@@ -305,6 +306,9 @@ def _emit_json_error(code: str, message: str, exit_code: int = EXIT_GENERAL_ERRO
 def handle_errors(func):
     """Decorator to handle CLI errors gracefully.
 
+    Messages are escaped before rendering: they carry things like
+    ``lium.io[provider]``, and Rich reads square brackets as style tags.
+
     Every handled error exits non-zero. A caller chaining commands with ``&&``
     can only see failure through the exit code, so reporting an error and then
     exiting 0 tells it the command worked.
@@ -324,7 +328,7 @@ def handle_errors(func):
         except CliFailure as e:
             if json_output:
                 _emit_json_error(e.code, e.message, e.exit_code, e.data)
-            console.error(e.message)
+            console.error(escape(e.message))
             raise SystemExit(e.exit_code)
         except ValueError as e:
             is_missing_api_key = "No API key found" in str(e)
@@ -339,17 +343,17 @@ def handle_errors(func):
                 console.warning("Please run 'lium init' to set up your API key")
                 console.dim("Or set LIUM_API_KEY environment variable")
             else:
-                console.error(f"Error: {e}")
+                console.error(f"Error: {escape(str(e))}")
             raise SystemExit(EXIT_CONFIGURATION_ERROR)
         except LiumError as e:
             if json_output:
                 _emit_json_error("lium_error", str(e))
-            console.error(f"Error: {e}")
+            console.error(f"Error: {escape(str(e))}")
             raise SystemExit(EXIT_GENERAL_ERROR)
         except Exception as e:
             if json_output:
                 _emit_json_error("unexpected_error", str(e))
-            console.error(f"Unexpected error: {e}")
+            console.error(f"Unexpected error: {escape(str(e))}")
             raise SystemExit(EXIT_GENERAL_ERROR)
     return wrapper
 
