@@ -8,7 +8,7 @@ import click
 from lium.sdk import Lium, PodInfo
 from lium.cli import ui
 from lium.cli.utils import handle_errors, parse_targets
-from lium.cli.utils import CliFailure, EXIT_POD_NOT_FOUND, EXIT_SSH_ERROR
+from lium.cli.utils import CliFailure, EXIT_CONFIGURATION_ERROR, EXIT_POD_NOT_FOUND, EXIT_SSH_ERROR
 from . import validation, parsing
 from .actions import SshAction
 
@@ -91,22 +91,21 @@ def ssh_command(target: str):
     # Validate
     valid, error = validation.validate(target)
     if not valid:
-        ui.error(error)
-        return
+        if "'ssh' command not found" in error:
+            raise CliFailure("ssh_client_missing", error, EXIT_SSH_ERROR)
+        raise CliFailure("invalid_arguments", error, EXIT_CONFIGURATION_ERROR)
 
     # Load data
     lium = Lium()
     all_pods = ui.load("Loading pods", lambda: lium.ps())
 
     if not all_pods:
-        ui.warning("No active pods")
-        return
+        raise CliFailure("pod_not_found", "No active pods", EXIT_POD_NOT_FOUND)
 
     # Parse
-    parsed, error = parsing.parse(target, all_pods)
-    if error:
-        ui.error(error)
-        return
+    parsed, failure = parsing.parse(target, all_pods)
+    if failure:
+        raise failure
 
     pod = parsed.get("pod")
 
@@ -116,8 +115,12 @@ def ssh_command(target: str):
     action = SshAction()
     result = action.execute(ctx)
 
-    if not result.ok:
-        if result.error:
-            ui.error(result.error)
-        elif result.data.get("exit_code"):
-            ui.dim(f"SSH session ended with exit code {result.data['exit_code']}")
+    exit_code = result.data.get("exit_code")
+    if exit_code == _SSH_CONNECTION_FAILED:
+        raise CliFailure(
+            "ssh_failed",
+            f"SSH connection to '{pod.huid}' failed",
+            EXIT_SSH_ERROR,
+        )
+    if exit_code:
+        ui.dim(f"SSH session ended with exit code {exit_code}")

@@ -3,7 +3,14 @@ from typing import Optional
 import click
 
 from lium.cli import ui
-from lium.cli.utils import ensure_config, handle_errors
+from lium.cli.utils import (
+    CliFailure,
+    EXIT_CONFIGURATION_ERROR,
+    EXIT_GENERAL_ERROR,
+    EXIT_POD_NOT_FOUND,
+    handle_errors,
+    ensure_config,
+)
 from lium.sdk import Lium
 
 from . import display, parsing, validation
@@ -20,8 +27,7 @@ def bk_restore_logs_command(pod_id: Optional[str], restore_id: Optional[str]):
 
     valid, error = validation.validate(pod_id, restore_id)
     if not valid:
-        ui.error(error)
-        return
+        raise CliFailure("invalid_arguments", error, EXIT_CONFIGURATION_ERROR)
 
     lium = Lium()
 
@@ -31,8 +37,7 @@ def bk_restore_logs_command(pod_id: Optional[str], restore_id: Optional[str]):
         result = ui.load("Loading restore details", lambda: action.execute(ctx))
 
         if not result.ok:
-            ui.error(result.error)
-            return
+            raise CliFailure("restore_not_found", result.error, EXIT_GENERAL_ERROR)
 
         pod_name_found = result.data.get("pod_name")
         log = result.data.get("log")
@@ -58,12 +63,7 @@ def bk_restore_logs_command(pod_id: Optional[str], restore_id: Optional[str]):
     result, error = ui.load("Loading restore logs", load_logs)
 
     if error:
-        ui.error(error)
-        return
-
-    if result and result.error:
-        ui.error(result.error)
-        return
+        raise CliFailure("pod_not_found", error, EXIT_POD_NOT_FOUND)
 
     logs = result.data.get("logs")
 

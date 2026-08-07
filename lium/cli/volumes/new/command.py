@@ -21,7 +21,4 @@ def volumes_new_command(name: str, desc: Optional[str]):
     ctx = {"lium": lium, "name": name, "description": desc or ""}
 
     action = CreateVolumeAction()
-    result = ui.load(f"Creating volume '{name}'", lambda: action.execute(ctx))
-
-    if not result.ok:
-        ui.error(result.error)
+    ui.load(f"Creating volume '{name}'", lambda: action.execute(ctx))

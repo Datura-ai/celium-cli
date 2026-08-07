@@ -22,10 +22,6 @@ def ssh_keys_list_command():
     action = GetSSHKeysAction()
     result = ui.load("Loading SSH keys", lambda: action.execute(ctx))
 
-    if not result.ok:
-        ui.error(result.error)
-        return
-
     keys = result.data["keys"]
 
     if not keys:

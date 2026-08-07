@@ -97,10 +97,6 @@ def ls_command(
     else:
         result = ui.load("Loading nodes", lambda: action.execute(ctx))
 
-    if not result.ok:
-        ui.error(result.error)
-        return
-
     executors = result.data["executors"]
 
     # Check if empty

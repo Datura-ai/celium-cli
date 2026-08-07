@@ -28,10 +28,6 @@ def ssh_keys_sync_command():
     action = SyncSSHKeysAction()
     result = ui.load("Syncing SSH keys", lambda: action.execute(ctx))
 
-    if not result.ok:
-        ui.error(result.error)
-        return
-
     registered = result.data["registered"]
     legacy = result.data["legacy"]
     already = result.data["already_registered"]

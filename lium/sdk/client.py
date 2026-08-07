@@ -27,6 +27,7 @@ from .exceptions import (
     LiumAuthError,
     LiumError,
     LiumNotFoundError,
+    LiumPermissionError,
     LiumRateLimitError,
     LiumServerError,
 )
@@ -104,6 +105,8 @@ class Lium:
         # Map errors
         if resp.status_code == 401:
             raise LiumAuthError("Invalid API key")
+        if resp.status_code == 403:
+            raise LiumPermissionError(f"Permission denied: {resp.text}")
         if resp.status_code == 404:
             raise LiumNotFoundError(f"Resource not found: {resp.text}")
         if resp.status_code == 429:
@@ -435,6 +438,8 @@ class Lium:
             if not response.ok:
                 if response.status_code == 401:
                     raise LiumAuthError("Invalid API key")
+                if response.status_code == 403:
+                    raise LiumPermissionError(f"Permission denied: {response.text}")
                 if response.status_code == 404:
                     raise LiumNotFoundError(f"Pod not found: {pod_id}")
                 if response.status_code == 429:

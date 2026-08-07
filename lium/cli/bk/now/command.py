@@ -6,7 +6,14 @@ import click
 
 from lium.sdk import Lium
 from lium.cli import ui
-from lium.cli.utils import handle_errors, ensure_config
+from lium.cli.utils import (
+    CliFailure,
+    EXIT_CONFIGURATION_ERROR,
+    EXIT_GENERAL_ERROR,
+    EXIT_POD_NOT_FOUND,
+    handle_errors,
+    ensure_config,
+)
 from . import validation, parsing
 from .actions import TriggerBackupAction
 
@@ -23,22 +30,19 @@ def bk_now_command(pod_id: str, name: Optional[str], description: Optional[str])
     # Validate
     valid, error = validation.validate(pod_id)
     if not valid:
-        ui.error(error)
-        return
+        raise CliFailure("invalid_arguments", error, EXIT_CONFIGURATION_ERROR)
 
     # Load data
     lium = Lium()
     all_pods = ui.load("Loading pods", lambda: lium.ps())
 
     if not all_pods:
-        ui.warning("No active pods")
-        return
+        raise CliFailure("pod_not_found", "No active pods", EXIT_POD_NOT_FOUND)
 
     # Parse
     parsed, error = parsing.parse(pod_id, name, description, all_pods)
     if error:
-        ui.error(error)
-        return
+        raise CliFailure("pod_not_found", error, EXIT_POD_NOT_FOUND)
 
     pod = parsed.get("pod")
     pod_name = parsed.get("pod_name")
@@ -58,8 +62,7 @@ def bk_now_command(pod_id: str, name: Optional[str], description: Optional[str])
     result = ui.load(f"Triggering backup '{backup_name}'", lambda: action.execute(ctx))
 
     if not result.ok:
-        ui.error(result.error)
-        return
+        raise CliFailure("no_backup_config", result.error, EXIT_GENERAL_ERROR)
 
     backup = result.data.get("backup") or {}
     backup_log_id = backup.get("backup_log_id")

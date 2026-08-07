@@ -22,16 +22,10 @@ class SshAction:
 
         try:
             result = subprocess.run(ssh_cmd, shell=True, check=False)
-
-            if result.returncode != 0 and result.returncode != 255:
-                return ActionResult(
-                    ok=False,
-                    data={"exit_code": result.returncode}
-                )
-
+        except KeyboardInterrupt:
+            # Ctrl+C out of a session is the user's own doing, not a lium failure.
+            ui.warning("\nSSH session interrupted")
             return ActionResult(ok=True, data={})
 
-        except KeyboardInterrupt:
-            return ActionResult(ok=False, data={}, error="SSH session interrupted")
-        except Exception as e:
-            return ActionResult(ok=False, data={}, error=str(e))
+        # A non-zero remote shell is the remote's business; 255 is ssh itself.
+        return ActionResult(ok=True, data={"exit_code": result.returncode})

@@ -247,8 +247,6 @@ def up_command(
                 "ports": ports_list,
             })
         )
-        if not result.ok:
-            raise CliFailure("template_failed", result.error, EXIT_GENERAL_ERROR)
         template = result.data["template"]
     else:
         action = ResolveTemplateAction()
@@ -295,9 +293,6 @@ def up_command(
             })
         )
 
-        if not result.ok:
-            raise CliFailure("volume_failed", result.error, EXIT_GENERAL_ERROR)
-
         volume_id = result.data["volume_id"]
 
     action = RentPodAction()
@@ -316,59 +311,56 @@ def up_command(
         })
     )
 
-    if not result.ok:
-        raise CliFailure("rent_failed", result.error, EXIT_GENERAL_ERROR)
-
     pod_id = result.data["pod_id"]
     pod_name = result.data["pod_name"]
 
+    # The pod is rented and already billing from here on. Every failure below
+    # names it before propagating, or the caller cannot clean up what it pays for.
     action = WaitReadyAction()
-    result = ui.load(
-        "Loading image",
-        lambda: action.execute({
-            "lium": lium,
-            "pod_id": pod_id
-        })
-    )
-
-    if not result.ok:
-        # The pod is rented and already billing. Name it before failing, or the
-        # caller cannot clean up what it is now paying for.
+    try:
+        result = ui.load(
+            "Loading image",
+            lambda: action.execute({
+                "lium": lium,
+                "pod_id": pod_id
+            })
+        )
+    except Exception:
         ui.error(f"Pod {pod_name} (id: {pod_id}) was created but did not become ready")
-        raise CliFailure("pod_not_ready", result.error, EXIT_GENERAL_ERROR)
+        raise
 
     pod = result.data["pod"]
     pod_label = f"Pod {ui.styled(pod.huid, 'pod_id')} (name: {pod_name}, id: {pod_id})"
 
     if termination_time:
         action = ScheduleTerminationAction()
-        result = ui.load(
-            "Scheduling termination",
-            lambda: action.execute({
-                "lium": lium,
-                "pod": pod,
-                "termination_time": termination_time
-            })
-        )
-
-        if not result.ok:
-            ui.info(pod_label)
-            raise CliFailure(
-                "termination_not_scheduled",
-                f"Pod is running but auto-termination was NOT scheduled: {result.error}",
-                EXIT_GENERAL_ERROR,
+        try:
+            ui.load(
+                "Scheduling termination",
+                lambda: action.execute({
+                    "lium": lium,
+                    "pod": pod,
+                    "termination_time": termination_time
+                })
             )
+        except Exception:
+            ui.info(f"{pod_label} is running but auto-termination was NOT scheduled")
+            raise
 
     if jupyter:
         action = InstallJupyterAction()
-        result = ui.load(
-            "Installing Jupyter",
-            lambda: action.execute({
-                "lium": lium,
-                "pod": pod,
-                "ui": ui
-            })
-        )
+        try:
+            result = ui.load(
+                "Installing Jupyter",
+                lambda: action.execute({
+                    "lium": lium,
+                    "pod": pod,
+                    "ui": ui
+                })
+            )
+        except Exception:
+            ui.info(f"{pod_label} is running but Jupyter was NOT installed")
+            raise
 
         if not result.ok:
             ui.info(pod_label)
@@ -409,9 +401,6 @@ def up_command(
             "pod_name": pod_name
         })
     )
-
-    if not result.ok:
-        raise CliFailure("ssh_unavailable", result.error, EXIT_SSH_ERROR)
 
     ssh_cmd = result.data["ssh_cmd"]
     pod = result.data["pod"]

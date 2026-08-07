@@ -8,7 +8,7 @@ import click
 from lium.cli.settings import config
 from datetime import datetime
 from rich.status import Status
-from lium.sdk import LiumError, ExecutorInfo, PodInfo,Lium
+from lium.sdk import LiumError, LiumPermissionError, ExecutorInfo, PodInfo,Lium
 from .themed_console import ThemedConsole
 from dataclasses import dataclass
 from rich.markup import escape
@@ -152,16 +152,18 @@ class BackupParams:
 
 @contextmanager
 def loading_status(message: str, success_message: str = ""):
-    """Universal context manager to show loading status."""
+    """Universal context manager to show loading status.
+
+    A failure is not reported here. ``handle_errors`` is the one place that
+    renders an error, and a spinner that prints its own line first makes a
+    single failure read as two separate problems.
+    """
     status = Status(f"{console.get_styled(message + '...', 'info')}", console=console)
     status.start()
     try:
         yield
         if success_message:
             console.success(f"✓ {success_message}")
-    except Exception as e:
-        console.error(f"✗ Failed: {e}")
-        raise
     finally:
         status.stop()
 
@@ -258,15 +260,19 @@ def timed_step_status(step: int = 0, total_steps: int = 0, message: str = ""):
         raise
 
 
-# Exit codes published in docs/developers/cli/reference/index.md. Commands import
-# these rather than spelling the numbers, so the published table stays the one
-# source of truth.
-EXIT_GENERAL_ERROR = 1
-EXIT_CONFIGURATION_ERROR = 2
-EXIT_API_ERROR = 3
-EXIT_SSH_ERROR = 4
-EXIT_POD_NOT_FOUND = 5
-EXIT_PERMISSION_DENIED = 6
+# The exit-code taxonomy every command shares. Commands import these rather than
+# spelling the numbers, so this table is the one source of truth and
+# docs/developers/cli/reference/index.md mirrors it.
+#
+# ``lium provider …`` is the one exception: it keeps its own map in
+# lium/cli/provider/_render.py, where the same numbers carry different meanings
+# (2 auth, 3 portal, 5 ssh, 6 config missing, 7 token-cache contention).
+EXIT_GENERAL_ERROR = 1        # a failure with no better classification
+EXIT_CONFIGURATION_ERROR = 2  # bad arguments, missing or unreadable configuration
+EXIT_API_ERROR = 3            # the API refused or failed the call
+EXIT_SSH_ERROR = 4            # ssh could not connect, or no client is installed
+EXIT_POD_NOT_FOUND = 5        # the named pod does not exist
+EXIT_PERMISSION_DENIED = 6    # the account is not allowed to do this
 
 
 class CliFailure(Exception):
@@ -345,11 +351,16 @@ def handle_errors(func):
             else:
                 console.error(f"Error: {escape(str(e))}")
             raise SystemExit(EXIT_CONFIGURATION_ERROR)
+        except LiumPermissionError as e:
+            if json_output:
+                _emit_json_error("permission_denied", str(e), EXIT_PERMISSION_DENIED)
+            console.error(f"Error: {escape(str(e))}")
+            raise SystemExit(EXIT_PERMISSION_DENIED)
         except LiumError as e:
             if json_output:
-                _emit_json_error("lium_error", str(e))
+                _emit_json_error("lium_error", str(e), EXIT_API_ERROR)
             console.error(f"Error: {escape(str(e))}")
-            raise SystemExit(EXIT_GENERAL_ERROR)
+            raise SystemExit(EXIT_API_ERROR)
         except Exception as e:
             if json_output:
                 _emit_json_error("unexpected_error", str(e))
@@ -786,12 +797,16 @@ def ensure_config():
     if not config.get('api.api_key'):
         # Setup API key
         action = SetupApiKeyAction()
-        action.execute({})
+        result = action.execute({})
+        if not result.ok:
+            raise CliFailure("api_key_setup_failed", result.error, EXIT_CONFIGURATION_ERROR)
 
     if not config.get('ssh.key_path'):
         # Setup SSH key
         action = SetupSshKeyAction()
-        action.execute({})
+        result = action.execute({})
+        if not result.ok:
+            raise CliFailure("ssh_key_setup_failed", result.error, EXIT_CONFIGURATION_ERROR)
 
 
 def ensure_backup_params(

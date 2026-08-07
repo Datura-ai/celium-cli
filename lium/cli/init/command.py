@@ -2,9 +2,8 @@
 
 import click
 
-from lium.cli import ui
 from lium.cli.settings import config
-from lium.cli.utils import handle_errors
+from lium.cli.utils import CliFailure, EXIT_GENERAL_ERROR, handle_errors
 from .actions import SetupApiKeyAction, RequestAuthUrlAction, VerifySessionAction, SetupSshKeyAction
 
 
@@ -31,17 +30,14 @@ def init_command(no_browser: bool, session: str | None):
         verify_action = VerifySessionAction(session_id=session)
         verify_result = verify_action.execute({})
         if not verify_result.ok:
-            ui.error(verify_result.error)
-            return
+            raise CliFailure("auth_failed", verify_result.error, EXIT_GENERAL_ERROR)
         _setup_ssh()
         return
 
     # Step 1 (headless): just print URL and exit
     if no_browser:
         url_action = RequestAuthUrlAction()
-        url_result = url_action.execute({})
-        if not url_result.ok:
-            ui.error(url_result.error)
+        url_action.execute({})
         return
 
     # Default: browser flow
@@ -49,8 +45,7 @@ def init_command(no_browser: bool, session: str | None):
     api_result = api_action.execute({})
 
     if not api_result.ok:
-        ui.error(api_result.error)
-        return
+        raise CliFailure("auth_failed", api_result.error, EXIT_GENERAL_ERROR)
 
     _setup_ssh()
 
@@ -60,4 +55,4 @@ def _setup_ssh():
     ssh_action = SetupSshKeyAction()
     ssh_result = ssh_action.execute({})
     if not ssh_result.ok:
-        ui.error(ssh_result.error)
+        raise CliFailure("ssh_key_setup_failed", ssh_result.error, EXIT_GENERAL_ERROR)

@@ -14,11 +14,8 @@ class GetPodsAction:
         """
         lium = ctx["lium"]
 
-        try:
-            pods = lium.ps()
-            return ActionResult(
-                ok=True,
-                data={"pods": pods}
-            )
-        except Exception as e:
-            return ActionResult(ok=False, data={}, error=str(e))
+        pods = lium.ps()
+        return ActionResult(
+            ok=True,
+            data={"pods": pods}
+        )
