@@ -38,14 +38,25 @@ def _fake_bt_wallet(events=None, unlock_error=None):
 
 
 def _spy_ui_load(monkeypatch, events):
-    """Record every spinner `ui.load` opens in ``events``, keeping the real behaviour."""
+    """Record where every spinner `ui.load` opens and closes, keeping the real behaviour."""
     real_load = fund_module.ui.load
 
     def spy(message, fn):
         events.append(f"ui.load:{message}")
-        return real_load(message, fn)
+        try:
+            return real_load(message, fn)
+        finally:
+            events.append(f"ui.load-end:{message}")
 
     monkeypatch.setattr(fund_module.ui, "load", spy)
+
+
+def _open_spinners_at(events, event):
+    # how many spinners were still running when `event` was recorded
+    prefix = events[: events.index(event)]
+    opened = sum(1 for name in prefix if name.startswith("ui.load:"))
+    closed = sum(1 for name in prefix if name.startswith("ui.load-end:"))
+    return opened - closed
 
 
 def test_fund_help_documents_tao_flow():
@@ -133,6 +144,9 @@ def test_fund_tao_unlocks_coldkey_before_the_signing_spinner(monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert events.count("unlock_coldkey") == 1
+    # No spinner may be running while the password prompt is up — wrapping the unlock in
+    # a spinner of its own is the regression this pins, not just its position in the run.
+    assert _open_spinners_at(events, "unlock_coldkey") == 0
     # Pin the spinner the unlock has to come before, so de-spinnering the registration
     # step can't leave this test vacuously green.
     assert "ui.load:Checking wallet registration" in events
