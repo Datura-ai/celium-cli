@@ -21,6 +21,7 @@ from lium.provider.chain_stack import missing_chain_stack_message
 from . import validation
 from .actions import (
     LoadWalletAction,
+    UnlockColdkeyAction,
     CheckWalletRegistrationAction,
     ExecuteTransferAction,
     CheckFreeAlphaAction,
@@ -75,6 +76,14 @@ def _legacy_tao_fund(wallet: Optional[str], amount: Optional[str], yes: bool) ->
         "wallet_address": wallet_address,
         "bt_wallet": bt_wallet,
     }
+
+    # Ask for the coldkey password here, outside every spinner — registration and the
+    # transfer both sign with it, and a prompt raised under ui.load lands glued to a
+    # frozen spinner line, which reads as a hung command.
+    result = UnlockColdkeyAction().execute({"bt_wallet": bt_wallet})
+    if not result.ok:
+        ui.error(f"Failed to unlock coldkey for wallet '{wallet_name}': {result.error}")
+        return
 
     action = CheckWalletRegistrationAction()
     result = ui.load("Checking wallet registration", lambda: action.execute(ctx))
@@ -188,8 +197,20 @@ def _alpha_fund(
     if error:
         raise LiumError(error)
 
-    # Register the wallet so the backend can attribute the deposit (mirrors TAO flow).
+    # Construct the client BEFORE the unlock so a missing API key aborts without ever
+    # asking for the coldkey password.
     lium = Lium()
+
+    # Ask for the coldkey password here, outside every spinner — registration and the
+    # transfer both sign with it, and a prompt raised under ui.load lands glued to a
+    # frozen spinner line, which reads as a hung command.
+    result = UnlockColdkeyAction().execute({"bt_wallet": bt_wallet})
+    if not result.ok:
+        raise LiumError(
+            f"Failed to unlock coldkey for wallet '{wallet}': {result.error}"
+        )
+
+    # Register the wallet so the backend can attribute the deposit (mirrors TAO flow).
     reg_ctx = {
         "lium": lium,
         "wallet_address": coldkey_ss58,
