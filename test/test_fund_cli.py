@@ -18,6 +18,7 @@ from lium.cli.actions import ActionResult
 from lium.cli import balance as balance_module
 from lium.cli.cli import cli
 from lium.cli.fund import command as fund_module
+from lium.cli.utils import EXIT_CONFIGURATION_ERROR
 from lium.sdk import AlphaQuote, Config, Lium
 from lium.sdk.exceptions import LiumNotFoundError, LiumServerError
 
@@ -93,10 +94,11 @@ def test_fund_tao_dispatch_runs(monkeypatch):
     assert "Done." in result.output
 
 
-def test_fund_tao_unlocks_coldkey_before_any_spinner(monkeypatch):
+def test_fund_tao_unlocks_coldkey_before_the_signing_spinner(monkeypatch):
     # DAH-2585: bittensor prints "Enter your password:" straight to the terminal, and its
     # reader holds the GIL — so under ui.load the prompt lands glued to a frozen spinner
-    # line and `lium fund` reads as hung. The unlock must precede every ui.load spinner.
+    # line and `lium fund` reads as hung. The unlock must precede the registration
+    # spinner, which is the first step that signs with the coldkey.
     events = []
     monkeypatch.setitem(sys.modules, "bittensor", types.SimpleNamespace())
     bt_wallet = _fake_bt_wallet(events)
@@ -130,11 +132,13 @@ def test_fund_tao_unlocks_coldkey_before_any_spinner(monkeypatch):
     result = CliRunner().invoke(cli, ["fund", "-w", "default", "-a", "1.5", "-y"])
 
     assert result.exit_code == 0, result.output
-    assert events[0] == "unlock_coldkey"
     assert events.count("unlock_coldkey") == 1
     # Pin the spinner the unlock has to come before, so de-spinnering the registration
     # step can't leave this test vacuously green.
     assert "ui.load:Checking wallet registration" in events
+    assert events.index("unlock_coldkey") < events.index(
+        "ui.load:Checking wallet registration"
+    )
 
 
 def test_fund_tao_unlock_failure_aborts(monkeypatch):
@@ -162,7 +166,9 @@ def test_fund_tao_unlock_failure_aborts(monkeypatch):
             calls.append("transfer")
             return ActionResult(ok=True, data={})
 
-    monkeypatch.setattr(fund_module, "Lium", lambda: types.SimpleNamespace())
+    monkeypatch.setattr(
+        fund_module, "Lium", lambda: types.SimpleNamespace(balance=lambda: 10.0)
+    )
     monkeypatch.setattr(fund_module, "LoadWalletAction", FakeLoadWalletAction)
     monkeypatch.setattr(
         fund_module, "CheckWalletRegistrationAction", FakeCheckWalletRegistrationAction
@@ -171,9 +177,51 @@ def test_fund_tao_unlock_failure_aborts(monkeypatch):
 
     result = CliRunner().invoke(cli, ["fund", "-w", "default", "-a", "1.5", "-y"])
 
+    # A wrong password must exit non-zero: a caller chaining `lium fund && ...` can
+    # only see the failure through the exit code.
+    assert result.exit_code == EXIT_CONFIGURATION_ERROR, result.output
     assert "Failed to unlock coldkey for wallet 'default'" in result.output
     assert "Wrong password for decryption" in result.output
     assert calls == []
+
+
+def test_fund_tao_declined_confirm_never_asks_for_the_password(monkeypatch):
+    # The coldkey password is the most expensive thing we can ask for, so a user who
+    # backs out at the confirm must not have typed it.
+    monkeypatch.setitem(sys.modules, "bittensor", types.SimpleNamespace())
+    events = []
+    bt_wallet = _fake_bt_wallet(events)
+
+    class FakeLoadWalletAction:
+        def execute(self, ctx):
+            return ActionResult(
+                ok=True, data={"wallet": bt_wallet, "address": "coldkey"}
+            )
+
+    class FakeCheckWalletRegistrationAction:
+        def execute(self, ctx):
+            events.append("register")
+            return ActionResult(ok=True, data={"registered": True})
+
+    class FakeExecuteTransferAction:
+        def execute(self, ctx):
+            events.append("transfer")
+            return ActionResult(ok=True, data={})
+
+    monkeypatch.setattr(
+        fund_module, "Lium", lambda: types.SimpleNamespace(balance=lambda: 10.0)
+    )
+    monkeypatch.setattr(fund_module, "LoadWalletAction", FakeLoadWalletAction)
+    monkeypatch.setattr(
+        fund_module, "CheckWalletRegistrationAction", FakeCheckWalletRegistrationAction
+    )
+    monkeypatch.setattr(fund_module, "ExecuteTransferAction", FakeExecuteTransferAction)
+    monkeypatch.setattr(fund_module.ui, "confirm", lambda message, default=False: False)
+
+    result = CliRunner().invoke(cli, ["fund", "-w", "default", "-a", "1.5"])
+
+    assert result.exit_code == 0, result.output
+    assert events == []
 
 
 def test_fund_crypto_subcommand_is_retired():
