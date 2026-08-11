@@ -161,6 +161,8 @@ class RentPodAction:
         ports: Optional[int] = ctx.get("ports")
         ssh_name: Optional[str] = ctx.get("ssh_name")
         enable_volume_encryption: bool | None = ctx.get("enable_volume_encryption")
+        backup_id: Optional[str] = ctx.get("backup_id")
+        restore_path: Optional[str] = ctx.get("restore_path")
 
         if not name:
             name = executor.huid
@@ -174,6 +176,8 @@ class RentPodAction:
             ports=ports,
             ssh_name=ssh_name,
             enable_volume_encryption=enable_volume_encryption,
+            backup_id=backup_id,
+            restore_path=restore_path,
         )
 
         pod_id = pod_info.get('id') or pod_info.get('name', '')

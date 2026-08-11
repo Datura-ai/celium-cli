@@ -126,6 +126,42 @@ def test_up_sends_volume_encryption_preference(monkeypatch, enabled, expected):
     assert captured["payload"]["enable_volume_encryption"] is expected
 
 
+def test_up_sends_startup_restore(monkeypatch):
+    client = Lium(Config(api_key="test"))
+    captured: dict = {}
+    _stub_up(monkeypatch, client, captured)
+
+    client.up(
+        executor_id="exec-1",
+        ssh_keys=["ssh-ed25519 AAA"],
+        backup_id="backup-123",
+        restore_path="/root/restored",
+    )
+
+    assert captured["payload"]["backup_log_id"] == "backup-123"
+    assert captured["payload"]["restore_path"] == "/root/restored"
+
+
+@pytest.mark.parametrize(
+    ("backup_id", "restore_path"),
+    [("backup-123", None), (None, "/root/restored")],
+)
+def test_up_requires_complete_startup_restore_pair(monkeypatch, backup_id, restore_path):
+    client = Lium(Config(api_key="test"))
+    captured: dict = {}
+    _stub_up(monkeypatch, client, captured)
+
+    with pytest.raises(ValueError, match="must be provided together"):
+        client.up(
+            executor_id="exec-1",
+            ssh_keys=["ssh-ed25519 AAA"],
+            backup_id=backup_id,
+            restore_path=restore_path,
+        )
+
+    assert "payload" not in captured
+
+
 def test_ps_hydrates_volume_encryption_outcome(monkeypatch):
     client = Lium(Config(api_key="test"))
     response = SimpleNamespace(
@@ -174,6 +210,29 @@ def test_up_command_exposes_volume_encryption_flag():
     assert result.exit_code == 0
     assert "--volume-encryption" in result.output
     assert "--no-volume-encryption" in result.output
+
+
+def test_up_command_exposes_startup_restore_flags():
+    result = CliRunner().invoke(up_command.up_command, ["--help"])
+    assert result.exit_code == 0
+    assert "--restore-backup" in result.output
+    assert "--restore-to" in result.output
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["node-1", "--restore-backup", "backup-123"],
+        ["node-1", "--restore-to", "/root/restored"],
+    ],
+)
+def test_up_command_requires_complete_startup_restore_pair(monkeypatch, args):
+    monkeypatch.setattr(up_command, "ensure_config", lambda: None)
+
+    result = CliRunner().invoke(up_command.up_command, args)
+
+    assert result.exit_code == 2
+    assert "--restore-backup and --restore-to must be provided together" in result.output
 
 
 def test_validate_rejects_dockerfile_with_image():
@@ -234,6 +293,30 @@ def test_rent_pod_action_passes_dockerfile_content_and_no_template():
     assert captured["executor_id"] == "exec-1"
 
 
+def test_rent_pod_action_passes_startup_restore():
+    captured: dict = {}
+
+    class FakeLium:
+        def up(self, **kwargs):
+            captured.update(kwargs)
+            return {"id": "pod-1", "name": kwargs["name"]}
+
+    result = RentPodAction().execute(
+        {
+            "lium": FakeLium(),
+            "executor": SimpleNamespace(id="exec-1", huid="brave-fox-3a"),
+            "template": SimpleNamespace(id="template-1"),
+            "name": "restored-pod",
+            "backup_id": "backup-123",
+            "restore_path": "/root/restored",
+        }
+    )
+
+    assert result.ok
+    assert captured["backup_id"] == "backup-123"
+    assert captured["restore_path"] == "/root/restored"
+
+
 # --------------------------------------------------------------------------- #
 # CLI: full `lium up --dockerfile` path reads the file and forwards its content
 # --------------------------------------------------------------------------- #
@@ -285,7 +368,16 @@ def test_up_command_reads_dockerfile_and_forwards_content(monkeypatch, tmp_path)
     # Act
     result = CliRunner().invoke(
         up_command.up_command,
-        ["brave-fox-3a", "--dockerfile", str(dockerfile), "--yes"],
+        [
+            "brave-fox-3a",
+            "--dockerfile",
+            str(dockerfile),
+            "--restore-backup",
+            "backup-123",
+            "--restore-to",
+            "/root/restored",
+            "--yes",
+        ],
     )
 
     # Assert
@@ -293,6 +385,10 @@ def test_up_command_reads_dockerfile_and_forwards_content(monkeypatch, tmp_path)
     assert "ctx" in captured, "RentPodAction was never reached"
     assert captured["ctx"]["dockerfile_content"] == dockerfile_text
     assert captured["ctx"]["template"] is None
+    assert captured["ctx"]["backup_id"] == "backup-123"
+    assert captured["ctx"]["restore_path"] == "/root/restored"
+    assert "Restore is continuing in /root/restored" in result.output
+    assert "Do not modify that directory" in result.output
 
 
 def test_up_command_rejects_dockerfile_with_image(monkeypatch, tmp_path):
