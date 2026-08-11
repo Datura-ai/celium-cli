@@ -159,6 +159,32 @@ def test_bk_restore_prints_success(monkeypatch):
 
     assert result.exit_code == 0
     assert "Restore started for backup-test at /root/restore" in result.output
+    assert "Do not add, modify, or remove files in /root/restore" in result.output
+    assert "lium bk restore-logs backup-test" in result.output
+
+
+def test_bk_restore_uses_safe_default_subdirectory(monkeypatch):
+    pod = _pod()
+    pod.default_restore_path = "/root/restored"
+
+    class FakeLium:
+        def ps(self):
+            return [pod]
+
+        def restore(self, *, pod, backup_id, restore_path):
+            assert backup_id == "backup-123"
+            assert restore_path == "/root/restored"
+            return {"restore_log_id": "restore-123"}
+
+    _patch_backup_command(monkeypatch, restore_command, FakeLium)
+
+    result = CliRunner().invoke(
+        cli,
+        ["bk", "restore", "backup-test", "--id", "backup-123", "--yes"],
+    )
+
+    assert result.exit_code == 0
+    assert "Restore started for backup-test at /root/restored" in result.output
 
 
 def test_bk_restore_logs_by_id_prints_status_progress_path_and_error(monkeypatch):
@@ -192,6 +218,41 @@ def test_bk_restore_logs_by_id_prints_status_progress_path_and_error(monkeypatch
     assert "Restore Path: /root/restore" in result.output
     assert "Backup ID: 8fbb30f6-6026-4043-98c7-c4189dc09bef" in result.output
     assert "Error: Restore failed" in result.output
+
+
+def test_bk_restore_logs_show_preparation_progress(monkeypatch):
+    restore_log = SimpleNamespace(
+        id="9b6c8d90-1111-4222-9333-48b031f1f3eb",
+        backup_id="8fbb30f6-6026-4043-98c7-c4189dc09bef",
+        status="IN_PROGRESS",
+        progress=0,
+        restore_mode="STARTUP",
+        stage="PREPARING",
+        total_files=12_345,
+        processed_files=None,
+        total_bytes=None,
+        processed_bytes=None,
+        restore_path="/root/restored",
+        created_at="2026-05-14T12:00:00Z",
+        completed_at=None,
+        error_message=None,
+    )
+
+    class FakeLium:
+        def ps(self):
+            return [_pod()]
+
+        def restore_logs(self, pod):
+            return [restore_log]
+
+    _patch_backup_command(monkeypatch, restore_logs_command, FakeLium)
+
+    result = CliRunner().invoke(cli, ["bk", "restore-logs", "--id", "9b6c8d90"])
+
+    assert result.exit_code == 0
+    assert "Mode: STARTUP" in result.output
+    assert "Stage: Preparing" in result.output
+    assert "Work: 12,345 files discovered" in result.output
 
 
 def test_bk_show_warns_when_config_missing(monkeypatch):

@@ -80,6 +80,17 @@ class PodInfo:
             return 22
         return int(self.ssh_cmd.split('-p ')[1].split()[0])
 
+    @property
+    def volume_path(self) -> str:
+        """Return the pod's local volume mount path."""
+        volumes = self.template.get("volumes", []) if self.template else []
+        return volumes[0] if volumes else "/root"
+
+    @property
+    def default_restore_path(self) -> str:
+        """Return a safe restore destination below the local volume mount."""
+        return f"{self.volume_path.rstrip('/')}/restored"
+
 
 @dataclass
 class Template:
@@ -137,6 +148,14 @@ class RestoreLog:
     error_message: Optional[str] = None
     logs: Optional[List[str]] = None
     restore_path: Optional[str] = None
+    backup_engine: Optional[str] = None
+    restore_mode: Optional[str] = None
+    stage: Optional[str] = None
+    last_heartbeat_at: Optional[str] = None
+    total_files: Optional[int] = None
+    processed_files: Optional[int] = None
+    total_bytes: Optional[int] = None
+    processed_bytes: Optional[int] = None
 
 
 @dataclass

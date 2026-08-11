@@ -40,6 +40,8 @@ from .actions import (
 @click.option("--until", help="Auto-terminate at time in local timezone (e.g., 'today 23:00', 'tomorrow 01:00', '2025-10-20 15:30')")
 @click.option("--jupyter", is_flag=True, help="Install Jupyter Notebook (automatically selects available port)")
 @click.option("--no-ssh", "no_ssh", is_flag=True, help="Create the pod and return instead of opening an SSH session")
+@click.option("--restore-backup", "restore_backup_id", help="Backup ID to restore after the pod starts")
+@click.option("--restore-to", "restore_path", help="New or empty subdirectory for the startup restore")
 @click.option("--image", help="Docker image to run (e.g., pytorch/pytorch:2.0, nvidia/cuda:12.0)")
 @click.option("--internal-ports", help="Internal ports to expose (comma-separated, e.g., 22,8000,8080)")
 @click.option("--dockerfile", type=click.Path(exists=True, dir_okay=False, readable=True), help="Path to a Dockerfile to build the pod image from (custom build; mutually exclusive with --image/--template_id)")
@@ -67,6 +69,8 @@ def up_command(
     until: Optional[str],
     jupyter: bool,
     no_ssh: bool,
+    restore_backup_id: Optional[str],
+    restore_path: Optional[str],
     image: Optional[str],
     internal_ports: Optional[str],
     dockerfile: Optional[str],
@@ -98,6 +102,7 @@ def up_command(
       lium up 1 --until "today 23:00"       # Auto-terminate at 23:00 local time today
       lium up 1 --until "tomorrow 01:00"    # Auto-terminate at 01:00 local time tomorrow
       lium up 1 --jupyter                   # Install Jupyter Notebook (auto-selects port)
+      lium up 1 --restore-backup BACKUP_ID --restore-to /root/restored
       LIUM_DEBUG=1 lium up 1 --jupyter      # Show debug information
     \b
     Docker-run style (streams logs instead of SSH):
@@ -122,6 +127,12 @@ def up_command(
     )
     if not valid:
         raise CliFailure("invalid_arguments", error, EXIT_CONFIGURATION_ERROR)
+    if bool(restore_backup_id) != bool(restore_path):
+        raise CliFailure(
+            "invalid_arguments",
+            "--restore-backup and --restore-to must be provided together",
+            EXIT_CONFIGURATION_ERROR,
+        )
 
     # Parse env vars if provided
     env_dict = {}
@@ -280,6 +291,8 @@ def up_command(
             f"({executor.gpu_count}×{executor.gpu_type}) "
             f"at ${executor.price_per_hour:.2f}/h?"
         )
+        if restore_backup_id:
+            confirm_msg += f" Restore backup {restore_backup_id} to {restore_path} after startup."
         if not ui.confirm(confirm_msg):
             return
 
@@ -308,6 +321,8 @@ def up_command(
             "ports": ports,
             "ssh_name": ssh_name,
             "enable_volume_encryption": volume_encryption,
+            "backup_id": restore_backup_id,
+            "restore_path": restore_path,
         })
     )
 
@@ -373,6 +388,11 @@ def up_command(
     # Always state what was created: a caller that only gets an SSH banner or a
     # log stream has no way to name the pod it is now paying for.
     ui.info(f"{pod_label} ready")
+
+    if restore_backup_id:
+        ui.warning(
+            f"Restore is continuing in {restore_path}. Do not modify that directory until the restore completes."
+        )
 
     if no_ssh:
         return

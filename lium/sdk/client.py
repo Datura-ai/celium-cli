@@ -159,6 +159,14 @@ class Lium:
             logs=log_dict.get("logs"),
             restore_path=log_dict.get("restore_path"),
             created_at=log_dict.get("created_at", ""),
+            backup_engine=log_dict.get("backup_engine"),
+            restore_mode=log_dict.get("restore_mode"),
+            stage=log_dict.get("stage"),
+            last_heartbeat_at=log_dict.get("last_heartbeat_at"),
+            total_files=log_dict.get("total_files"),
+            processed_files=log_dict.get("processed_files"),
+            total_bytes=log_dict.get("total_bytes"),
+            processed_bytes=log_dict.get("processed_bytes"),
         )
 
     def _dict_to_volume_info(self, volume_dict: Dict) -> VolumeInfo:
@@ -322,6 +330,8 @@ class Lium:
         ssh_keys: Optional[List[str]] = None,
         ssh_name: Optional[str] = None,
         enable_volume_encryption: bool | None = True,
+        backup_id: Optional[str] = None,
+        restore_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Start a new pod on a specific node.
 
@@ -344,6 +354,9 @@ class Lium:
             enable_volume_encryption: Whether to request encryption for the local
                 pod volume. Enabled by default. The image must support Lium volume
                 encryption.
+            backup_id: Optional backup ID to restore after the pod starts.
+            restore_path: New or empty subdirectory where the backup is restored.
+                Required when ``backup_id`` is provided.
 
         Returns:
             Pod metadata as returned by the rent API (id, name, status, ssh command, etc.).
@@ -352,6 +365,8 @@ class Lium:
             raise ValueError(
                 "Provide either template_id or dockerfile_content, not both"
             )
+        if bool(backup_id) != bool(restore_path):
+            raise ValueError("backup_id and restore_path must be provided together")
 
         executor_info = self.get_executor(executor_id)
         if not executor_info:
@@ -375,6 +390,8 @@ class Lium:
             "user_public_key": ssh_material,
             "initial_port_count": ports,
             "enable_volume_encryption": enable_volume_encryption,
+            "backup_log_id": backup_id,
+            "restore_path": restore_path,
         }
 
         response = self._request("POST", f"/executors/{executor_info.id}/rent", json=payload).json()
@@ -1559,21 +1576,23 @@ class Lium:
         pod: PodInfo,
         *,
         backup_id: str,
-        restore_path: str = "/root",
+        restore_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Restore a backup to a pod.
         
         Args:
             pod: Pod to restore to.
             backup_id: ID of the backup to restore.
-            restore_path: Path where to restore the backup (default: /root).
+            restore_path: New or empty subdirectory where the backup is restored.
+                Defaults to ``<pod volume>/restored``.
             
         Returns:
             Response from the restore API.
         """
+        target_path = restore_path or pod.default_restore_path
         payload = {
             "backup_id": backup_id,
-            "restore_path": restore_path
+            "restore_path": target_path,
         }
         
         return self._request("POST", f"/pods/{pod.id}/restore", json=payload).json()
