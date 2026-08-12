@@ -28,13 +28,13 @@ class ExecutorInfo:
     @property
     def driver_version(self) -> str:
         """Extract GPU driver version from specs."""
-        return self.specs.get('gpu', {}).get('driver', '')
+        return self.specs.get("gpu", {}).get("driver", "")
 
     @property
     def gpu_model(self) -> str:
         """Extract GPU model name from specs."""
-        gpu_details = self.specs.get('gpu', {}).get('details', [])
-        return gpu_details[0].get('name', '') if gpu_details else ''
+        gpu_details = self.specs.get("gpu", {}).get("details", [])
+        return gpu_details[0].get("name", "") if gpu_details else ""
 
     @property
     def download_speed(self) -> float:
@@ -67,18 +67,24 @@ class PodInfo:
 
     @property
     def host(self) -> Optional[str]:
-        return (re.findall(r'@(\S+)', self.ssh_cmd) or [None])[0] if self.ssh_cmd else None
+        return (
+            (re.findall(r"@(\S+)", self.ssh_cmd) or [None])[0] if self.ssh_cmd else None
+        )
 
     @property
     def username(self) -> Optional[str]:
-        return (re.findall(r'ssh (\S+)@', self.ssh_cmd) or [None])[0] if self.ssh_cmd else None
+        return (
+            (re.findall(r"ssh (\S+)@", self.ssh_cmd) or [None])[0]
+            if self.ssh_cmd
+            else None
+        )
 
     @property
     def ssh_port(self) -> int:
         """Extract SSH port from command."""
-        if not self.ssh_cmd or '-p ' not in self.ssh_cmd:
+        if not self.ssh_cmd or "-p " not in self.ssh_cmd:
             return 22
-        return int(self.ssh_cmd.split('-p ')[1].split()[0])
+        return int(self.ssh_cmd.split("-p ")[1].split()[0])
 
     @property
     def volume_path(self) -> str:
@@ -95,6 +101,7 @@ class PodInfo:
 @dataclass
 class Template:
     """Template information."""
+
     id: str
     name: str
     huid: str
@@ -107,6 +114,7 @@ class Template:
 @dataclass
 class BackupConfig:
     """Backup configuration information."""
+
     id: str
     huid: str
     pod_executor_id: str
@@ -121,6 +129,7 @@ class BackupConfig:
 @dataclass
 class BackupLog:
     """Backup log information."""
+
     id: str
     huid: str
     backup_config_id: str
@@ -131,11 +140,23 @@ class BackupLog:
     progress: Optional[float] = None
     backup_volume_id: Optional[str] = None
     created_at: Optional[str] = None
+    stage: Optional[str] = None
+    total_files: Optional[int] = None
+    processed_files: Optional[int] = None
+    total_bytes: Optional[int] = None
+    processed_bytes: Optional[int] = None
+    deletion_state: Optional[str] = None
+    physical_cleanup_at: Optional[str] = None
+    status_message: Optional[str] = None
+    elapsed_seconds: Optional[int] = None
+    throughput_bytes_per_second: Optional[int] = None
+    estimated_remaining_seconds: Optional[int] = None
 
 
 @dataclass
 class RestoreLog:
     """Restore log information."""
+
     id: str
     huid: str
     backup_id: str
@@ -156,11 +177,15 @@ class RestoreLog:
     processed_files: Optional[int] = None
     total_bytes: Optional[int] = None
     processed_bytes: Optional[int] = None
+    elapsed_seconds: Optional[int] = None
+    throughput_bytes_per_second: Optional[int] = None
+    estimated_remaining_seconds: Optional[int] = None
 
 
 @dataclass
 class SSHKey:
     """Public SSH key registered for the current user."""
+
     id: str
     name: str
     public_key: str
@@ -170,6 +195,7 @@ class SSHKey:
 @dataclass
 class VolumeInfo:
     """Volume information."""
+
     id: str
     huid: str
     name: str

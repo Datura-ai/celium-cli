@@ -2,7 +2,6 @@ from datetime import datetime
 
 from rich.table import Table
 
-
 _STAGE_LABELS = {
     "WAITING_FOR_POD": "Waiting for pod",
     "PREPARING": "Preparing",
@@ -17,6 +16,8 @@ def _format_status(status: str) -> str:
         return f"[green]{status}[/green]"
     if status_upper in ["FAILED", "ERROR"]:
         return f"[red]{status}[/red]"
+    if status_upper == "CANCELLED":
+        return f"[dim]{status}[/dim]"
     return f"[yellow]{status}[/yellow]"
 
 
@@ -67,7 +68,23 @@ def _format_work(log) -> str:
         details.append(f"{processed_files:,}/{total_files:,} files")
     if processed_bytes is not None and total_bytes is not None:
         details.append(f"{_format_bytes(processed_bytes)}/{_format_bytes(total_bytes)}")
+    throughput = getattr(log, "throughput_bytes_per_second", None)
+    if throughput:
+        details.append(f"{_format_bytes(throughput)}/s")
+    remaining = getattr(log, "estimated_remaining_seconds", None)
+    if remaining:
+        details.append(f"~{_format_duration(remaining)} left")
     return ", ".join(details)
+
+
+def _format_duration(seconds: int) -> str:
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, remaining_seconds = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m {remaining_seconds}s"
+    hours, remaining_minutes = divmod(minutes, 60)
+    return f"{hours}h {remaining_minutes}m"
 
 
 def format_logs_table(logs: list) -> Table:
@@ -134,6 +151,10 @@ def format_single_restore(pod_name: str, log) -> str:
     work = _format_work(log)
     if work:
         lines.append(f"Work: {work}")
+
+    elapsed = getattr(log, "elapsed_seconds", None)
+    if elapsed is not None:
+        lines.append(f"Elapsed: {_format_duration(elapsed)}")
 
     restore_path = getattr(log, "restore_path", None)
     if restore_path:

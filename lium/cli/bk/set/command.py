@@ -13,6 +13,7 @@ from lium.cli.utils import (
 )
 from . import validation, parsing
 from .actions import SetBackupAction
+from ..path_warning import entire_volume_backup_warning
 
 
 @click.command("set")
@@ -60,6 +61,10 @@ def bk_set_command(pod_id: str, path: str, every: str, keep: str, yes: bool):
     frequency_hours = parsed.get("frequency_hours")
     retention_days = parsed.get("retention_days")
 
+    path_warning = entire_volume_backup_warning(pod, backup_path)
+    if path_warning:
+        ui.warning(path_warning)
+
     # Execute
     ctx = {
         "lium": lium,
@@ -67,7 +72,7 @@ def bk_set_command(pod_id: str, path: str, every: str, keep: str, yes: bool):
         "pod_name": pod_name,
         "path": backup_path,
         "frequency_hours": frequency_hours,
-        "retention_days": retention_days
+        "retention_days": retention_days,
     }
 
     action = SetBackupAction()

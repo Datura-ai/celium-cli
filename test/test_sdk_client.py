@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from lium.sdk import Config, Lium, LiumPermissionError
+from lium.sdk import Config, Lium, LiumError, LiumPermissionError
 
 
 class _Forbidden:
@@ -30,7 +30,9 @@ def test_client_sets_version_header(monkeypatch):
 
 
 def test_request_403_raises_permission_error(monkeypatch):
-    monkeypatch.setattr("lium.sdk.client.requests.request", lambda *a, **kw: _Forbidden())
+    monkeypatch.setattr(
+        "lium.sdk.client.requests.request", lambda *a, **kw: _Forbidden()
+    )
     client = Lium(Config(api_key="test"))
 
     with pytest.raises(LiumPermissionError):
@@ -85,6 +87,9 @@ def test_restore_log_hydrates_progress_metadata():
             "processed_files": 25,
             "total_bytes": 1_000,
             "processed_bytes": 250,
+            "elapsed_seconds": 12,
+            "throughput_bytes_per_second": 20,
+            "estimated_remaining_seconds": 38,
         }
     )
 
@@ -92,3 +97,56 @@ def test_restore_log_hydrates_progress_metadata():
     assert restore_log.restore_mode == "STARTUP"
     assert restore_log.processed_files == 25
     assert restore_log.processed_bytes == 250
+    assert restore_log.elapsed_seconds == 12
+    assert restore_log.estimated_remaining_seconds == 38
+
+
+def test_backup_and_restore_lifecycle_methods_use_distinct_endpoints(monkeypatch):
+    client = Lium(Config(api_key="test"))
+    calls = []
+
+    class Response:
+        def json(self):
+            return {"success": True}
+
+    def fake_request(method, endpoint, **kwargs):
+        calls.append((method, endpoint))
+        return Response()
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    client.backup_cancel("backup-1")
+    client.backup_log_delete("backup-1")
+    client.restore_cancel("restore-1")
+
+    assert calls == [
+        ("POST", "/backup-logs/backup-1/cancel"),
+        ("DELETE", "/backup-logs/backup-1"),
+        ("POST", "/restore-logs/restore-1/cancel"),
+    ]
+
+
+def test_structured_busy_error_is_readable(monkeypatch):
+    class ConflictResponse:
+        ok = False
+        status_code = 409
+        text = ""
+
+        def json(self):
+            return {
+                "detail": {
+                    "code": "BACKUP_STORAGE_BUSY",
+                    "message": "Another backup or restore is already running",
+                    "active_operation_id": "active-123",
+                }
+            }
+
+    monkeypatch.setattr(
+        "lium.sdk.client.requests.request", lambda *args, **kwargs: ConflictResponse()
+    )
+    client = Lium(Config(api_key="test"))
+
+    with pytest.raises(
+        LiumError, match="Another backup or restore is already running.*active-123"
+    ):
+        client._request("POST", "/pods/pod-1/backup")
