@@ -51,6 +51,24 @@ load_dotenv()
 _PAY_API_KEY = "6RhXQ788J9BdnqeLua8z7ZSkXBDahclxhwjMB17qW1M"
 
 
+def _response_error_message(response: requests.Response) -> str:
+    try:
+        payload = response.json()
+    except Exception:
+        return response.text or "Request failed"
+
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    if isinstance(detail, list) and detail:
+        message = detail[0].get("msg") if isinstance(detail[0], dict) else str(detail[0])
+    elif isinstance(detail, dict):
+        message = detail.get("message") or "Request failed"
+        if detail.get("active_operation_id"):
+            message += f" (active operation: {detail['active_operation_id']})"
+    else:
+        message = detail or (payload.get("message") if isinstance(payload, dict) else None)
+    return str(message or "Request failed")
+
+
 def _get_client_version() -> str:
     try:
         return version("lium.io")
@@ -106,14 +124,14 @@ class Lium:
         if resp.status_code == 401:
             raise LiumAuthError("Invalid API key")
         if resp.status_code == 403:
-            raise LiumPermissionError(f"Permission denied: {resp.text}")
+            raise LiumPermissionError(f"Permission denied: {_response_error_message(resp)}")
         if resp.status_code == 404:
-            raise LiumNotFoundError(f"Resource not found: {resp.text}")
+            raise LiumNotFoundError(f"Resource not found: {_response_error_message(resp)}")
         if resp.status_code == 429:
             raise LiumRateLimitError("Rate limit exceeded")
         if 500 <= resp.status_code < 600:
             raise LiumServerError(f"Server error: {resp.status_code}")
-        raise LiumError(f"API error {resp.status_code}: {resp.text}")
+        raise LiumError(f"API error {resp.status_code}: {_response_error_message(resp)}")
 
     def _dict_to_backup_config(self, config_dict: Dict) -> BackupConfig:
         """Convert backup config dict to BackupConfig object."""
@@ -141,7 +159,18 @@ class Lium:
             error_message=log_dict.get("error_message"),
             progress=log_dict.get("progress"),
             backup_volume_id=log_dict.get("backup_volume_id"),
-            created_at=log_dict.get("created_at")
+            created_at=log_dict.get("created_at"),
+            stage=log_dict.get("stage"),
+            total_files=log_dict.get("total_files"),
+            processed_files=log_dict.get("processed_files"),
+            total_bytes=log_dict.get("total_bytes"),
+            processed_bytes=log_dict.get("processed_bytes"),
+            deletion_state=log_dict.get("deletion_state"),
+            physical_cleanup_at=log_dict.get("physical_cleanup_at"),
+            status_message=log_dict.get("status_message"),
+            elapsed_seconds=log_dict.get("elapsed_seconds"),
+            throughput_bytes_per_second=log_dict.get("throughput_bytes_per_second"),
+            estimated_remaining_seconds=log_dict.get("estimated_remaining_seconds"),
         )
 
     def _dict_to_restore_log(self, log_dict: Dict) -> RestoreLog:
@@ -167,6 +196,9 @@ class Lium:
             processed_files=log_dict.get("processed_files"),
             total_bytes=log_dict.get("total_bytes"),
             processed_bytes=log_dict.get("processed_bytes"),
+            elapsed_seconds=log_dict.get("elapsed_seconds"),
+            throughput_bytes_per_second=log_dict.get("throughput_bytes_per_second"),
+            estimated_remaining_seconds=log_dict.get("estimated_remaining_seconds"),
         )
 
     def _dict_to_volume_info(self, volume_dict: Dict) -> VolumeInfo:
@@ -1476,6 +1508,13 @@ class Lium:
         Returns:
             Created :class:`BackupConfig`.
         """
+        if path.rstrip("/") == pod.volume_path.rstrip("/"):
+            warnings.warn(
+                "Backing up the entire volume is less reliable when files are actively changing; "
+                "prefer a stable subdirectory when possible.",
+                UserWarning,
+                stacklevel=2,
+            )
         payload = {
             "pod_id": pod.id,
             "backup_frequency_hours": frequency_hours,
@@ -1570,6 +1609,14 @@ class Lium:
             API response payload.
         """
         return self._request("DELETE", f"/backup-configs/{config_id}").json()
+
+    def backup_cancel(self, backup_id: str) -> Dict[str, Any]:
+        """Request cancellation of an active backup while retaining its history."""
+        return self._request("POST", f"/backup-logs/{backup_id}/cancel").json()
+
+    def backup_log_delete(self, backup_id: str) -> Dict[str, Any]:
+        """Delete the stored data for a completed backup and retain its audit row."""
+        return self._request("DELETE", f"/backup-logs/{backup_id}").json()
     
     def restore(
         self,
@@ -1617,6 +1664,10 @@ class Lium:
             return [self._dict_to_restore_log(log) for log in logs]
         except LiumNotFoundError:
             return []
+
+    def restore_cancel(self, restore_id: str) -> Dict[str, Any]:
+        """Request cancellation of an active restore."""
+        return self._request("POST", f"/restore-logs/{restore_id}/cancel").json()
 
     def get_deployment_estimate(self, executor_id: str, template_id: str) -> dict:
         """Estimate deployment time for a template on a node.

@@ -9,6 +9,7 @@ from lium.cli.bk.restore import command as restore_command
 from lium.cli.bk.rm import command as rm_command
 from lium.cli.bk.set import command as set_command
 from lium.cli.bk.show import command as show_command
+from lium.cli.bk import lifecycle as lifecycle_commands
 from lium.cli.cli import cli
 
 
@@ -55,7 +56,17 @@ def test_bk_set_prints_success(monkeypatch):
 
     result = CliRunner().invoke(
         cli,
-        ["bk", "set", "backup-test", "--path", "/root/data", "--every", "6h", "--keep", "7d"],
+        [
+            "bk",
+            "set",
+            "backup-test",
+            "--path",
+            "/root/data",
+            "--every",
+            "6h",
+            "--keep",
+            "7d",
+        ],
     )
 
     assert result.exit_code == 0
@@ -82,7 +93,15 @@ def test_bk_now_prints_backup_log_id(monkeypatch):
 
     result = CliRunner().invoke(
         cli,
-        ["bk", "now", "backup-test", "--name", "pre-deploy", "--description", "before release"],
+        [
+            "bk",
+            "now",
+            "backup-test",
+            "--name",
+            "pre-deploy",
+            "--description",
+            "before release",
+        ],
     )
 
     assert result.exit_code == 0
@@ -154,7 +173,16 @@ def test_bk_restore_prints_success(monkeypatch):
 
     result = CliRunner().invoke(
         cli,
-        ["bk", "restore", "backup-test", "--id", "backup-123", "--to", "/root/restore", "--yes"],
+        [
+            "bk",
+            "restore",
+            "backup-test",
+            "--id",
+            "backup-123",
+            "--to",
+            "/root/restore",
+            "--yes",
+        ],
     )
 
     assert result.exit_code == 0
@@ -270,3 +298,57 @@ def test_bk_show_warns_when_config_missing(monkeypatch):
 
     assert result.exit_code == 0
     assert "No backup configuration found for backup-test" in result.output
+
+
+def test_bk_cancel_keeps_history(monkeypatch):
+    calls = []
+
+    class FakeLium:
+        def backup_cancel(self, backup_id):
+            calls.append(backup_id)
+            return {"success": True}
+
+    _patch_backup_command(monkeypatch, lifecycle_commands, FakeLium)
+
+    result = CliRunner().invoke(cli, ["bk", "cancel", "--id", "backup-123", "--yes"])
+
+    assert result.exit_code == 0
+    assert calls == ["backup-123"]
+    assert "history and last reported progress" in result.output
+    assert "remain available" in result.output
+
+
+def test_bk_delete_removes_only_completed_backup_data(monkeypatch):
+    calls = []
+
+    class FakeLium:
+        def backup_log_delete(self, backup_id):
+            calls.append(backup_id)
+            return {"success": True}
+
+    _patch_backup_command(monkeypatch, lifecycle_commands, FakeLium)
+
+    result = CliRunner().invoke(cli, ["bk", "delete", "--id", "backup-123", "--yes"])
+
+    assert result.exit_code == 0
+    assert calls == ["backup-123"]
+    assert "Storage usage will update after cleanup finishes" in result.output
+
+
+def test_bk_restore_cancel_warns_about_partial_files(monkeypatch):
+    calls = []
+
+    class FakeLium:
+        def restore_cancel(self, restore_id):
+            calls.append(restore_id)
+            return {"success": True}
+
+    _patch_backup_command(monkeypatch, lifecycle_commands, FakeLium)
+
+    result = CliRunner().invoke(
+        cli, ["bk", "restore-cancel", "--id", "restore-123", "--yes"]
+    )
+
+    assert result.exit_code == 0
+    assert calls == ["restore-123"]
+    assert "Partial files may remain" in result.output

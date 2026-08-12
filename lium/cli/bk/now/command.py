@@ -16,6 +16,7 @@ from lium.cli.utils import (
 )
 from . import validation, parsing
 from .actions import TriggerBackupAction
+from ..path_warning import entire_volume_backup_warning
 
 
 @click.command("now")
@@ -48,6 +49,18 @@ def bk_now_command(pod_id: str, name: Optional[str], description: Optional[str])
     pod_name = parsed.get("pod_name")
     backup_name = parsed.get("name")
     backup_description = parsed.get("description")
+    backup_config = ui.load(
+        "Loading backup configuration", lambda: lium.backup_config(pod)
+    )
+    if not backup_config:
+        raise CliFailure(
+            "no_backup_config", "No backup configuration found", EXIT_GENERAL_ERROR
+        )
+    path_warning = entire_volume_backup_warning(
+        pod, getattr(backup_config, "backup_path", "")
+    )
+    if path_warning:
+        ui.warning(path_warning)
 
     # Execute
     ctx = {
@@ -55,7 +68,8 @@ def bk_now_command(pod_id: str, name: Optional[str], description: Optional[str])
         "pod": pod,
         "pod_name": pod_name,
         "name": backup_name,
-        "description": backup_description
+        "description": backup_description,
+        "backup_config": backup_config,
     }
 
     action = TriggerBackupAction()
