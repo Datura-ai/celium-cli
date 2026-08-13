@@ -150,3 +150,54 @@ def test_structured_busy_error_is_readable(monkeypatch):
         LiumError, match="Another backup or restore is already running.*active-123"
     ):
         client._request("POST", "/pods/pod-1/backup")
+
+
+def test_structured_message_error_is_readable(monkeypatch):
+    class ConflictResponse:
+        ok = False
+        status_code = 409
+        text = ""
+
+        def json(self):
+            return {
+                "message": {
+                    "code": "BACKUP_NOT_ACTIVE",
+                    "message": "This backup is no longer active",
+                    "current_status": "COMPLETED",
+                }
+            }
+
+    monkeypatch.setattr(
+        "lium.sdk.client.requests.request", lambda *args, **kwargs: ConflictResponse()
+    )
+    client = Lium(Config(api_key="test"))
+
+    with pytest.raises(LiumError, match="This backup is no longer active"):
+        client._request("POST", "/backup-logs/8fbb30f6/cancel")
+
+
+def test_resolve_backup_id_uses_paginated_backup_logs(monkeypatch):
+    client = Lium(Config(api_key="test"))
+    backup_id = "8fbb30f6-6026-4043-98c7-c4189dc09bef"
+
+    class Response:
+        def json(self):
+            return {"items": [{"id": backup_id}], "has_next": False}
+
+    monkeypatch.setattr(client, "_request", lambda *args, **kwargs: Response())
+
+    assert client.resolve_backup_id("8fbb30f6") == backup_id
+
+
+def test_resolve_restore_id_searches_active_pods(monkeypatch):
+    client = Lium(Config(api_key="test"))
+    restore_id = "9b6c8d90-1111-4222-9333-48b031f1f3eb"
+    pod = SimpleNamespace(id="pod-1")
+    monkeypatch.setattr(client, "ps", lambda: [pod])
+    monkeypatch.setattr(
+        client,
+        "restore_logs",
+        lambda candidate: [SimpleNamespace(id=restore_id)] if candidate is pod else [],
+    )
+
+    assert client.resolve_restore_id("9b6c8d90") == restore_id

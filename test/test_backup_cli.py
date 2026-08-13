@@ -159,13 +159,19 @@ def test_bk_rm_prints_success(monkeypatch):
 
 
 def test_bk_restore_prints_success(monkeypatch):
+    full_backup_id = "8fbb30f6-6026-4043-98c7-c4189dc09bef"
+
     class FakeLium:
         def ps(self):
             return [_pod()]
 
+        def resolve_backup_id(self, backup_id):
+            assert backup_id == "8fbb30f6"
+            return full_backup_id
+
         def restore(self, *, pod, backup_id, restore_path):
             assert pod.id == "pod-123"
-            assert backup_id == "backup-123"
+            assert backup_id == full_backup_id
             assert restore_path == "/root/restore"
             return {"restore_log_id": "restore-123"}
 
@@ -178,7 +184,7 @@ def test_bk_restore_prints_success(monkeypatch):
             "restore",
             "backup-test",
             "--id",
-            "backup-123",
+            "8fbb30f6",
             "--to",
             "/root/restore",
             "--yes",
@@ -198,6 +204,9 @@ def test_bk_restore_uses_safe_default_subdirectory(monkeypatch):
     class FakeLium:
         def ps(self):
             return [pod]
+
+        def resolve_backup_id(self, backup_id):
+            return backup_id
 
         def restore(self, *, pod, backup_id, restore_path):
             assert backup_id == "backup-123"
@@ -304,6 +313,9 @@ def test_bk_cancel_keeps_history(monkeypatch):
     calls = []
 
     class FakeLium:
+        def resolve_backup_id(self, backup_id):
+            return backup_id
+
         def backup_cancel(self, backup_id):
             calls.append(backup_id)
             return {"success": True}
@@ -322,6 +334,9 @@ def test_bk_delete_removes_only_completed_backup_data(monkeypatch):
     calls = []
 
     class FakeLium:
+        def resolve_backup_id(self, backup_id):
+            return backup_id
+
         def backup_log_delete(self, backup_id):
             calls.append(backup_id)
             return {"success": True}
@@ -339,6 +354,9 @@ def test_bk_restore_cancel_warns_about_partial_files(monkeypatch):
     calls = []
 
     class FakeLium:
+        def resolve_restore_id(self, restore_id):
+            return restore_id
+
         def restore_cancel(self, restore_id):
             calls.append(restore_id)
             return {"success": True}
@@ -352,3 +370,47 @@ def test_bk_restore_cancel_warns_about_partial_files(monkeypatch):
     assert result.exit_code == 0
     assert calls == ["restore-123"]
     assert "Partial files may remain" in result.output
+
+
+def test_bk_cancel_resolves_displayed_short_id(monkeypatch):
+    calls = []
+    full_id = "8fbb30f6-6026-4043-98c7-c4189dc09bef"
+
+    class FakeLium:
+        def resolve_backup_id(self, backup_id):
+            assert backup_id == "8fbb30f6"
+            return full_id
+
+        def backup_cancel(self, backup_id):
+            calls.append(backup_id)
+            return {"success": True}
+
+    _patch_backup_command(monkeypatch, lifecycle_commands, FakeLium)
+
+    result = CliRunner().invoke(cli, ["bk", "cancel", "--id", "8fbb30f6", "--yes"])
+
+    assert result.exit_code == 0
+    assert calls == [full_id]
+
+
+def test_bk_restore_cancel_resolves_displayed_short_id(monkeypatch):
+    calls = []
+    full_id = "9b6c8d90-1111-4222-9333-48b031f1f3eb"
+
+    class FakeLium:
+        def resolve_restore_id(self, restore_id):
+            assert restore_id == "9b6c8d90"
+            return full_id
+
+        def restore_cancel(self, restore_id):
+            calls.append(restore_id)
+            return {"success": True}
+
+    _patch_backup_command(monkeypatch, lifecycle_commands, FakeLium)
+
+    result = CliRunner().invoke(
+        cli, ["bk", "restore-cancel", "--id", "9b6c8d90", "--yes"]
+    )
+
+    assert result.exit_code == 0
+    assert calls == [full_id]

@@ -54,6 +54,9 @@ def _format_stage(log) -> str:
 
 
 def _format_work(log) -> str:
+    if getattr(log, "status", "").upper() in {"COMPLETED", "FAILED", "CANCELLED"}:
+        return ""
+
     stage = getattr(log, "stage", None)
     total_files = getattr(log, "total_files", None)
     processed_files = getattr(log, "processed_files", None)
