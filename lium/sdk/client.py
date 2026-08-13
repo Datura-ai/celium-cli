@@ -59,8 +59,30 @@ def _response_error_message(response: requests.Response) -> str:
 
     detail = payload.get("detail") if isinstance(payload, dict) else None
     response_message = payload.get("message") if isinstance(payload, dict) else None
-    structured_error = detail if isinstance(detail, dict) else response_message if isinstance(response_message, dict) else None
-    if isinstance(detail, list) and detail:
+    validation_errors = (
+        payload.get("validation_errors") if isinstance(payload, dict) else None
+    )
+    structured_error = (
+        detail
+        if isinstance(detail, dict)
+        else response_message if isinstance(response_message, dict) else None
+    )
+    if isinstance(validation_errors, list) and validation_errors:
+        messages: list[str] = []
+        for error in validation_errors:
+            if not isinstance(error, dict):
+                messages.append(str(error))
+                continue
+            field = error.get("field")
+            reason = error.get("message") or error.get("msg") or "Invalid value"
+            messages.append(f"{field}: {reason}" if field else str(reason))
+        validation_summary = "; ".join(messages)
+        message = (
+            f"{response_message}: {validation_summary}"
+            if isinstance(response_message, str)
+            else validation_summary
+        )
+    elif isinstance(detail, list) and detail:
         message = detail[0].get("msg") if isinstance(detail[0], dict) else str(detail[0])
     elif structured_error:
         message = structured_error.get("message") or "Request failed"
@@ -99,6 +121,7 @@ class Lium:
 
     def __init__(self, config: Optional[Config] = None, source: str = "sdk"):
         self.config = config or Config.load()
+        self.source = source
         self.headers = {
             "X-API-KEY": self.config.api_key,
             "X-Source": source,
@@ -1510,7 +1533,7 @@ class Lium:
         Returns:
             Created :class:`BackupConfig`.
         """
-        if path.rstrip("/") == pod.volume_path.rstrip("/"):
+        if self.source != "cli" and path.rstrip("/") == pod.volume_path.rstrip("/"):
             warnings.warn(
                 "Backing up the entire volume is less reliable when files are actively changing; "
                 "prefer a stable subdirectory when possible.",

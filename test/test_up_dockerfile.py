@@ -329,6 +329,8 @@ def test_up_command_reads_dockerfile_and_forwards_content(monkeypatch, tmp_path)
     dockerfile.write_text(dockerfile_text)
 
     captured: dict = {}
+    short_backup_id = "8fbb30f6"
+    full_backup_id = "8fbb30f6-6026-4043-98c7-c4189dc09bef"
     executor = SimpleNamespace(
         id="exec-1",
         huid="brave-fox-3a",
@@ -339,6 +341,11 @@ def test_up_command_reads_dockerfile_and_forwards_content(monkeypatch, tmp_path)
         download_speed=1000,
     )
     pod = SimpleNamespace(id="pod-1", name="custom-pod", huid="brave-fox-3a")
+
+    class _FakeLium:
+        def resolve_backup_id(self, backup_id):
+            assert backup_id == short_backup_id
+            return full_backup_id
 
     class _FakeResolveExecutor:
         def execute(self, ctx):
@@ -358,7 +365,7 @@ def test_up_command_reads_dockerfile_and_forwards_content(monkeypatch, tmp_path)
             return ActionResult(ok=True, data={"ssh_cmd": "ssh root@host -p 22", "pod": pod})
 
     monkeypatch.setattr(up_command, "ensure_config", lambda: None)
-    monkeypatch.setattr(up_command, "Lium", lambda **kwargs: SimpleNamespace())
+    monkeypatch.setattr(up_command, "Lium", lambda **kwargs: _FakeLium())
     monkeypatch.setattr(up_command, "ResolveExecutorAction", _FakeResolveExecutor)
     monkeypatch.setattr(up_command, "RentPodAction", _FakeRentPod)
     monkeypatch.setattr(up_command, "WaitReadyAction", _FakeWaitReady)
@@ -373,7 +380,7 @@ def test_up_command_reads_dockerfile_and_forwards_content(monkeypatch, tmp_path)
             "--dockerfile",
             str(dockerfile),
             "--restore-backup",
-            "backup-123",
+            short_backup_id,
             "--restore-to",
             "/root/restored",
             "--yes",
@@ -385,11 +392,10 @@ def test_up_command_reads_dockerfile_and_forwards_content(monkeypatch, tmp_path)
     assert "ctx" in captured, "RentPodAction was never reached"
     assert captured["ctx"]["dockerfile_content"] == dockerfile_text
     assert captured["ctx"]["template"] is None
-    assert captured["ctx"]["backup_id"] == "backup-123"
+    assert captured["ctx"]["backup_id"] == full_backup_id
     assert captured["ctx"]["restore_path"] == "/root/restored"
     assert "Restore is continuing in /root/restored" in result.output
     assert "Do not modify that directory" in result.output
-
 
 def test_up_command_rejects_dockerfile_with_image(monkeypatch, tmp_path):
     dockerfile = tmp_path / "Dockerfile"

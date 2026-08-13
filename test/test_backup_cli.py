@@ -38,6 +38,9 @@ def _patch_backup_command(monkeypatch, command_module, fake_lium_cls):
 
 def test_bk_set_prints_success(monkeypatch):
     class FakeLium:
+        def __init__(self, source="sdk"):
+            assert source == "cli"
+
         def ps(self):
             return [_pod()]
 

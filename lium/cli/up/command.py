@@ -198,6 +198,10 @@ def up_command(
             )
 
     lium = Lium(source="cli")
+    if restore_backup_id:
+        restore_backup_id = ui.load(
+            "Resolving backup ID", lambda: lium.resolve_backup_id(restore_backup_id)
+        )
 
     action = ResolveExecutorAction()
     result = ui.load(

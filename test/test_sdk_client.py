@@ -1,3 +1,4 @@
+import warnings
 from types import SimpleNamespace
 
 import pytest
@@ -113,6 +114,30 @@ def test_backup_create_warns_for_explicit_whole_volume(monkeypatch):
     }
 
 
+def test_backup_create_skips_sdk_warning_for_cli_callers(monkeypatch):
+    client = Lium(Config(api_key="test"), source="cli")
+    pod = SimpleNamespace(id="pod-1", volume_path="/root")
+
+    class Response:
+        def json(self):
+            return {
+                "id": "config-1",
+                "huid": "config-huid",
+                "pod_executor_id": "pod-1",
+                "backup_frequency_hours": 6,
+                "retention_days": 7,
+                "backup_path": "/root",
+            }
+
+    monkeypatch.setattr(client, "_request", lambda *args, **kwargs: Response())
+
+    with warnings.catch_warnings(record=True) as caught_warnings:
+        warnings.simplefilter("always")
+        client.backup_create(pod, path="/root")
+
+    assert caught_warnings == []
+
+
 def test_restore_log_hydrates_progress_metadata():
     client = Lium(Config(api_key="test"))
 
@@ -219,6 +244,35 @@ def test_structured_message_error_is_readable(monkeypatch):
 
     with pytest.raises(LiumError, match="This backup is no longer active"):
         client._request("POST", "/backup-logs/8fbb30f6/cancel")
+
+
+def test_validation_error_includes_field_and_reason(monkeypatch):
+    class ValidationResponse:
+        ok = False
+        status_code = 422
+        text = ""
+
+        def json(self):
+            return {
+                "message": "Request validation failed",
+                "validation_errors": [
+                    {
+                        "field": "body -> backup_log_id",
+                        "message": "Input should be a valid UUID",
+                        "type": "uuid_parsing",
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(
+        "lium.sdk.client.requests.request", lambda *args, **kwargs: ValidationResponse()
+    )
+    client = Lium(Config(api_key="test"))
+
+    with pytest.raises(
+        LiumError, match="body -> backup_log_id: Input should be a valid UUID"
+    ):
+        client._request("POST", "/executors/executor-1/rent")
 
 
 def test_resolve_backup_id_uses_paginated_backup_logs(monkeypatch):

@@ -44,7 +44,7 @@ def bk_set_command(pod_id: str, path: str, every: str, keep: str, yes: bool):
         raise CliFailure("invalid_arguments", error, EXIT_CONFIGURATION_ERROR)
 
     # Load data
-    lium = Lium()
+    lium = Lium(source="cli")
     all_pods = ui.load("Loading pods", lambda: lium.ps())
 
     if not all_pods:
