@@ -68,9 +68,10 @@ def signup_command(email: str, display_name: str | None, password: str | None, j
             "ssh_key_configured": ssh_result.ok,
             "signup_credit_granted": credit_granted,
             "next_steps": [
-                "Ask the user to click the verification link in the confirmation email — renting is blocked until then.",
                 _credit_line(credit_granted),
                 "Then: lium ls, lium up <node-id>.",
+                "The verification link in the confirmation email does not gate renting — it confirms "
+                "the address so password resets and account emails reach the user.",
             ],
         }, sort_keys=True))
         return
@@ -84,6 +85,8 @@ def signup_command(email: str, display_name: str | None, password: str | None, j
 
     ui.print("")
     ui.info("Before the first rental:")
-    ui.print("  1. Click the verification link in the confirmation email — renting is blocked until then.")
-    ui.print(f"  2. {_credit_line(credit_granted)}")
-    ui.print("  3. Then 'lium ls' and 'lium up <node-id>'.")
+    ui.print(f"  1. {_credit_line(credit_granted)}")
+    ui.print("  2. Then 'lium ls' and 'lium up <node-id>'.")
+    ui.print("")
+    ui.dim("  The verification link in the confirmation email does not gate renting — it confirms")
+    ui.dim("  the address so password resets and account emails reach you.")
