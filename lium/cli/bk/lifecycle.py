@@ -18,7 +18,13 @@ def bk_cancel_command(backup_id: str, yes: bool) -> None:
         return
 
     client = Lium()
-    ui.load("Requesting backup cancellation", lambda: client.backup_cancel(backup_id))
+    resolved_backup_id = ui.load(
+        "Resolving backup ID", lambda: client.resolve_backup_id(backup_id)
+    )
+    ui.load(
+        "Requesting backup cancellation",
+        lambda: client.backup_cancel(resolved_backup_id),
+    )
     ui.success(
         "Backup cancellation requested. Its history and last reported progress will remain available."
     )
@@ -37,7 +43,12 @@ def bk_delete_command(backup_id: str, yes: bool) -> None:
         return
 
     client = Lium()
-    ui.load("Starting backup deletion", lambda: client.backup_log_delete(backup_id))
+    resolved_backup_id = ui.load(
+        "Resolving backup ID", lambda: client.resolve_backup_id(backup_id)
+    )
+    ui.load(
+        "Starting backup deletion", lambda: client.backup_log_delete(resolved_backup_id)
+    )
     ui.success(
         "Backup deletion started. Storage usage will update after cleanup finishes."
     )
@@ -56,8 +67,12 @@ def bk_restore_cancel_command(restore_id: str, yes: bool) -> None:
         return
 
     client = Lium()
+    resolved_restore_id = ui.load(
+        "Resolving restore ID", lambda: client.resolve_restore_id(restore_id)
+    )
     ui.load(
-        "Requesting restore cancellation", lambda: client.restore_cancel(restore_id)
+        "Requesting restore cancellation",
+        lambda: client.restore_cancel(resolved_restore_id),
     )
     ui.success(
         "Restore cancellation requested. Partial files may remain in the restore directory."

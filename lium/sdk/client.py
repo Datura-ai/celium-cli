@@ -58,14 +58,16 @@ def _response_error_message(response: requests.Response) -> str:
         return response.text or "Request failed"
 
     detail = payload.get("detail") if isinstance(payload, dict) else None
+    response_message = payload.get("message") if isinstance(payload, dict) else None
+    structured_error = detail if isinstance(detail, dict) else response_message if isinstance(response_message, dict) else None
     if isinstance(detail, list) and detail:
         message = detail[0].get("msg") if isinstance(detail[0], dict) else str(detail[0])
-    elif isinstance(detail, dict):
-        message = detail.get("message") or "Request failed"
-        if detail.get("active_operation_id"):
-            message += f" (active operation: {detail['active_operation_id']})"
+    elif structured_error:
+        message = structured_error.get("message") or "Request failed"
+        if structured_error.get("active_operation_id"):
+            message += f" (active operation: {structured_error['active_operation_id']})"
     else:
-        message = detail or (payload.get("message") if isinstance(payload, dict) else None)
+        message = detail or response_message
     return str(message or "Request failed")
 
 
@@ -1599,6 +1601,28 @@ class Lium:
             # No backup logs exist for this pod, return empty list
             return []
 
+    def backup_logs_all(self) -> List[BackupLog]:
+        """Get all backup logs available to the current user."""
+        logs: List[BackupLog] = []
+        page = 1
+        while True:
+            response = self._request(
+                "GET", "/backup-logs/", params={"page": page, "limit": 100}
+            ).json()
+            if not isinstance(response, dict):
+                return logs
+            logs.extend(self._dict_to_backup_log(log) for log in response.get("items", []))
+            if not response.get("has_next"):
+                return logs
+            page += 1
+
+    def resolve_backup_id(self, backup_id: str) -> str:
+        """Resolve an eight-character backup ID shown by the CLI."""
+        if not re.fullmatch(r"[0-9a-fA-F]{8}", backup_id):
+            return backup_id
+        matches = {log.id for log in self.backup_logs_all() if log.id.startswith(backup_id)}
+        return self._resolve_short_id(backup_id, matches, "backup")
+
     def backup_delete(self, config_id: str) -> Dict[str, Any]:
         """Delete a backup configuration by ID.
 
@@ -1664,6 +1688,26 @@ class Lium:
             return [self._dict_to_restore_log(log) for log in logs]
         except LiumNotFoundError:
             return []
+
+    def resolve_restore_id(self, restore_id: str) -> str:
+        """Resolve an eight-character restore ID shown by the CLI."""
+        if not re.fullmatch(r"[0-9a-fA-F]{8}", restore_id):
+            return restore_id
+        matches = {
+            log.id
+            for pod in self.ps()
+            for log in self.restore_logs(pod)
+            if log.id.startswith(restore_id)
+        }
+        return self._resolve_short_id(restore_id, matches, "restore")
+
+    @staticmethod
+    def _resolve_short_id(short_id: str, matches: set[str], resource_name: str) -> str:
+        if not matches:
+            raise LiumNotFoundError(f"No {resource_name} matches ID '{short_id}'")
+        if len(matches) > 1:
+            raise LiumError(f"{resource_name.capitalize()} ID '{short_id}' is ambiguous")
+        return matches.pop()
 
     def restore_cancel(self, restore_id: str) -> Dict[str, Any]:
         """Request cancellation of an active restore."""
