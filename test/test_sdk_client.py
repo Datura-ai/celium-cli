@@ -68,6 +68,51 @@ def test_restore_uses_pod_safe_default_path(monkeypatch):
     assert captured["payload"]["restore_path"] == "/workspace/restored"
 
 
+def test_backup_create_requires_explicit_path():
+    client = Lium(Config(api_key="test"))
+    pod = SimpleNamespace(id="pod-1", volume_path="/root")
+
+    with pytest.raises(TypeError, match="path"):
+        client.backup_create(pod)
+
+
+def test_backup_create_warns_for_explicit_whole_volume(monkeypatch):
+    client = Lium(Config(api_key="test"))
+    pod = SimpleNamespace(id="pod-1", volume_path="/root")
+    captured = {}
+
+    class Response:
+        def json(self):
+            return {
+                "id": "config-1",
+                "huid": "config-huid",
+                "pod_executor_id": "pod-1",
+                "backup_frequency_hours": 6,
+                "retention_days": 7,
+                "backup_path": "/root",
+            }
+
+    def fake_request(method, endpoint, json=None, **kwargs):
+        captured.update(method=method, endpoint=endpoint, payload=json)
+        return Response()
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    with pytest.warns(UserWarning, match="entire volume"):
+        client.backup_create(pod, path="/root")
+
+    assert captured == {
+        "method": "POST",
+        "endpoint": "/backup-configs",
+        "payload": {
+            "pod_id": "pod-1",
+            "backup_frequency_hours": 6,
+            "retention_days": 7,
+            "backup_path": "/root",
+        },
+    }
+
+
 def test_restore_log_hydrates_progress_metadata():
     client = Lium(Config(api_key="test"))
 

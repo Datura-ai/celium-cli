@@ -1495,7 +1495,7 @@ class Lium:
         self,
         pod: PodInfo,
         *,
-        path: str = "/home",
+        path: str,
         frequency_hours: int = 6,
         retention_days: int = 7,
     ) -> BackupConfig:
@@ -1503,7 +1503,7 @@ class Lium:
 
         Args:
             pod: Pod to configure.
-            path: Filesystem path to back up.
+            path: Explicit filesystem path inside the pod volume to back up.
             frequency_hours: Backup interval in hours.
             retention_days: Retention period in days.
 

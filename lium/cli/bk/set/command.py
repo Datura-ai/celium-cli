@@ -18,7 +18,7 @@ from ..path_warning import entire_volume_backup_warning
 
 @click.command("set")
 @click.argument("pod_id")
-@click.option("--path", default="/root", help="Backup path (default: /root)")
+@click.option("--path", required=True, help="Explicit path inside the pod volume to back up")
 @click.option("--every", help="Backup frequency (e.g., 1h, 6h, 24h)")
 @click.option("--keep", help="Retention period (e.g., 1d, 7d, 30d)")
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
@@ -34,7 +34,7 @@ def bk_set_command(pod_id: str, path: str, every: str, keep: str, yes: bool):
     \b
     Examples:
       lium bk set 1 --path /root --every 6h --keep 7d
-      lium bk set eager-wolf-aa --every 1h --keep 1d
+      lium bk set eager-wolf-aa --path /root/checkpoints --every 1h --keep 1d
     """
     ensure_config()
 

@@ -146,7 +146,7 @@ The `lium` CLI exposes the full pod lifecycle. Run `lium --help` to see everythi
 ### Backup Commands
 
 - `lium bk show <POD>` - Show backup configuration for a pod
-- `lium bk set <POD> <PATH>` - Configure automatic backups
+- `lium bk set <POD> --path <PATH>` - Configure automatic backups
 - `lium bk logs <POD>` - View backup logs
 - `lium bk now <POD>` - Trigger immediate backup
 - `lium bk cancel --id <BACKUP_ID>` - Cancel an active backup and retain its history
@@ -286,7 +286,7 @@ lium volumes rm <VOLUME_HUID>
 
 # Manage backups
 lium bk show my-pod
-lium bk set my-pod /root/data --frequency 24 --retention 7
+lium bk set my-pod --path /root/data --every 24h --keep 7d
 lium bk logs my-pod
 lium bk now my-pod --name manual-backup
 lium bk cancel --id <BACKUP_ID>

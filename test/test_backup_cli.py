@@ -74,6 +74,16 @@ def test_bk_set_prints_success(monkeypatch):
     assert "path=/root/data, every=6h, keep=7d" in result.output
 
 
+def test_bk_set_requires_explicit_backup_path():
+    result = CliRunner().invoke(
+        cli,
+        ["bk", "set", "backup-test", "--every", "6h", "--keep", "7d"],
+    )
+
+    assert result.exit_code == 2
+    assert "Missing option '--path'" in result.output
+
+
 def test_bk_now_prints_backup_log_id(monkeypatch):
     class FakeLium:
         def ps(self):
