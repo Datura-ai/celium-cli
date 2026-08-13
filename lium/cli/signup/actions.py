@@ -337,6 +337,12 @@ class AttachEmailAction:
             )
 
         if response.status_code >= 400:
-            return ActionResult(ok=False, data={}, error=_describe_failure(response, "Attaching the email"))
+            # a 5xx can land after the credential was committed, so the password still has to reach the user;
+            # a 4xx is the server refusing the request outright, and nothing was attached
+            return ActionResult(
+                ok=False,
+                data={"credential_may_exist": response.status_code >= 500},
+                error=_describe_failure(response, "Attaching the email"),
+            )
 
         return ActionResult(ok=True, data={})

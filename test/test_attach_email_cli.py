@@ -109,6 +109,36 @@ def test_attach_email_generates_a_password_when_omitted(monkeypatch, stored_conf
     assert json.loads(result.output)["password"] == sent["password"]
 
 
+def test_attach_email_reports_the_password_when_the_server_fails(monkeypatch, stored_config):
+    """A 5xx can land after the credential was committed, so the password must still reach the user."""
+    monkeypatch.setattr(
+        signup_actions.requests, "post",
+        lambda url, **kwargs: FakeResponse(500, {"detail": "Internal server error"}),
+    )
+
+    result = CliRunner().invoke(
+        cli, ["attach-email", "--email", "ada@example.com", "--password", "s3cret-pw"]
+    )
+
+    assert result.exit_code != 0
+    assert "s3cret-pw" in " ".join(result.output.split())
+
+
+def test_attach_email_hides_the_password_when_the_server_refuses(monkeypatch, stored_config):
+    """A 4xx attached nothing, so printing the password would only invite a login that cannot work."""
+    monkeypatch.setattr(
+        signup_actions.requests, "post",
+        lambda url, **kwargs: FakeResponse(409, {"detail": {"email": "Email is already in use."}}),
+    )
+
+    result = CliRunner().invoke(
+        cli, ["attach-email", "--email", "ada@example.com", "--password", "s3cret-pw"]
+    )
+
+    assert result.exit_code != 0
+    assert "s3cret-pw" not in " ".join(result.output.split())
+
+
 def test_attach_email_reports_the_password_when_the_request_times_out(monkeypatch, stored_config):
     """The backend mails the user inside the request, so a read timeout can still leave the login attached."""
     def timing_out_post(url, **kwargs):
