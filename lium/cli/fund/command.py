@@ -71,30 +71,6 @@ def _legacy_tao_fund(wallet: Optional[str], amount: Optional[str], yes: bool) ->
     wallet_address = result.data["address"]
     lium = Lium()
 
-    ctx = {
-        "lium": lium,
-        "wallet_address": wallet_address,
-        "bt_wallet": bt_wallet,
-    }
-
-    # Ask for the coldkey password here, outside every spinner — registration and the
-    # transfer both sign with it, and a prompt raised under ui.load lands glued to a
-    # frozen spinner line, which reads as a hung command.
-    result = UnlockColdkeyAction().execute({"bt_wallet": bt_wallet})
-    if not result.ok:
-        ui.error(f"Failed to unlock coldkey for wallet '{wallet_name}': {result.error}")
-        return
-
-    action = CheckWalletRegistrationAction()
-    result = ui.load("Checking wallet registration", lambda: action.execute(ctx))
-
-    if not result.ok:
-        raise CliFailure(
-            "wallet_registration_failed",
-            f"Failed to register wallet: {result.error}",
-            EXIT_GENERAL_ERROR,
-        )
-
     if not amount:
         amount_str = Prompt.ask("Enter TAO amount to fund").strip()
     else:
@@ -111,6 +87,35 @@ def _legacy_tao_fund(wallet: Optional[str], amount: Optional[str], yes: bool) ->
         f"Fund account with {tao_amount} TAO?", default=False
     ):
         return
+
+    # Ask for the coldkey password here, outside every spinner — registration and the
+    # transfer both sign with it, and a prompt raised under ui.load lands glued to a
+    # frozen spinner line, which reads as a hung command. It comes after the confirm so
+    # a user who backs out never has to type it; nothing before this point reads the
+    # coldkey.
+    result = UnlockColdkeyAction().execute({"bt_wallet": bt_wallet})
+    if not result.ok:
+        raise CliFailure(
+            "coldkey_unlock_failed",
+            f"Failed to unlock coldkey for wallet '{wallet_name}': {result.error}",
+            EXIT_CONFIGURATION_ERROR,
+        )
+
+    ctx = {
+        "lium": lium,
+        "wallet_address": wallet_address,
+        "bt_wallet": bt_wallet,
+    }
+
+    action = CheckWalletRegistrationAction()
+    result = ui.load("Checking wallet registration", lambda: action.execute(ctx))
+
+    if not result.ok:
+        raise CliFailure(
+            "wallet_registration_failed",
+            f"Failed to register wallet: {result.error}",
+            EXIT_GENERAL_ERROR,
+        )
 
     ui.info("Waiting for bittensor...")
     ctx = {
