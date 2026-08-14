@@ -106,9 +106,9 @@ def format_logs_table(logs: list) -> Table:
     return table
 
 
-def format_single_backup(pod_name: str, log) -> str:
+def format_single_backup(log) -> str:
     """Format single backup details."""
-    lines = [f"Pod: {pod_name}"]
+    lines = [f"Backup ID: {getattr(log, 'id', 'Unknown')}"]
     lines.append(f"Status: {getattr(log, 'status', 'Unknown')}")
     progress = getattr(log, "progress", None)
     if progress is not None:

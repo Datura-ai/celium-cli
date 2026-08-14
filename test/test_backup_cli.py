@@ -133,18 +133,22 @@ def test_bk_logs_by_id_prints_status_progress_and_error(monkeypatch):
 
     class FakeLium:
         def ps(self):
-            return [_pod()]
+            raise AssertionError("--id lookup must not depend on an active pod")
 
-        def backup_logs(self, pod):
-            assert pod.id == "pod-123"
-            return [backup_log]
+        def resolve_backup_id(self, backup_id):
+            assert backup_id == "8fbb30f6"
+            return backup_log.id
+
+        def backup_log(self, backup_id):
+            assert backup_id == backup_log.id
+            return backup_log
 
     _patch_backup_command(monkeypatch, logs_command, FakeLium)
 
     result = CliRunner().invoke(cli, ["bk", "logs", "--id", "8fbb30f6"])
 
     assert result.exit_code == 0
-    assert "Pod: backup-test" in result.output
+    assert "Backup ID: 8fbb30f6-6026-4043-98c7-c4189dc09bef" in result.output
     assert "Status: FAILED" in result.output
     assert "Progress: 30%" in result.output
     assert "Error: Backup upload failed" in result.output

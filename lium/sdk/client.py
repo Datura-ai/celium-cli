@@ -1639,6 +1639,11 @@ class Lium:
                 return logs
             page += 1
 
+    def backup_log(self, backup_id: str) -> BackupLog:
+        """Get one backup log owned by the authenticated user."""
+        response = self._request("GET", f"/backup-logs/{backup_id}").json()
+        return self._dict_to_backup_log(response)
+
     def resolve_backup_id(self, backup_id: str) -> str:
         """Resolve an eight-character backup ID shown by the CLI."""
         if not re.fullmatch(r"[0-9a-fA-F]{8}", backup_id):

@@ -288,6 +288,29 @@ def test_resolve_backup_id_uses_paginated_backup_logs(monkeypatch):
     assert client.resolve_backup_id("8fbb30f6") == backup_id
 
 
+def test_backup_log_uses_authenticated_single_log_endpoint(monkeypatch):
+    client = Lium(Config(api_key="test"))
+    backup_id = "8fbb30f6-6026-4043-98c7-c4189dc09bef"
+    request = SimpleNamespace()
+
+    class Response:
+        def json(self):
+            return {"id": backup_id, "status": "COMPLETED"}
+
+    def fake_request(method, endpoint, **kwargs):
+        request.method = method
+        request.endpoint = endpoint
+        return Response()
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    backup_log = client.backup_log(backup_id)
+
+    assert request.method == "GET"
+    assert request.endpoint == f"/backup-logs/{backup_id}"
+    assert backup_log.id == backup_id
+
+
 def test_resolve_restore_id_searches_active_pods(monkeypatch):
     client = Lium(Config(api_key="test"))
     restore_id = "9b6c8d90-1111-4222-9333-48b031f1f3eb"
