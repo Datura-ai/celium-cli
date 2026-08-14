@@ -146,6 +146,8 @@ def test_signup_json_reports_credentials_and_next_steps(monkeypatch, stored_conf
     assert payload["email"] == "ada@example.com"
     assert payload["password"]
     assert any("verification link" in step for step in payload["next_steps"])
+    # DAH-2587 dropped the email_verified gate from the rent endpoints — balance is the only gate now
+    assert not any("renting is blocked" in step for step in payload["next_steps"])
 
 
 def test_signup_reports_credentials_when_the_key_cannot_be_read_back(monkeypatch, stored_config, ssh_setup_ok):
