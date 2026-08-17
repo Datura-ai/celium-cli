@@ -51,6 +51,48 @@ load_dotenv()
 _PAY_API_KEY = "6RhXQ788J9BdnqeLua8z7ZSkXBDahclxhwjMB17qW1M"
 
 
+def _response_error_message(response: requests.Response) -> str:
+    try:
+        payload = response.json()
+    except Exception:
+        return response.text or "Request failed"
+
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    response_message = payload.get("message") if isinstance(payload, dict) else None
+    validation_errors = (
+        payload.get("validation_errors") if isinstance(payload, dict) else None
+    )
+    structured_error = (
+        detail
+        if isinstance(detail, dict)
+        else response_message if isinstance(response_message, dict) else None
+    )
+    if isinstance(validation_errors, list) and validation_errors:
+        messages: list[str] = []
+        for error in validation_errors:
+            if not isinstance(error, dict):
+                messages.append(str(error))
+                continue
+            field = error.get("field")
+            reason = error.get("message") or error.get("msg") or "Invalid value"
+            messages.append(f"{field}: {reason}" if field else str(reason))
+        validation_summary = "; ".join(messages)
+        message = (
+            f"{response_message}: {validation_summary}"
+            if isinstance(response_message, str)
+            else validation_summary
+        )
+    elif isinstance(detail, list) and detail:
+        message = detail[0].get("msg") if isinstance(detail[0], dict) else str(detail[0])
+    elif structured_error:
+        message = structured_error.get("message") or "Request failed"
+        if structured_error.get("active_operation_id"):
+            message += f" (active operation: {structured_error['active_operation_id']})"
+    else:
+        message = detail or response_message
+    return str(message or "Request failed")
+
+
 def _get_client_version() -> str:
     try:
         return version("lium.io")
@@ -79,6 +121,7 @@ class Lium:
 
     def __init__(self, config: Optional[Config] = None, source: str = "sdk"):
         self.config = config or Config.load()
+        self.source = source
         self.headers = {
             "X-API-KEY": self.config.api_key,
             "X-Source": source,
@@ -106,14 +149,14 @@ class Lium:
         if resp.status_code == 401:
             raise LiumAuthError("Invalid API key")
         if resp.status_code == 403:
-            raise LiumPermissionError(f"Permission denied: {resp.text}")
+            raise LiumPermissionError(f"Permission denied: {_response_error_message(resp)}")
         if resp.status_code == 404:
-            raise LiumNotFoundError(f"Resource not found: {resp.text}")
+            raise LiumNotFoundError(f"Resource not found: {_response_error_message(resp)}")
         if resp.status_code == 429:
             raise LiumRateLimitError("Rate limit exceeded")
         if 500 <= resp.status_code < 600:
             raise LiumServerError(f"Server error: {resp.status_code}")
-        raise LiumError(f"API error {resp.status_code}: {resp.text}")
+        raise LiumError(f"API error {resp.status_code}: {_response_error_message(resp)}")
 
     def _dict_to_backup_config(self, config_dict: Dict) -> BackupConfig:
         """Convert backup config dict to BackupConfig object."""
@@ -141,7 +184,18 @@ class Lium:
             error_message=log_dict.get("error_message"),
             progress=log_dict.get("progress"),
             backup_volume_id=log_dict.get("backup_volume_id"),
-            created_at=log_dict.get("created_at")
+            created_at=log_dict.get("created_at"),
+            stage=log_dict.get("stage"),
+            total_files=log_dict.get("total_files"),
+            processed_files=log_dict.get("processed_files"),
+            total_bytes=log_dict.get("total_bytes"),
+            processed_bytes=log_dict.get("processed_bytes"),
+            deletion_state=log_dict.get("deletion_state"),
+            physical_cleanup_at=log_dict.get("physical_cleanup_at"),
+            status_message=log_dict.get("status_message"),
+            elapsed_seconds=log_dict.get("elapsed_seconds"),
+            throughput_bytes_per_second=log_dict.get("throughput_bytes_per_second"),
+            estimated_remaining_seconds=log_dict.get("estimated_remaining_seconds"),
         )
 
     def _dict_to_restore_log(self, log_dict: Dict) -> RestoreLog:
@@ -159,6 +213,17 @@ class Lium:
             logs=log_dict.get("logs"),
             restore_path=log_dict.get("restore_path"),
             created_at=log_dict.get("created_at", ""),
+            backup_engine=log_dict.get("backup_engine"),
+            restore_mode=log_dict.get("restore_mode"),
+            stage=log_dict.get("stage"),
+            last_heartbeat_at=log_dict.get("last_heartbeat_at"),
+            total_files=log_dict.get("total_files"),
+            processed_files=log_dict.get("processed_files"),
+            total_bytes=log_dict.get("total_bytes"),
+            processed_bytes=log_dict.get("processed_bytes"),
+            elapsed_seconds=log_dict.get("elapsed_seconds"),
+            throughput_bytes_per_second=log_dict.get("throughput_bytes_per_second"),
+            estimated_remaining_seconds=log_dict.get("estimated_remaining_seconds"),
         )
 
     def _dict_to_volume_info(self, volume_dict: Dict) -> VolumeInfo:
@@ -322,6 +387,8 @@ class Lium:
         ssh_keys: Optional[List[str]] = None,
         ssh_name: Optional[str] = None,
         enable_volume_encryption: bool | None = True,
+        backup_id: Optional[str] = None,
+        restore_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Start a new pod on a specific node.
 
@@ -344,6 +411,9 @@ class Lium:
             enable_volume_encryption: Whether to request encryption for the local
                 pod volume. Enabled by default. The image must support Lium volume
                 encryption.
+            backup_id: Optional backup ID to restore after the pod starts.
+            restore_path: New or empty subdirectory where the backup is restored.
+                Required when ``backup_id`` is provided.
 
         Returns:
             Pod metadata as returned by the rent API (id, name, status, ssh command, etc.).
@@ -352,6 +422,8 @@ class Lium:
             raise ValueError(
                 "Provide either template_id or dockerfile_content, not both"
             )
+        if bool(backup_id) != bool(restore_path):
+            raise ValueError("backup_id and restore_path must be provided together")
 
         executor_info = self.get_executor(executor_id)
         if not executor_info:
@@ -375,6 +447,8 @@ class Lium:
             "user_public_key": ssh_material,
             "initial_port_count": ports,
             "enable_volume_encryption": enable_volume_encryption,
+            "backup_log_id": backup_id,
+            "restore_path": restore_path,
         }
 
         response = self._request("POST", f"/executors/{executor_info.id}/rent", json=payload).json()
@@ -1444,7 +1518,7 @@ class Lium:
         self,
         pod: PodInfo,
         *,
-        path: str = "/home",
+        path: str,
         frequency_hours: int = 6,
         retention_days: int = 7,
     ) -> BackupConfig:
@@ -1452,13 +1526,20 @@ class Lium:
 
         Args:
             pod: Pod to configure.
-            path: Filesystem path to back up.
+            path: Explicit filesystem path inside the pod volume to back up.
             frequency_hours: Backup interval in hours.
             retention_days: Retention period in days.
 
         Returns:
             Created :class:`BackupConfig`.
         """
+        if self.source != "cli" and path.rstrip("/") == pod.volume_path.rstrip("/"):
+            warnings.warn(
+                "Backing up the entire volume is less reliable when files are actively changing; "
+                "prefer a stable subdirectory when possible.",
+                UserWarning,
+                stacklevel=2,
+            )
         payload = {
             "pod_id": pod.id,
             "backup_frequency_hours": frequency_hours,
@@ -1543,6 +1624,38 @@ class Lium:
             # No backup logs exist for this pod, return empty list
             return []
 
+    def backup_logs_all(self) -> List[BackupLog]:
+        """Get all backup logs available to the current user."""
+        logs: List[BackupLog] = []
+        page = 1
+        while True:
+            response = self._request(
+                "GET", "/backup-logs/", params={"page": page, "limit": 100}
+            ).json()
+            if not isinstance(response, dict):
+                return logs
+            logs.extend(self._dict_to_backup_log(log) for log in response.get("items", []))
+            if not response.get("has_next"):
+                return logs
+            page += 1
+
+    def backup_log(self, backup_id: str) -> BackupLog:
+        """Get one backup log owned by the authenticated user."""
+        response = self._request("GET", f"/backup-logs/{backup_id}").json()
+        return self._dict_to_backup_log(response)
+
+    def resolve_backup_id(self, backup_id: str) -> str:
+        """Resolve an eight-character backup ID shown by the CLI."""
+        if not re.fullmatch(r"[0-9a-fA-F]{8}", backup_id):
+            return backup_id
+        normalized_backup_id = backup_id.lower()
+        matches = {
+            log.id
+            for log in self.backup_logs_all()
+            if log.id.startswith(normalized_backup_id)
+        }
+        return self._resolve_short_id(backup_id, matches, "backup")
+
     def backup_delete(self, config_id: str) -> Dict[str, Any]:
         """Delete a backup configuration by ID.
 
@@ -1553,27 +1666,37 @@ class Lium:
             API response payload.
         """
         return self._request("DELETE", f"/backup-configs/{config_id}").json()
+
+    def backup_cancel(self, backup_id: str) -> Dict[str, Any]:
+        """Request cancellation of an active backup while retaining its history."""
+        return self._request("POST", f"/backup-logs/{backup_id}/cancel").json()
+
+    def backup_log_delete(self, backup_id: str) -> Dict[str, Any]:
+        """Delete the stored data for a completed backup and retain its audit row."""
+        return self._request("DELETE", f"/backup-logs/{backup_id}").json()
     
     def restore(
         self,
         pod: PodInfo,
         *,
         backup_id: str,
-        restore_path: str = "/root",
+        restore_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Restore a backup to a pod.
         
         Args:
             pod: Pod to restore to.
             backup_id: ID of the backup to restore.
-            restore_path: Path where to restore the backup (default: /root).
+            restore_path: New or empty subdirectory where the backup is restored.
+                Defaults to ``<pod volume>/restored``.
             
         Returns:
             Response from the restore API.
         """
+        target_path = restore_path or pod.default_restore_path
         payload = {
             "backup_id": backup_id,
-            "restore_path": restore_path
+            "restore_path": target_path,
         }
         
         return self._request("POST", f"/pods/{pod.id}/restore", json=payload).json()
@@ -1598,6 +1721,31 @@ class Lium:
             return [self._dict_to_restore_log(log) for log in logs]
         except LiumNotFoundError:
             return []
+
+    def resolve_restore_id(self, restore_id: str) -> str:
+        """Resolve an eight-character restore ID shown by the CLI."""
+        if not re.fullmatch(r"[0-9a-fA-F]{8}", restore_id):
+            return restore_id
+        normalized_restore_id = restore_id.lower()
+        matches = {
+            log.id
+            for pod in self.ps()
+            for log in self.restore_logs(pod)
+            if log.id.startswith(normalized_restore_id)
+        }
+        return self._resolve_short_id(restore_id, matches, "restore")
+
+    @staticmethod
+    def _resolve_short_id(short_id: str, matches: set[str], resource_name: str) -> str:
+        if not matches:
+            raise LiumNotFoundError(f"No {resource_name} matches ID '{short_id}'")
+        if len(matches) > 1:
+            raise LiumError(f"{resource_name.capitalize()} ID '{short_id}' is ambiguous")
+        return matches.pop()
+
+    def restore_cancel(self, restore_id: str) -> Dict[str, Any]:
+        """Request cancellation of an active restore."""
+        return self._request("POST", f"/restore-logs/{restore_id}/cancel").json()
 
     def get_deployment_estimate(self, executor_id: str, template_id: str) -> dict:
         """Estimate deployment time for a template on a node.

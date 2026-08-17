@@ -13,11 +13,12 @@ from lium.cli.utils import (
 )
 from . import validation, parsing
 from .actions import SetBackupAction
+from ..path_warning import entire_volume_backup_warning
 
 
 @click.command("set")
 @click.argument("pod_id")
-@click.option("--path", default="/root", help="Backup path (default: /root)")
+@click.option("--path", required=True, help="Explicit path inside the pod volume to back up")
 @click.option("--every", help="Backup frequency (e.g., 1h, 6h, 24h)")
 @click.option("--keep", help="Retention period (e.g., 1d, 7d, 30d)")
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
@@ -33,7 +34,7 @@ def bk_set_command(pod_id: str, path: str, every: str, keep: str, yes: bool):
     \b
     Examples:
       lium bk set 1 --path /root --every 6h --keep 7d
-      lium bk set eager-wolf-aa --every 1h --keep 1d
+      lium bk set eager-wolf-aa --path /root/checkpoints --every 1h --keep 1d
     """
     ensure_config()
 
@@ -43,7 +44,7 @@ def bk_set_command(pod_id: str, path: str, every: str, keep: str, yes: bool):
         raise CliFailure("invalid_arguments", error, EXIT_CONFIGURATION_ERROR)
 
     # Load data
-    lium = Lium()
+    lium = Lium(source="cli")
     all_pods = ui.load("Loading pods", lambda: lium.ps())
 
     if not all_pods:
@@ -60,6 +61,10 @@ def bk_set_command(pod_id: str, path: str, every: str, keep: str, yes: bool):
     frequency_hours = parsed.get("frequency_hours")
     retention_days = parsed.get("retention_days")
 
+    path_warning = entire_volume_backup_warning(pod, backup_path)
+    if path_warning:
+        ui.warning(path_warning)
+
     # Execute
     ctx = {
         "lium": lium,
@@ -67,7 +72,7 @@ def bk_set_command(pod_id: str, path: str, every: str, keep: str, yes: bool):
         "pod_name": pod_name,
         "path": backup_path,
         "frequency_hours": frequency_hours,
-        "retention_days": retention_days
+        "retention_days": retention_days,
     }
 
     action = SetBackupAction()

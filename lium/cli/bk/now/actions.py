@@ -13,16 +13,14 @@ class TriggerBackupAction:
         description: str = ctx["description"]
 
         # Check if backup config exists
-        backup_config = lium.backup_config(pod)
+        backup_config = ctx.get("backup_config") or lium.backup_config(pod)
 
         if not backup_config:
-            return ActionResult(ok=False, data={}, error="No backup configuration found")
+            return ActionResult(
+                ok=False, data={}, error="No backup configuration found"
+            )
 
         # Trigger backup
-        backup_result = lium.backup_now(
-            pod=pod,
-            name=name,
-            description=description
-        )
+        backup_result = lium.backup_now(pod=pod, name=name, description=description)
 
         return ActionResult(ok=True, data={"backup": backup_result})

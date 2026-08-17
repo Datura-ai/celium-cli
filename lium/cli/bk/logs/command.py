@@ -40,10 +40,9 @@ def bk_logs_command(pod_id: Optional[str], backup_id: Optional[str]):
         if not result.ok:
             raise CliFailure("backup_not_found", result.error, EXIT_GENERAL_ERROR)
 
-        pod_name_found = result.data.get("pod_name")
         log = result.data.get("log")
 
-        output = display.format_single_backup(pod_name_found, log)
+        output = display.format_single_backup(log)
         ui.print(output)
         return
 
