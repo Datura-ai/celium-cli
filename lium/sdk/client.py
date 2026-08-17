@@ -1648,7 +1648,12 @@ class Lium:
         """Resolve an eight-character backup ID shown by the CLI."""
         if not re.fullmatch(r"[0-9a-fA-F]{8}", backup_id):
             return backup_id
-        matches = {log.id for log in self.backup_logs_all() if log.id.startswith(backup_id)}
+        normalized_backup_id = backup_id.lower()
+        matches = {
+            log.id
+            for log in self.backup_logs_all()
+            if log.id.startswith(normalized_backup_id)
+        }
         return self._resolve_short_id(backup_id, matches, "backup")
 
     def backup_delete(self, config_id: str) -> Dict[str, Any]:
@@ -1721,11 +1726,12 @@ class Lium:
         """Resolve an eight-character restore ID shown by the CLI."""
         if not re.fullmatch(r"[0-9a-fA-F]{8}", restore_id):
             return restore_id
+        normalized_restore_id = restore_id.lower()
         matches = {
             log.id
             for pod in self.ps()
             for log in self.restore_logs(pod)
-            if log.id.startswith(restore_id)
+            if log.id.startswith(normalized_restore_id)
         }
         return self._resolve_short_id(restore_id, matches, "restore")
 

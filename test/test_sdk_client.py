@@ -286,6 +286,7 @@ def test_resolve_backup_id_uses_paginated_backup_logs(monkeypatch):
     monkeypatch.setattr(client, "_request", lambda *args, **kwargs: Response())
 
     assert client.resolve_backup_id("8fbb30f6") == backup_id
+    assert client.resolve_backup_id("8FBB30F6") == backup_id
 
 
 def test_backup_log_uses_authenticated_single_log_endpoint(monkeypatch):
@@ -323,3 +324,4 @@ def test_resolve_restore_id_searches_active_pods(monkeypatch):
     )
 
     assert client.resolve_restore_id("9b6c8d90") == restore_id
+    assert client.resolve_restore_id("9B6C8D90") == restore_id
