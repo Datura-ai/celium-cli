@@ -102,7 +102,8 @@ def _get_client_version() -> str:
 
 @dataclass(frozen=True)
 class AlphaQuote:
-    """USD -> alpha quote from ``GET /balance/convert/alpha``.
+    """USD -> alpha quote from ``GET /balance/convert/alpha`` on the pay API
+    (``https://pay-api.lium.io``), not the platform API.
 
     ``netuid`` is the subnet the alpha must be transferred on (the same subnet the
     pay-tao-api-v2 listener credits), so it — not a hardcoded constant — drives the
@@ -1475,7 +1476,8 @@ class Lium:
         raise LiumError("Failed to add wallet. Wallet not found after 5 attempts.")
 
     def convert_alpha(self, usd: Any) -> AlphaQuote:
-        """Quote ``usd`` (USD) -> alpha via ``GET /balance/convert/alpha``.
+        """Quote ``usd`` (USD) -> alpha via ``GET /balance/convert/alpha`` on the pay
+        API (``https://pay-api.lium.io``), not the platform API.
 
         The response carries both the alpha amount to transfer (``converted``) and
         the subnet ``netuid`` the transfer must happen on. Hard-fails (no fallback)
@@ -1499,7 +1501,8 @@ class Lium:
         )
 
     def company_wallet(self, app_id: str) -> str:
-        """Resolve the Lium destination coldkey via ``GET /wallet/company/?app_id=``.
+        """Resolve the Lium destination coldkey via ``GET /wallet/company/?app_id=``
+        on the pay API (``https://pay-api.lium.io``), not the platform API.
 
         Returns the company ``wallet_hash`` (the SS58 the pay-tao-api-v2 listener
         credits). Hard-fails (no fallback): a 404 (app has no wallet) maps to
