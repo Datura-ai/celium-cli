@@ -112,7 +112,7 @@ with lium.rent(executor_id=node.id, name="job") as pod:
     print(pod.to_dict())                                             # JSON-ready
 ```
 
-`lium.pod_by_name("job")` finds a pod by name, huid or id.
+`lium.pod_by_name("job")` finds a pod by name, huid or id; `lium schema` prints the JSON Schema of `PodInfo`, `ExecutorInfo`, `Template` and `GpuStats`.
 
 Full API reference: https://docs.lium.io/developers/sdk/reference
 
@@ -206,6 +206,7 @@ Full reference with every flag and runnable examples: <https://docs.lium.io/deve
 ### Other Commands
 
 - `lium theme [THEME]` - Get or set UI theme (light/dark/auto)
+- `lium schema [MODEL]...` - JSON Schema of the SDK models behind `--format json` output (`PodInfo`, `ExecutorInfo`, `Template`, `GpuStats`)
 - `lium mine` - Set up a compute subnet node/miner
 - `sudo lium gpu-splitting setup [--device /dev/...] [--yes]` - Prepare Docker storage for LIUM GPU splitting
 - `lium gpu-splitting check [--device /dev/...]` - Inspect the host and print the GPU-splitting plan

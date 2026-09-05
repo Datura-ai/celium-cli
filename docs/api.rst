@@ -37,6 +37,9 @@ Modules
    :members:
    :undoc-members:
 
+.. automodule:: lium.sdk.schema
+   :members:
+
 .. automodule:: lium.sdk.exceptions
    :members:
    :undoc-members:

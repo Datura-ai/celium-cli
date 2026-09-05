@@ -37,6 +37,7 @@ from .ssh_keys import ssh_keys_command
 from .schedules import schedules_command
 from .update.command import update_command
 from .port_forward import port_forward_command
+from .schema import schema_command
 from .plugins import load_plugins
 from .self_update import maybe_perform_startup_update
 
@@ -96,6 +97,7 @@ cli.add_command(ssh_keys_command, name="ssh-keys")
 cli.add_command(schedules_command, name="schedules")
 cli.add_command(update_command)
 cli.add_command(port_forward_command)
+cli.add_command(schema_command)
 
 # Add compose placeholder (will be overridden if plugin is installed)
 # cli.add_command(compose_command)  # Disabled for beta.1

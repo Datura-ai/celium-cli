@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SDK: `Lium.exec(..., timeout=)` raises `TimeoutError` and closes the channel; `Lium.exec(..., detach=True, log_path=)` starts the command under `nohup setsid … < /dev/null &` and returns `{"pid", "log_path", "command"}` (`Lium.build_detached_command` is the reusable command line).
 - SDK: `Lium.gpu_stats(pod)` returns `GpuStats` per GPU from `nvidia-smi --query-gpu`; `Lium.parse_gpu_stats(text)` is the parser.
 - SDK: every model has `to_dict()` (nested models included, plus derived fields such as `PodInfo.host`/`ssh_port` and `ExecutorInfo.gpu_model`).
+- `lium schema [MODEL]...` prints JSON Schema for the SDK models, derived from the dataclasses (`lium.sdk.schema`); `--list`, `--compact`.
 
 ### Fixed
 - `Lium.up()` no longer retries the rent POST blindly. On a timeout, connection error, 429 or 5xx it first looks in `ps` for a pod with the requested name on the chosen node and returns that; only when nothing appeared is the request sent once more, with the same client-generated `Idempotency-Key` header. One `lium up` could previously create two pods.
