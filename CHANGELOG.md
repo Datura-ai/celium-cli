@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- SDK SSH connections (`exec`, `stream_exec`, `rsync`) now pin each pod's host key on first use under `~/.lium/known_hosts/<pod-id>` and raise `LiumHostKeyError` when a pod later presents a different key, instead of accepting any key (`AutoAddPolicy`, `StrictHostKeyChecking=no`). `LIUM_SSH_INSECURE=1` restores the previous behaviour.
+
 ## [0.4.3] - 2025-10-23
 
 ### Added
