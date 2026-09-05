@@ -15,6 +15,7 @@ Core Objects
    ExecutorInfo
    PodInfo
    Template
+   GpuStats
    VolumeInfo
    BackupConfig
    BackupLog
