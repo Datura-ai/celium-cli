@@ -123,7 +123,7 @@ The `lium` CLI exposes the full pod lifecycle. Run `lium --help` to see everythi
 ### Core Commands
 
 - `lium init` - Initialize configuration (API key, SSH keys)
-- `lium ls [GPU_TYPE]` - List available nodes
+- `lium ls [--gpu TYPE] [--count N] [--country CODE] [--min-vram GB] [--max-price USD] [--tier spot|secure] [--format json]` - List available nodes
 - `lium up [NODE_ID]` - Create a pod (use node ID or filters like `--gpu`, `--count`, `--country`)
 - `lium ps` - List active pods
 - `lium describe <POD>` - Full manifest of one pod: ports, GPU, template, billing (add `--json` for machine-readable output)
@@ -203,9 +203,10 @@ Full reference with every flag and runnable examples: <https://docs.lium.io/deve
 ### Command Examples
 
 ```bash
-# Filter nodes by GPU type
-lium ls H100
-lium ls A100
+# Filter nodes
+lium ls --gpu H100
+lium ls --gpu H100 --count 8 --country US,NL --max-price 2.50
+lium ls --min-vram 80 --min-cuda 12.8 --tier secure
 
 # Create pod with node index
 lium up 1 --name my-pod --yes

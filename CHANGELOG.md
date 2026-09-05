@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `lium ls --country CODE|NAME` (repeatable or comma-separated), `--min-vram GB`, `--max-price USD` (per GPU-hour) and `--tier spot|secure`, applied client-side on the same values `--format json` prints; `--json` as an alias of `--format json`. When filters leave nothing, the message names the filters instead of claiming every GPU is rented out.
+- `lium ls --format json` rows gain `country_code`, `city` and `machine_name`.
+
+### Changed
+- `lium ls` explains the ★ marker in one line under the table (no other node is both faster to download and cheaper; `--sort` replaces that order) and its `--help` has examples.
+- README: the `lium ls H100` examples used a positional argument that does not exist; they now use `--gpu`.
+
 ## [0.4.3] - 2025-10-23
 
 ### Added

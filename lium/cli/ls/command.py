@@ -14,7 +14,7 @@ from lium.cli.utils import (
     store_executor_selection,
 )
 from lium.cli.completion import get_gpu_completions
-from . import validation, display
+from . import validation, display, filters as node_filters
 from .actions import GetExecutorsAction
 
 
@@ -44,6 +44,10 @@ def ls_store_executor(gpu_type: Optional[str] = None, sort_by: str = "download")
 @click.option("--gpu", "gpu_type", shell_complete=get_gpu_completions, help="Filter by GPU type, e.g. A100")
 @click.option("--count", "gpu_count", type=int, help="Exact GPU count to match (e.g., 1, 8)")
 @click.option("--min-cuda", "min_cuda_version", type=float, help="Minimum CUDA version, e.g. 12.4 (NVIDIA drivers are backward compatible)")
+@click.option("--country", "countries", multiple=True, metavar="CODE|NAME", help="Only nodes in these countries (ISO code or name; repeatable or comma-separated)")
+@click.option("--min-vram", "min_vram_gb", type=float, metavar="GB", help="Minimum memory per GPU in GB, e.g. 80")
+@click.option("--max-price", "max_price", type=float, metavar="USD", help="Maximum price per GPU-hour, e.g. 2.50")
+@click.option("--tier", type=click.Choice(["spot", "secure"]), help="Only spot (reclaimable) or secure nodes")
 @click.option("--lat", type=float, help="Latitude for distance filtering")
 @click.option("--lon", type=float, help="Longitude for distance filtering")
 @click.option("--max-distance", "max_distance", type=int, help="Maximum distance in miles from --lat/--lon")
@@ -61,6 +65,7 @@ def ls_store_executor(gpu_type: Optional[str] = None, sort_by: str = "download")
     default="table",
     help="Output format. 'json' emits machine-readable JSON to stdout (suitable for piping to jq).",
 )
+@click.option("--json", "json_flag", is_flag=True, help="Same as --format json")
 @handle_errors
 def ls_command(
     gpu_type: Optional[str],
@@ -71,13 +76,38 @@ def ls_command(
     sort_by: Optional[str],
     limit: Optional[int],
     output_format: str,
+    json_flag: bool,
     min_cuda_version: Optional[float],
+    countries: tuple,
+    min_vram_gb: Optional[float],
+    max_price: Optional[float],
+    tier: Optional[str],
 ):
-    """List available GPU nodes."""
+    """List available GPU nodes.
 
-    _, error = validation.validate(limit, lat, lon, max_distance, min_cuda_version)
+    Rows are ordered best-first: ★ marks nodes no other node beats on
+    download speed and price together (nodes under 100 Mbps are never ★).
+    An explicit --sort replaces that order.
+
+    \b
+    Examples:
+      lium ls --gpu H100 --count 8
+      lium ls --gpu H100 --country US,NL --max-price 2.50
+      lium ls --min-vram 80 --min-cuda 12.8 --tier secure
+      lium ls --gpu A100 --format json | jq '.[0].huid'
+    """
+    if json_flag:
+        output_format = "json"
+
+    _, error = validation.validate(limit, lat, lon, max_distance, min_cuda_version, min_vram_gb, max_price)
     if error:
         raise CliFailure("invalid_arguments", error, EXIT_CONFIGURATION_ERROR)
+    filters = node_filters.NodeFilters(
+        countries=node_filters.parse_countries(countries),
+        min_vram_gb=min_vram_gb,
+        max_price_per_gpu_hour=max_price,
+        tier=tier,
+    )
 
     # Load data
     lium = Lium()
@@ -97,12 +127,16 @@ def ls_command(
     else:
         result = ui.load("Loading nodes", lambda: action.execute(ctx))
 
-    executors = result.data["executors"]
+    executors = node_filters.apply(result.data["executors"], filters)
 
     # Check if empty
     if not executors:
         if output_format == "json":
             click.echo("[]")
+            return
+        if filters.active and result.data["executors"]:
+            ui.error(f"No nodes match {node_filters.describe(filters)}")
+            ui.info(f"Tip: loosen a filter, or {ui.styled('lium ls --gpu ' + gpu_type if gpu_type else 'lium ls', 'success')} to see everything")
             return
         if gpu_type:
             ui.error(f"All {gpu_type} GPUs are currently rented out")

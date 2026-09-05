@@ -166,7 +166,10 @@ def format_header(executor_count: int, pareto_count: int, show_pareto: bool) -> 
 
 def format_tip() -> str:
     """Format tip message."""
-    return f"Tip: {console.get_styled('lium up <index>', 'success')} {console.get_styled('# e.g. lium up 1', 'dim')}"
+    return (
+        f"Tip: {console.get_styled('lium up <index>', 'success')} {console.get_styled('# e.g. lium up 1', 'dim')}\n"
+        f"{console.get_styled('★ = no other node is both faster to download and cheaper; --sort replaces this order', 'dim')}"
+    )
 
 
 def compact_executor(exe: ExecutorInfo, is_pareto: bool, index: int) -> Dict[str, Any]:
@@ -182,6 +185,8 @@ def compact_executor(exe: ExecutorInfo, is_pareto: bool, index: int) -> Dict[str
         "price_per_gpu_hour": exe.price_per_gpu,
         "price_per_hour": exe.price_per_hour,
         "country": _country_name(exe.location),
+        "country_code": ((exe.location or {}).get("country_code") or (exe.location or {}).get("iso_code") or None),
+        "city": (exe.location or {}).get("city") or None,
         "vram_gb": _intish(s["VRAM"]),
         "ram_gb": _intish(s["RAM"]),
         "disk_gb": _intish(s["Disk"]),
@@ -192,6 +197,7 @@ def compact_executor(exe: ExecutorInfo, is_pareto: bool, index: int) -> Dict[str
         "is_pareto": is_pareto,
         "max_cuda_version": exe.max_cuda_version,
         "tier": exe.tier,
+        "machine_name": getattr(exe, "machine_name", None),
     }
 
 
