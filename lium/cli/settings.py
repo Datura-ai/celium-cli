@@ -5,7 +5,9 @@ import json
 from configparser import ConfigParser
 from pathlib import Path
 from typing import Any, Optional, Dict, List
-from rich.prompt import Prompt, Confirm
+from rich.prompt import Prompt
+
+from lium.cli.interactive import is_interactive, noninteractive_reason
 
 # Delayed import to avoid circular dependency
 
@@ -92,14 +94,17 @@ class ConfigManager:
         
         # Handle special interactive keys
         if key == 'template.default_id' and not value:
+            self._require_terminal_for(key)
             value = self._select_template()
             if not value:
                 return
         elif key == 'ui.theme' and not value:
+            self._require_terminal_for(key)
             value = self._select_theme()
             if not value:
                 return
         elif key == 'api.api_key' and not value:
+            self._require_terminal_for(key)
             value = self._input_api_key()
             if not value:
                 return
@@ -135,6 +140,20 @@ class ConfigManager:
         """Get path to configuration file."""
         return self.config_file
     
+    @staticmethod
+    def _require_terminal_for(key: str) -> None:
+        """Interactive selection needs a person; without one, name the value to pass."""
+        if is_interactive():
+            return
+        from .utils import CliFailure, EXIT_CONFIGURATION_ERROR  # Local import to avoid circular dependency
+
+        raise CliFailure(
+            "input_required",
+            f"'{key}' has no value and cannot be asked for because {noninteractive_reason()}. "
+            f"Pass it explicitly: lium config set {key} <VALUE>",
+            EXIT_CONFIGURATION_ERROR,
+        )
+
     def _select_template(self) -> Optional[str]:
         """Interactive template selection."""
         from .utils import console  # Local import to avoid circular dependency
@@ -142,7 +161,7 @@ class ConfigManager:
         try:
             from lium.sdk import Lium
             client = Lium()
-            templates = client.list_templates()
+            templates = client.templates()
             
             if not templates:
                 console.warning("No templates available")
@@ -201,9 +220,17 @@ class ConfigManager:
         return api_key
     
     def get_or_ask(self, key: str, prompt_text: str, password: bool = False, default: Optional[str] = None) -> str:
-        """Get config value or ask user if not set."""
+        """Get config value or ask user if not set.
+
+        Without a terminal the question is skipped: ``default`` is used when
+        given, otherwise the caller must supply the value another way.
+        """
         value = self.get(key)
         if not value:
+            if not is_interactive():
+                if default is None:
+                    self._require_terminal_for(key)
+                return default
             value = Prompt.ask(prompt_text, password=password, default=default)
             if value:
                 self.set(key, value)

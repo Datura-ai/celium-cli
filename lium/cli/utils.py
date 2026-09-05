@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import click
+from lium.cli.interactive import is_interactive, noninteractive_reason
 from lium.cli.settings import config
 from datetime import datetime, timezone
 from rich.status import Status
@@ -98,9 +99,12 @@ def _prompt_value(
     cast: Callable[[str], T],
     validate: Callable[[T], bool],
 ) -> T:
-    """Loop: Enter -> default, invalid -> reprompt until valid."""
+    """Loop: Enter -> default, invalid -> reprompt until valid.
+
+    Without a terminal there is no loop: the default is the answer.
+    """
     default_str = str(default_value)
-    if value != default_value:
+    if value != default_value or not is_interactive():
         return value
     while True:
         raw = Prompt.ask(prompt_text, default=default_str)
@@ -938,6 +942,17 @@ def ensure_config():
     from lium.cli.settings import config
 
     if not config.get('api.api_key'):
+        if not is_interactive():
+            # The browser login needs a person at the keyboard. Without one it
+            # would open a browser nobody sees and poll for half a minute
+            # before failing — name the fix instead.
+            raise CliFailure(
+                "no_api_key",
+                "No API key configured and the browser login cannot run because "
+                f"{noninteractive_reason()}. Set LIUM_API_KEY, or run "
+                "'lium init --no-browser' and then 'lium init --session <ID>'",
+                EXIT_CONFIGURATION_ERROR,
+            )
         # Setup API key
         action = SetupApiKeyAction()
         result = action.execute({})

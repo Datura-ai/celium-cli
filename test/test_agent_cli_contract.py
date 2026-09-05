@@ -365,7 +365,7 @@ def test_ssh_session_connected_reports_only_connection_failure(monkeypatch, retu
 
 def test_rm_all_treats_a_lost_terminal_as_no(monkeypatch):
     """No answer is not a yes — an EOF at the prompt must not wipe the account."""
-    monkeypatch.setattr(rm_module.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(rm_module, "is_interactive", lambda: True)
     monkeypatch.setattr(rm_module.ui, "confirm", lambda message: (_ for _ in ()).throw(EOFError()))
 
     assert rm_module.human_approved_removing_every_pod([_pod()]) is False
