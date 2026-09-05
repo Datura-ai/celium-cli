@@ -3,7 +3,49 @@
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
+
+API_KEY_ENV_VAR = "LIUM_API_KEY"
+API_KEY_SOURCE_EXPLICIT = "explicit"
+
+
+def config_file_path() -> Path:
+    return Path.home() / ".lium" / "config.ini"
+
+
+def resolve_api_key() -> Tuple[Optional[str], Optional[str]]:
+    """The API key the SDK will use and where it came from.
+
+    Returns ``(api_key, source)``; both are ``None`` when no key is configured.
+    ``source`` is ``env:LIUM_API_KEY`` or ``config:<path> [api] api_key``. The
+    source is recorded because two commands run in different shells can pick up
+    different keys, and an auth error that does not say which key it used sends
+    the caller to the wrong place.
+    """
+    api_key = os.getenv(API_KEY_ENV_VAR)
+    if api_key:
+        return api_key, f"env:{API_KEY_ENV_VAR}"
+
+    config_file = config_file_path()
+    if config_file.exists():
+        from configparser import ConfigParser
+
+        config = ConfigParser()
+        config.read(config_file)
+        api_key = config.get("api", "api_key", fallback=None)
+        if api_key:
+            return api_key, f"config:{config_file} [api] api_key"
+
+    return None, None
+
+
+def api_key_fingerprint(api_key: Optional[str]) -> str:
+    """A short, non-secret handle for a key: first six and last four characters."""
+    if not api_key:
+        return "none"
+    if len(api_key) <= 12:
+        return "***"
+    return f"{api_key[:6]}…{api_key[-4:]}"
 
 
 @dataclass
@@ -12,21 +54,15 @@ class Config:
     base_url: str = "https://lium.io/api"
     base_pay_url: str = "https://pay-api.lium.io"
     ssh_key_path: Optional[Path] = None
+    api_key_source: str = API_KEY_SOURCE_EXPLICIT
 
     @classmethod
     def load(cls) -> "Config":
         """Load config from env/file with smart defaults."""
-        api_key = os.getenv("LIUM_API_KEY")
-        if not api_key:
-            from configparser import ConfigParser
-            config_file = Path.home() / ".lium" / "config.ini"
-            if config_file.exists():
-                config = ConfigParser()
-                config.read(config_file)
-                api_key = config.get("api", "api_key", fallback=None)
+        api_key, source = resolve_api_key()
 
         if not api_key:
-            raise ValueError("No API key found. Set LIUM_API_KEY or ~/.lium/config.ini")
+            raise ValueError(f"No API key found. Set {API_KEY_ENV_VAR} or {config_file_path()}")
 
         # Find SSH key with fallback
         ssh_key = None
@@ -40,8 +76,18 @@ class Config:
             api_key=api_key,
             base_url=os.getenv("LIUM_BASE_URL", "https://lium.io/api"),
             base_pay_url=os.getenv("LIUM_PAY_URL", "https://pay-api.lium.io"),
-            ssh_key_path=ssh_key
+            ssh_key_path=ssh_key,
+            api_key_source=source or API_KEY_SOURCE_EXPLICIT,
         )
+
+    @property
+    def api_key_fingerprint(self) -> str:
+        return api_key_fingerprint(self.api_key)
+
+    @property
+    def api_key_description(self) -> str:
+        """``key <fingerprint> from <source>`` — what an auth error should name."""
+        return f"key {self.api_key_fingerprint} from {self.api_key_source}"
 
     @property
     def ssh_public_keys(self) -> List[str]:
@@ -55,4 +101,4 @@ class Config:
         return []
 
 
-__all__ = ["Config"]
+__all__ = ["Config", "API_KEY_ENV_VAR", "api_key_fingerprint", "resolve_api_key"]

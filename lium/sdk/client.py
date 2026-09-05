@@ -93,6 +93,53 @@ def _response_error_message(response: requests.Response) -> str:
     return str(message or "Request failed")
 
 
+_REQUIRED_AMOUNT_KEYS = ("required_balance", "required_amount", "required", "cost", "price")
+_AVAILABLE_AMOUNT_KEYS = ("available_balance", "current_balance", "available", "balance")
+
+
+def _balance_detail(response: requests.Response) -> str:
+    """``(required $X, available $Y)`` when an insufficient-balance error says so.
+
+    The server is not consistent about where it puts the numbers, so the
+    top-level payload and a structured ``detail``/``message`` object are both
+    searched. An empty string when nothing usable is there.
+    """
+    try:
+        payload = response.json()
+    except Exception:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+
+    candidates = [payload]
+    for key in ("detail", "message", "data"):
+        nested = payload.get(key)
+        if isinstance(nested, dict):
+            candidates.append(nested)
+
+    def _first_number(keys):
+        for candidate in candidates:
+            for key in keys:
+                value = candidate.get(key)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    return value
+                if isinstance(value, str):
+                    try:
+                        return float(value)
+                    except ValueError:
+                        continue
+        return None
+
+    required = _first_number(_REQUIRED_AMOUNT_KEYS)
+    available = _first_number(_AVAILABLE_AMOUNT_KEYS)
+    parts = []
+    if required is not None:
+        parts.append(f"required ${required:.2f}")
+    if available is not None:
+        parts.append(f"available ${available:.2f}")
+    return f" ({', '.join(parts)})" if parts else ""
+
+
 def _get_client_version() -> str:
     try:
         return version("lium.io")
@@ -145,11 +192,18 @@ class Lium:
         if resp.ok:
             return resp
 
-        # Map errors
+        # Map errors. Auth failures name the key that was sent: two commands can
+        # resolve different keys (environment versus config file), and "invalid
+        # API key" alone does not say which one to fix.
         if resp.status_code == 401:
-            raise LiumAuthError("Invalid API key")
+            raise LiumAuthError(f"Invalid API key ({self.config.api_key_description})")
         if resp.status_code == 403:
-            raise LiumPermissionError(f"Permission denied: {_response_error_message(resp)}")
+            message = _response_error_message(resp)
+            if "balance" in message.lower():
+                message += _balance_detail(resp)
+            raise LiumPermissionError(
+                f"Permission denied: {message} ({self.config.api_key_description})"
+            )
         if resp.status_code == 404:
             raise LiumNotFoundError(f"Resource not found: {_response_error_message(resp)}")
         if resp.status_code == 429:
@@ -511,9 +565,11 @@ class Lium:
         with requests.get(url, headers=self.headers, params=params, stream=True, timeout=None if follow else 30) as response:
             if not response.ok:
                 if response.status_code == 401:
-                    raise LiumAuthError("Invalid API key")
+                    raise LiumAuthError(f"Invalid API key ({self.config.api_key_description})")
                 if response.status_code == 403:
-                    raise LiumPermissionError(f"Permission denied: {response.text}")
+                    raise LiumPermissionError(
+                        f"Permission denied: {response.text} ({self.config.api_key_description})"
+                    )
                 if response.status_code == 404:
                     raise LiumNotFoundError(f"Pod not found: {pod_id}")
                 if response.status_code == 429:

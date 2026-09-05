@@ -348,6 +348,8 @@ You can also use environment variables:
 export LIUM_API_KEY=your-api-key-here
 ```
 
+`LIUM_API_KEY` takes precedence over the config file. To see which key a shell is using, run `lium balance` or `lium config get api.api_key`: both print the key's fingerprint and source (`env:LIUM_API_KEY` or `config:~/.lium/config.ini [api] api_key`), and authentication errors name the same key.
+
 ## Requirements
 
 - Python 3.9+
