@@ -29,17 +29,47 @@ def generate_huid(id_str: str) -> str:
     return f"{adj}-{noun}-{digest[-2:]}"
 
 
+# Short names users type that are not literally the extracted type.
+GPU_TYPE_ALIASES = {
+    "PRO6000": "RTXPRO6000",
+    "RTX6000PRO": "RTXPRO6000",
+    "6000PRO": "RTXPRO6000",
+}
+
+
 def extract_gpu_type(machine_name: str) -> str:
-    """Extract GPU type from machine name."""
+    """Extract GPU type from machine name.
+
+    Examples:
+        "NVIDIA H100 80GB HBM3"                            -> "H100"
+        "NVIDIA GeForce RTX 4090"                          -> "RTX4090"
+        "NVIDIA RTX 6000 Ada Generation"                   -> "RTX6000"
+        "NVIDIA RTX PRO 6000 Blackwell Server Edition"     -> "RTXPRO6000"
+        "NVIDIA RTX PRO 6000 Blackwell Workstation Edition"-> "RTXPRO6000"
+        "NVIDIA A100-SXM4-80GB"                            -> "A100"
+    """
     patterns = [
+        # "RTX PRO 6000 Blackwell ..." must be tried before the plain RTX pattern, otherwise the
+        # word "PRO" breaks the match and the type falls through to the last word ("Edition").
+        (r"RTX\s*PRO\s*(\d{4})", lambda m: f"RTXPRO{m.group(1)}"),
         (r"RTX\s*(\d{4})", lambda m: f"RTX{m.group(1)}"),
         (r"([HBL])(\d{2,3}S?)", lambda m: f"{m.group(1)}{m.group(2)}"),
         (r"A(\d{2,4})", lambda m: f"A{m.group(1)}"),
     ]
     for pattern, fmt in patterns:
         if match := re.search(pattern, machine_name, re.I):
-            return fmt(match)
+            return fmt(match).upper()
     return machine_name.split()[-1] if machine_name else "Unknown"
+
+
+def normalize_gpu_short(gpu_short: str) -> str:
+    """Canonical form of a user-typed GPU short name for comparisons.
+
+    Upper-cases, drops spaces/hyphens/underscores and applies :data:`GPU_TYPE_ALIASES`,
+    so ``"rtx pro 6000"``, ``"RTX-PRO-6000"``, ``"pro6000"`` all become ``"RTXPRO6000"``.
+    """
+    key = re.sub(r"[\s_\-]+", "", gpu_short or "").upper()
+    return GPU_TYPE_ALIASES.get(key, key)
 
 
 def expand_gpu_shorthand(gpu_short: str) -> str:
@@ -60,7 +90,11 @@ def expand_gpu_shorthand(gpu_short: str) -> str:
     if len(gpu_short) > 10 or " " in gpu_short:
         return gpu_short
 
-    gpu_upper = gpu_short.upper()
+    gpu_upper = normalize_gpu_short(gpu_short)
+
+    # RTX PRO 6000 (Blackwell) - "RTXPRO6000" / "PRO6000" -> "RTX PRO 6000"
+    if match := re.match(r"RTXPRO(\d+)", gpu_upper):
+        return f"RTX PRO {match.group(1)}"
 
     # Handle RTX cards - need to add space between RTX and number
     if gpu_upper.startswith("RTX"):
