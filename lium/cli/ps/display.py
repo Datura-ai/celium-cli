@@ -58,6 +58,24 @@ def _format_cost(created_at: str, price_per_hour: Optional[float]) -> str:
     return f"${cost:.2f}"
 
 
+def _spend_cap_usd(created_at: str, removal_scheduled_at: Optional[str], price_per_hour: Optional[float]) -> Optional[float]:
+    """What the pod will have cost when its scheduled removal fires; None without a schedule."""
+    if not created_at or not removal_scheduled_at or price_per_hour is None:
+        return None
+    dt_created = _parse_timestamp(created_at)
+    dt_removal = _parse_timestamp(removal_scheduled_at)
+    if not dt_created or not dt_removal or dt_removal <= dt_created:
+        return None
+    return round((dt_removal - dt_created).total_seconds() / 3600 * price_per_hour, 2)
+
+
+def _format_spent(created_at: str, removal_scheduled_at: Optional[str], price_per_hour: Optional[float]) -> str:
+    """'$3.20' — or '$3.20/$12.50' when a removal is scheduled, spent against the cap."""
+    spent = _format_cost(created_at, price_per_hour)
+    cap = _spend_cap_usd(created_at, removal_scheduled_at, price_per_hour)
+    return f"{spent}/${cap:.2f}" if cap is not None and spent != "—" else spent
+
+
 def _format_template_name(template: dict) -> str:
     """Format template name for display."""
     if not template:
@@ -94,6 +112,9 @@ def compact_pod(pod: PodInfo) -> dict:
         "template": _format_template_name(pod.template) if pod.template else None,
         "price_per_hour": executor.price_per_hour if executor else None,
         "spent_usd": _spent_usd(pod.created_at, executor.price_per_hour if executor else None),
+        "spend_cap_usd": _spend_cap_usd(
+            pod.created_at, pod.removal_scheduled_at, executor.price_per_hour if executor else None
+        ),
         "uptime": _format_uptime(pod.created_at),
         "created_at": pod.created_at,
         "ip": executor.ip if executor else None,
@@ -141,7 +162,7 @@ def build_pods_table(pods: List[PodInfo], short: bool = False) -> tuple[Table | 
     table.add_column("Config", justify="left", width=12, no_wrap=True)
     table.add_column("Template", justify="left", ratio=2, min_width=12, overflow="ellipsis")
     table.add_column("$/h", justify="right", width=6, no_wrap=True)
-    table.add_column("Spent", justify="right", width=8, no_wrap=True)
+    table.add_column("Spent", justify="right", width=14, no_wrap=True)
     table.add_column("Uptime", justify="right", width=7, no_wrap=True)
     if not short:
         table.add_column("Ports", justify="left", ratio=3, min_width=15, overflow="fold")
@@ -171,7 +192,7 @@ def build_pods_table(pods: List[PodInfo], short: bool = False) -> tuple[Table | 
             config,
             console.get_styled(template_name, 'info'),
             price_str,
-            _format_cost(pod.created_at, price_per_hour),
+            _format_spent(pod.created_at, pod.removal_scheduled_at, price_per_hour),
             _format_uptime(pod.created_at),
         ]
 

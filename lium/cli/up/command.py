@@ -13,6 +13,7 @@ from lium.cli.utils import (
 )
 from lium.cli.completion import get_gpu_completions
 from . import validation, parsing
+from .budget import MIN_BUDGET_MINUTES, budget_deadline, budget_hours
 from .actions import (
     ResolveExecutorAction,
     ResolveTemplateAction,
@@ -38,6 +39,13 @@ from .actions import (
 @click.option("--ports", "-p", type=int, help="Minimum number of available ports required")
 @click.option("--ttl", help="Auto-terminate after duration (e.g., 6h, 45m, 2d)")
 @click.option("--until", help="Auto-terminate at time in local timezone (e.g., 'today 23:00', 'tomorrow 01:00', '2025-10-20 15:30')")
+@click.option(
+    "--budget",
+    "budget_usd",
+    type=click.FloatRange(min=0, min_open=True),
+    metavar="USD",
+    help="Auto-terminate once the pod has spent this much (price/h × uptime), scheduled client-side like --ttl. Combined with --ttl/--until the earlier deadline wins.",
+)
 @click.option("--jupyter", is_flag=True, help="Install Jupyter Notebook (automatically selects available port)")
 @click.option("--no-ssh", "no_ssh", is_flag=True, help="Create the pod and return instead of opening an SSH session")
 @click.option("--restore-backup", "restore_backup_id", help="Backup ID to restore after the pod starts")
@@ -67,6 +75,7 @@ def up_command(
     ports: Optional[int],
     ttl: Optional[str],
     until: Optional[str],
+    budget_usd: Optional[float],
     jupyter: bool,
     no_ssh: bool,
     restore_backup_id: Optional[str],
@@ -101,6 +110,7 @@ def up_command(
       lium up 1 --ttl 6h                    # Auto-terminate after 6 hours
       lium up 1 --until "today 23:00"       # Auto-terminate at 23:00 local time today
       lium up 1 --until "tomorrow 01:00"    # Auto-terminate at 01:00 local time tomorrow
+      lium up --gpu H100 --budget 12.50     # Auto-terminate once $12.50 has been spent
       lium up 1 --jupyter                   # Install Jupyter Notebook (auto-selects port)
       lium up 1 --restore-backup BACKUP_ID --restore-to /root/restored
       LIUM_DEBUG=1 lium up 1 --jupyter      # Show debug information
@@ -289,6 +299,23 @@ def up_command(
         except Exception:
             pass
 
+    if budget_usd is not None:
+        hours = budget_hours(budget_usd, executor.price_per_hour)
+        if hours is None:
+            raise CliFailure(
+                "invalid_arguments",
+                f"Cannot apply --budget: node {executor.huid} has no hourly price",
+                EXIT_CONFIGURATION_ERROR,
+            )
+        if hours * 60 < MIN_BUDGET_MINUTES:
+            raise CliFailure(
+                "invalid_arguments",
+                f"--budget {budget_usd:.2f} buys {hours * 60:.1f} min at ${executor.price_per_hour:.2f}/h; "
+                f"the minimum is {MIN_BUDGET_MINUTES} min (${executor.price_per_hour * MIN_BUDGET_MINUTES / 60:.2f})",
+                EXIT_CONFIGURATION_ERROR,
+            )
+        ui.dim(f"Budget ${budget_usd:.2f} at ${executor.price_per_hour:.2f}/h ≈ {hours:.1f}h of runtime")
+
     if not yes:
         confirm_msg = (
             f"Acquire pod on {executor.huid} "
@@ -350,6 +377,16 @@ def up_command(
 
     pod = result.data["pod"]
     pod_label = f"Pod {ui.styled(pod.huid, 'pod_id')} (name: {pod_name}, id: {pod_id})"
+
+    if budget_usd is not None:
+        # Billing runs from creation, so the deadline is anchored on the pod's own
+        # created_at (falling back to now). With --ttl/--until too, the earlier wins.
+        deadline = budget_deadline(pod, budget_usd, fallback_price=executor.price_per_hour)
+        if deadline is None:
+            ui.warning(f"{pod_label} is running but the --budget cap could not be computed (no price or created_at)")
+        elif termination_time is None or deadline < termination_time:
+            termination_time = deadline
+            ui.dim(f"Spend cap ${budget_usd:.2f}: removal scheduled for {deadline.strftime('%Y-%m-%d %H:%M UTC')}")
 
     if termination_time:
         action = ScheduleTerminationAction()

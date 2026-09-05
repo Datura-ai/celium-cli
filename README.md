@@ -124,7 +124,7 @@ The `lium` CLI exposes the full pod lifecycle. Run `lium --help` to see everythi
 
 - `lium init` - Initialize configuration (API key, SSH keys)
 - `lium ls [GPU_TYPE]` - List available nodes
-- `lium up [NODE_ID]` - Create a pod (use node ID or filters like `--gpu`, `--count`, `--country`)
+- `lium up [NODE_ID]` - Create a pod (use node ID or filters like `--gpu`, `--count`, `--country`; cap it with `--ttl 6h` or `--budget 12.50`)
 - `lium ps` - List active pods
 - `lium describe <POD>` - Full manifest of one pod: ports, GPU, template, billing (add `--json` for machine-readable output)
 - `lium ssh <POD>` - SSH into a pod
@@ -244,6 +244,7 @@ lium up 1 --volume new:name=mydata,desc="My dataset"
 
 # Create pod with auto-termination
 lium up 1 --ttl 6h                    # Terminate after 6 hours
+lium up 1 --budget 12.50              # Terminate once $12.50 has been spent
 lium up 1 --until "today 23:00"       # Terminate at 11 PM today
 
 # Create pod with Jupyter

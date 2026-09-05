@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `lium up --budget USD`: auto-terminate once the pod has spent that much. The cap is computed client-side as `created_at + budget / price_per_hour` and scheduled through the same removal mechanism as `--ttl` (`lium schedules` lists it, `lium schedules rm` cancels it). With `--ttl`/`--until` as well, the earlier deadline is used. A budget that buys less than 5 minutes, or a node without a price, is refused before anything is rented.
+- SDK: `Lium.cap_spend(pod, budget_usd=…)` schedules the same removal for a running pod and returns the deadline; `lium.sdk.utils.spend_cap_deadline()` and `parse_api_timestamp()` are the underlying helpers.
+- `lium ps`: the Spent column reads `$3.20/$12.50` when a removal is scheduled (spent so far against the spend at removal); `--format json` adds `spend_cap_usd` (null without a schedule).
+
 ## [0.4.3] - 2025-10-23
 
 ### Added
