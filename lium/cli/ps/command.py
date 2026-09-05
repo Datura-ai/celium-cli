@@ -6,12 +6,18 @@ import click
 
 from lium.sdk import Lium
 from lium.cli import ui
-from lium.cli.utils import CliFailure, EXIT_POD_NOT_FOUND, handle_errors, ensure_config
+from lium.cli.utils import (
+    CliFailure,
+    EXIT_POD_NOT_FOUND,
+    handle_errors,
+    ensure_config,
+    resolve_output_format,
+)
 from . import display
 from .actions import GetPodsAction
 
 
-@click.command("ps")
+@click.command("ps", epilog="Use --format json for machine-readable output.")
 @click.argument("pod_id", required=False)
 @click.option(
     "--format", "output_format",
@@ -19,9 +25,11 @@ from .actions import GetPodsAction
     default="table",
     help="Output format. 'json' emits machine-readable JSON to stdout (suitable for piping to jq).",
 )
+@click.option("--json", "json_output", is_flag=True, hidden=True, help="Alias for --format json")
 @handle_errors
-def ps_command(pod_id: Optional[str], output_format: str):
+def ps_command(pod_id: Optional[str], output_format: str, json_output: bool):
     """List active GPU pods."""
+    output_format = resolve_output_format(output_format, json_output)
 
     ensure_config()
 
