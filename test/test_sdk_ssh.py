@@ -219,3 +219,31 @@ def test_rsync_uses_pinned_known_hosts_unless_insecure(monkeypatch, tmp_path):
     monkeypatch.setenv("LIUM_SSH_INSECURE", "1")
     client.rsync(pod, local="./out", remote="/workspace/out")
     assert "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" in calls[1][3]
+
+
+@pytest.mark.parametrize("method, verb, path", [
+    ("reboot", "POST", "/pods/pod-123/reboot"),
+    ("down", "DELETE", "/pods/pod-123"),
+])
+def test_reboot_and_down_forget_the_pinned_host_key(monkeypatch, tmp_path, method, verb, path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    pod = _pod()
+    hosts_file = sdk_client.known_hosts_path(pod)
+    hosts_file.parent.mkdir(parents=True)
+    hosts_file.write_text("[host]:1 ssh-ed25519 AAAA\n")
+    seen = []
+
+    class Resp:
+        def json(self):
+            return {"ok": True}
+
+    def fake_request(self, m, p, **kwargs):
+        seen.append((m, p))
+        return Resp()
+
+    monkeypatch.setattr(Lium, "_request", fake_request)
+    client = Lium(Config(api_key="test"))
+    assert getattr(client, method)(pod) == {"ok": True}
+    assert seen == [(verb, path)]
+    assert not hosts_file.exists()
+    getattr(client, method)(pod)  # idempotent when there is nothing to forget

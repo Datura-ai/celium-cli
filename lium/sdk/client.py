@@ -75,6 +75,16 @@ def known_hosts_path(pod: PodInfo) -> Path:
     return Path.home() / ".lium" / "known_hosts" / safe_id
 
 
+def forget_host_key(pod: PodInfo) -> None:
+    """Drop the pinned host key of a pod (its container, and so its key, is being replaced)."""
+    try:
+        known_hosts_path(pod).unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
 def _ensure_known_hosts_file(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -776,7 +786,9 @@ class Lium:
         Returns:
             API response payload from the delete call.
         """
-        return self._request("DELETE", f"/pods/{pod.id}").json()
+        result = self._request("DELETE", f"/pods/{pod.id}").json()
+        forget_host_key(pod)
+        return result
 
     def rm(self, pod: PodInfo) -> Dict[str, Any]:
         """Remove pod (alias for :meth:`down`).
@@ -803,7 +815,11 @@ class Lium:
         if volume_id is not None:
             payload["volume_id"] = volume_id
 
-        return self._request("POST", f"/pods/{pod.id}/reboot", json=payload or {}).json()
+        result = self._request("POST", f"/pods/{pod.id}/reboot", json=payload or {}).json()
+        # The reboot replaces the container and with it the SSH host key; the next
+        # connection re-pins rather than tripping over the old key.
+        forget_host_key(pod)
+        return result
 
     def get_default_images(self, gpu_model: Optional[str], driver_version: Optional[str]) -> list[dict]:
         """Get default images for GPU type and driver version."""
@@ -1070,9 +1086,10 @@ class Lium:
             raise LiumHostKeyError(
                 f"Host key for pod {pod.name} ({host}:{port}) changed: got "
                 f"{e.key.get_fingerprint().hex(':')}, pinned "
-                f"{e.expected_key.get_fingerprint().hex(':')}. This can mean the pod was "
-                f"re-provisioned or that the connection is being intercepted. If you trust "
-                f"the new key, delete {hosts_file} and reconnect; {_SSH_INSECURE_ENV}=1 "
+                f"{e.expected_key.get_fingerprint().hex(':')}. This happens after a reboot or "
+                f"template switch made outside this SDK (the container, and its key, were "
+                f"replaced) but can also mean the connection is being intercepted. If you "
+                f"trust the new key, delete {hosts_file} and reconnect; {_SSH_INSECURE_ENV}=1 "
                 f"disables pinning."
             ) from e
 
@@ -1319,6 +1336,7 @@ class Lium:
         }
         
         response = self._request("PUT", f"/pods/{pod.id}/switch-template", json=payload).json()
+        forget_host_key(pod)  # new container, new host key
         
         # Parse the response into a PodInfo object
         return PodInfo(
