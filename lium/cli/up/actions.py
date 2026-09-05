@@ -194,6 +194,113 @@ class WaitReadyAction:
         return ActionResult(ok=True, data={"pod": pod})
 
 
+def billed_gpu_count(pod: PodInfo) -> Optional[int]:
+    """The GPU count the API bills the pod for, or None when the API did not say.
+
+    ``ExecutorInfo.gpu_count`` defaults to 1 when the executor payload carries no
+    ``specs.gpu.count``, so the raw attribute cannot tell "one GPU" from "unknown".
+    Only a count the API actually sent is worth comparing against.
+    """
+    executor = getattr(pod, "executor", None)
+    if executor is None:
+        return None
+    specs = getattr(executor, "specs", None) or {}
+    if (specs.get("gpu") or {}).get("count") is None:
+        return None
+    return executor.gpu_count
+
+
+def parse_visible_gpu_count(stdout: str) -> Optional[int]:
+    """The integer ``nvidia-smi -L | wc -l`` printed, or None if it printed none."""
+    for token in (stdout or "").split():
+        if token.isdigit():
+            return int(token)
+    return None
+
+
+VISIBLE_GPU_COUNT_COMMAND = "nvidia-smi -L | wc -l"
+
+
+class VerifyGpuCountAction:
+    """Check that the pod exposes the GPUs that were requested and billed.
+
+    Two checks, each independent of the other:
+
+    * billed: the count the API reports for the pod versus the count requested
+      (``--count``, or the chosen node's count when ``--count`` was not given).
+    * visible: with ``verify_via_ssh``, the count ``nvidia-smi`` reports inside
+      the pod versus the billed count.
+
+    ``ok`` is False when either check found a mismatch or the SSH check could not
+    run. ``data["mismatch"]`` is True only for an actual mismatch, so a caller can
+    tell "the pod is wrong" from "the pod could not be checked".
+    """
+
+    def execute(self, ctx: dict) -> ActionResult:
+        lium: Lium = ctx["lium"]
+        pod: PodInfo = ctx["pod"]
+        expected: Optional[int] = ctx.get("expected_count")
+        executor_id: Optional[str] = ctx.get("executor_id")
+        verify_via_ssh: bool = bool(ctx.get("verify_via_ssh"))
+
+        billed = billed_gpu_count(pod)
+        visible: Optional[int] = None
+        data = {
+            "expected": expected,
+            "billed": billed,
+            "visible": visible,
+            "executor_id": executor_id,
+            "mismatch": False,
+        }
+
+        if expected is not None and billed is not None and billed != expected:
+            data["mismatch"] = True
+            return ActionResult(
+                ok=False,
+                data=data,
+                error=(
+                    f"GPU count mismatch: requested {expected}, pod is billed for {billed} "
+                    f"(node {executor_id})"
+                ),
+            )
+
+        if not verify_via_ssh:
+            return ActionResult(ok=True, data=data)
+
+        try:
+            result = lium.exec(pod, command=VISIBLE_GPU_COUNT_COMMAND)
+        except Exception as exc:
+            return ActionResult(
+                ok=False, data=data, error=f"Could not verify GPU count over SSH: {exc}"
+            )
+
+        visible = parse_visible_gpu_count(str(result.get("stdout") or ""))
+        data["visible"] = visible
+        if visible is None:
+            return ActionResult(
+                ok=False,
+                data=data,
+                error=(
+                    "Could not verify GPU count over SSH: "
+                    f"'{VISIBLE_GPU_COUNT_COMMAND}' printed no number"
+                ),
+            )
+
+        reference = billed if billed is not None else expected
+        if reference is not None and visible != reference:
+            data["mismatch"] = True
+            return ActionResult(
+                ok=False,
+                data=data,
+                error=(
+                    f"GPU count mismatch: pod is billed for {reference}, "
+                    f"nvidia-smi reports {visible} (node {executor_id})"
+                ),
+            )
+
+        return ActionResult(ok=True, data=data)
+
+
 class ScheduleTerminationAction:
 
     def execute(self, ctx: dict) -> ActionResult:

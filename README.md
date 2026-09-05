@@ -249,6 +249,10 @@ lium up 1 --until "today 23:00"       # Terminate at 11 PM today
 # Create pod with Jupyter
 lium up 1 --jupyter --yes
 
+# Fail (non-zero exit) if the pod exposes a different GPU count than requested or billed
+lium up --gpu H200 --count 8 --verify-gpus --yes          # also counts GPUs with nvidia-smi over SSH
+lium up --gpu H200 --count 8 --verify-gpus --strict-gpus  # ...and remove the pod on mismatch
+
 # Execute commands
 lium exec my-pod "nvidia-smi"
 lium exec my-pod "python train.py"
