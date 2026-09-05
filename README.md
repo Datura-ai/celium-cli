@@ -123,6 +123,8 @@ The `lium` CLI exposes the full pod lifecycle. Run `lium --help` to see everythi
 ### Core Commands
 
 - `lium init` - Initialize configuration (API key, SSH keys)
+- `lium whoami [--json]` - Which API key (fingerprint and source), account, balance, SSH key and CLI version are in use
+- `lium doctor [POD] [--json]` - Check the local setup, the account and optionally a pod (SSH reachability, template/GPU CUDA mismatch)
 - `lium ls [GPU_TYPE]` - List available nodes
 - `lium up [NODE_ID]` - Create a pod (use node ID or filters like `--gpu`, `--count`, `--country`)
 - `lium ps` - List active pods

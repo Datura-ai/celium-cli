@@ -1365,13 +1365,21 @@ class Lium:
             time.sleep(10)
         return None
 
+    def me(self) -> Dict[str, Any]:
+        """The account the API key belongs to, as ``GET /users/me`` returns it.
+
+        Useful keys: ``id``, ``email`` (when the server sends it), ``balance``.
+        """
+        data = self._request("GET", "/users/me").json()
+        return data if isinstance(data, dict) else {}
+
     def get_my_user_id(self) -> str:
         """Get the current user's ID.
 
         Returns:
             The ID returned by ``/users/me``.
         """
-        return self._request("GET", "/users/me").json()["id"]
+        return self.me()["id"]
 
     def update_template(
         self,
