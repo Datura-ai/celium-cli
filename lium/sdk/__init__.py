@@ -12,6 +12,7 @@ from .exceptions import (
     LiumRateLimitError,
     LiumServerError,
     RemoteExecutionError,
+    PodStartError,
 )
 from .models import (
     BackupConfig,
@@ -44,5 +45,6 @@ __all__ = [
     "LiumPermissionError",
     "LiumHostKeyError",
     "RemoteExecutionError",
+    "PodStartError",
     "machine",
 ]

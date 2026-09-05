@@ -1,10 +1,11 @@
 from typing import Optional, Tuple
 import click
 
-from lium.sdk import Lium
+from lium.sdk import Lium, PodStartError
 from lium.cli import ui
 from lium.cli.utils import (
     CliFailure,
+    EXIT_API_ERROR,
     EXIT_CONFIGURATION_ERROR,
     EXIT_GENERAL_ERROR,
     EXIT_SSH_ERROR,
@@ -49,6 +50,14 @@ from .actions import (
     "--strict-gpus", "strict_gpus", is_flag=True,
     help="Remove the pod automatically when its GPU count does not match what was requested or billed",
 )
+@click.option(
+    "--ready-timeout",
+    "ready_timeout",
+    type=click.IntRange(min=1),
+    default=None,
+    metavar="SECONDS",
+    help="Give up waiting for the pod to become ready after this many seconds (exit 1, pod left running and named). Default: wait until it is ready or fails.",
+)
 @click.option("--restore-backup", "restore_backup_id", help="Backup ID to restore after the pod starts")
 @click.option("--restore-to", "restore_path", help="New or empty subdirectory for the startup restore")
 @click.option("--image", help="Docker image to run (e.g., pytorch/pytorch:2.0, nvidia/cuda:12.0)")
@@ -80,6 +89,7 @@ def up_command(
     no_ssh: bool,
     verify_gpus: bool,
     strict_gpus: bool,
+    ready_timeout: Optional[int],
     restore_backup_id: Optional[str],
     restore_path: Optional[str],
     image: Optional[str],
@@ -354,12 +364,33 @@ def up_command(
             "Loading image",
             lambda: action.execute({
                 "lium": lium,
-                "pod_id": pod_id
+                "pod_id": pod_id,
+                "timeout": ready_timeout,
             })
+        )
+    except PodStartError as exc:
+        # The pod is dead (FAILED/STOPPED) or gone; say so with its last status so
+        # a script does not retry a rent that will never come up.
+        label = exc.pod.huid if exc.pod is not None else pod_name
+        raise CliFailure(
+            "pod_start_failed",
+            f"Pod {label} (id: {pod_id}) failed to start: {exc}. "
+            f"Check 'lium ps' and remove it with 'lium rm {label}' if it is still listed.",
+            EXIT_API_ERROR,
         )
     except Exception:
         ui.error(f"Pod {pod_name} (id: {pod_id}) was created but did not become ready")
         raise
+
+    if not result.ok:
+        # Still starting when --ready-timeout ran out: the pod keeps billing, so
+        # name it and hand the decision back to the caller.
+        raise CliFailure(
+            "pod_not_ready",
+            f"Pod {pod_name} (id: {pod_id}) is still starting after {ready_timeout}s and is billing. "
+            f"Wait with 'lium ps', or remove it with 'lium rm {pod_name}'.",
+            EXIT_GENERAL_ERROR,
+        )
 
     pod = result.data["pod"]
     pod_label = f"Pod {ui.styled(pod.huid, 'pod_id')} (name: {pod_name}, id: {pod_id})"

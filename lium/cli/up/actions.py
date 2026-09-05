@@ -190,12 +190,25 @@ class RentPodAction:
 
 
 class WaitReadyAction:
+    """Wait for the rented pod. ``ctx["timeout"]`` (seconds) bounds the wait; None is unbounded.
+
+    Propagates ``PodStartError`` from the SDK: a pod that FAILED or vanished is
+    not a pod worth waiting for, and the caller must be told which pod it is
+    still paying for. A timeout is reported as ``ok=False`` with the same intent.
+    """
 
     def execute(self, ctx: dict) -> ActionResult:
         lium: Lium = ctx["lium"]
         pod_id: str = ctx["pod_id"]
+        timeout: Optional[int] = ctx.get("timeout")
 
-        pod = wait_ready_no_timeout(lium, pod_id)
+        pod = wait_ready_no_timeout(lium, pod_id, timeout=timeout)
+        if pod is None:
+            return ActionResult(
+                ok=False,
+                data={},
+                error=f"Pod {pod_id} was still starting after {timeout}s",
+            )
         return ActionResult(ok=True, data={"pod": pod})
 
 
