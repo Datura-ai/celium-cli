@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- `Lium.up()` no longer retries the rent POST blindly. On a timeout, connection error, 429 or 5xx it first looks in `ps` for a pod with the requested name on the chosen node and returns that; only when nothing appeared is the request sent once more, with the same client-generated `Idempotency-Key` header. One `lium up` could previously create two pods.
+- `Lium._request()` accepts `retry=False` for calls that must not be repeated automatically.
+
 ## [0.4.3] - 2025-10-23
 
 ### Added
