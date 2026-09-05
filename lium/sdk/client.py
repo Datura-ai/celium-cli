@@ -7,6 +7,7 @@ import shlex
 import socket
 import subprocess
 import time
+import uuid
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -128,8 +129,31 @@ class Lium:
             "X-Lium-Client-Version": _get_client_version(),
         }
 
-    @with_retry()
     def _request(
+        self,
+        method: str,
+        endpoint: str,
+        base_url: Optional[str] = None,
+        headers: Optional[Dict[str, str]] = None,
+        retry: bool = True,
+        **kwargs,
+    ) -> requests.Response:
+        """Make API request with error handling.
+
+        Transient failures (429, 5xx, network errors) are retried unless
+        ``retry`` is False. A call that creates something must pass ``False``:
+        a timed-out POST may well have succeeded server-side, and repeating it
+        blindly creates a duplicate.
+        """
+        if retry:
+            return self._request_with_retry(method, endpoint, base_url=base_url, headers=headers, **kwargs)
+        return self._request_once(method, endpoint, base_url=base_url, headers=headers, **kwargs)
+
+    @with_retry()
+    def _request_with_retry(self, method: str, endpoint: str, **kwargs) -> requests.Response:
+        return self._request_once(method, endpoint, **kwargs)
+
+    def _request_once(
         self,
         method: str,
         endpoint: str,
@@ -137,7 +161,6 @@ class Lium:
         headers: Optional[Dict[str, str]] = None,
         **kwargs,
     ) -> requests.Response:
-        """Make API request with error handling."""
         url = f"{base_url or self.config.base_url}/{endpoint.lstrip('/')}"
         request_headers = headers or self.headers
         resp = requests.request(method, url, headers=request_headers, timeout=30, **kwargs)
@@ -451,28 +474,63 @@ class Lium:
             "restore_path": restore_path,
         }
 
-        response = self._request("POST", f"/executors/{executor_info.id}/rent", json=payload).json()
+        # The rent call is not idempotent, so it is never retried blindly. A
+        # timeout or a 5xx may have created the pod anyway; look for it before
+        # sending the request a second time. The Idempotency-Key lets a server
+        # that honours it collapse the two requests; one that does not ignores it.
+        rent_endpoint = f"/executors/{executor_info.id}/rent"
+        rent_headers = {**self.headers, "Idempotency-Key": str(uuid.uuid4())}
+        try:
+            response = self._request(
+                "POST", rent_endpoint, json=payload, headers=rent_headers, retry=False
+            ).json()
+        except (requests.RequestException, LiumServerError, LiumRateLimitError):
+            existing = self._find_pod_by_name(name, executor_info.id, attempts=3, interval=3)
+            if existing:
+                return existing
+            time.sleep(1)
+            response = self._request(
+                "POST", rent_endpoint, json=payload, headers=rent_headers, retry=False
+            ).json()
 
         # API should return pod info
         if response and "id" in response:
             return response
 
         # Fallback: find pod by name after creation
-        if name:
-            for _ in range(2):
-                time.sleep(3)
-                for pod in self.ps():
-                    if pod.name == name:
-                        return {
-                            "id": pod.id,
-                            "name": pod.name,
-                            "status": pod.status,
-                            "huid": pod.huid,
-                            "ssh_cmd": pod.ssh_cmd,
-                            "executor_id": executor_info.id
-                        }
+        existing = self._find_pod_by_name(name, executor_info.id, attempts=2, interval=3)
+        if existing:
+            return existing
 
         raise LiumError(f"Failed to create pod{' ' + name if name else ''}")
+
+    def _find_pod_by_name(
+        self, name: Optional[str], executor_id: str, *, attempts: int, interval: float
+    ) -> Optional[Dict[str, Any]]:
+        """A pod called ``name`` on ``executor_id`` if one shows up in ``ps``.
+
+        Used when the rent response did not say what it created. The executor
+        is matched when the listing includes one, so two pods sharing a generic
+        name on different nodes are not confused.
+        """
+        if not name:
+            return None
+        for _ in range(attempts):
+            time.sleep(interval)
+            for pod in self.ps():
+                if pod.name != name:
+                    continue
+                if pod.executor is not None and pod.executor.id and pod.executor.id != executor_id:
+                    continue
+                return {
+                    "id": pod.id,
+                    "name": pod.name,
+                    "status": pod.status,
+                    "huid": pod.huid,
+                    "ssh_cmd": pod.ssh_cmd,
+                    "executor_id": executor_id,
+                }
+        return None
 
     def pod(
         self,
