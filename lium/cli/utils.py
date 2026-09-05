@@ -3,10 +3,11 @@ from functools import wraps
 from contextlib import contextmanager
 from typing import List, Dict, Any, Tuple, Optional, Callable, TypeVar
 import json
+import os
 from pathlib import Path
 import click
 from lium.cli.settings import config
-from datetime import datetime
+from datetime import datetime, timezone
 from rich.status import Status
 from lium.sdk import LiumError, LiumPermissionError, ExecutorInfo, PodInfo,Lium
 from .themed_console import ThemedConsole
@@ -712,31 +713,175 @@ def resolve_executor_indices(indices: List[str]) -> Tuple[List[str], Optional[st
     return resolved_ids, error_msg
 
 
-def parse_targets(targets: str, all_pods: List[PodInfo]) -> List[PodInfo]:
-    """Parse target specification and return matching pods."""
+# Pod indexes ("lium rm 1") are the row numbers of the last `lium ps`. The pod
+# list is account-wide and changes as pods come and go — on a shared account
+# another caller's pod can move into row 1 between the `ps` and the `rm`. So an
+# index is only accepted while the row still holds the pod that `ps` showed
+# there, and only for a short while after that `ps`.
+POD_INDEX_TTL_SECONDS = 600
+POD_INDEX_ENV = "LIUM_NO_POD_INDEX"
+_PS_SNAPSHOT_FILE = "last_ps.json"
+
+
+def pod_indexes_allowed() -> bool:
+    """``LIUM_NO_POD_INDEX=1`` makes every command treat numeric targets as names only."""
+    return os.environ.get(POD_INDEX_ENV, "").strip().lower() not in ("1", "true", "yes", "on")
+
+
+def store_pod_selection(pods: List[PodInfo], now: Optional[datetime] = None) -> None:
+    """Remember which pod `lium ps` showed on which row, so indexes can be checked later."""
+    from lium.cli.settings import config
+
+    snapshot = {
+        "timestamp": (now or datetime.now(timezone.utc)).isoformat(),
+        "pods": [{"id": pod.id, "huid": pod.huid, "name": pod.name} for pod in pods],
+    }
+    try:
+        with open(config.config_dir / _PS_SNAPSHOT_FILE, "w") as f:
+            json.dump(snapshot, f, indent=2)
+    except OSError:
+        # Not being able to remember the list only means indexes will be refused.
+        pass
+
+
+def get_pod_selection() -> Optional[Dict[str, Any]]:
+    """The last `lium ps` snapshot, or None when there is none or it is unreadable."""
+    from lium.cli.settings import config
+
+    snapshot_file = config.config_dir / _PS_SNAPSHOT_FILE
+    if not snapshot_file.exists():
+        return None
+    try:
+        with open(snapshot_file) as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("pods"), list):
+        return None
+    return data
+
+
+def _snapshot_age_seconds(snapshot: Dict[str, Any], now: datetime) -> Optional[float]:
+    try:
+        stamp = datetime.fromisoformat(snapshot["timestamp"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return (now - stamp).total_seconds()
+
+
+@dataclass(frozen=True)
+class TargetMatch:
+    """One resolved target: the pod, the text that named it, and how it matched."""
+
+    pod: PodInfo
+    target: str
+    via_index: bool = False
+
+
+def _pod_label(pod: PodInfo) -> str:
+    return f"{pod.huid} (name: {pod.name or '—'})" if pod.name != pod.huid else pod.huid
+
+
+def _resolve_pod_index(
+    target: str, all_pods: List[PodInfo], snapshot: Optional[Dict[str, Any]], now: datetime
+) -> Optional[PodInfo]:
+    """The pod a `lium ps` row number stands for, or None when TARGET is not an index.
+
+    Raises CliFailure when the number *looks* like an index but cannot be trusted:
+    no `lium ps` in this session, a `ps` too long ago, or a list that has changed
+    since. Refusing is the safe answer — the alternative is acting on a pod the
+    caller never saw.
+    """
+    try:
+        idx = int(target) - 1
+    except ValueError:
+        return None
+    if idx < 0:
+        return None
+
+    hint = f"Run 'lium ps' and retry, or name the pod by its huid (e.g. lium rm {all_pods[0].huid})" if all_pods else "Run 'lium ps' and retry"
+
+    if snapshot is None:
+        raise CliFailure(
+            "stale_pod_index",
+            f"Pod index {target} cannot be used before 'lium ps' has shown the list. {hint}",
+            EXIT_CONFIGURATION_ERROR,
+        )
+    age = _snapshot_age_seconds(snapshot, now)
+    if age is None or age > POD_INDEX_TTL_SECONDS or age < 0:
+        raise CliFailure(
+            "stale_pod_index",
+            f"Pod index {target} refers to a 'lium ps' listing older than {POD_INDEX_TTL_SECONDS // 60} minutes. {hint}",
+            EXIT_CONFIGURATION_ERROR,
+        )
+
+    shown = snapshot["pods"]
+    if idx >= len(shown):
+        # The last ps had no such row; fall through to id/name/huid matching.
+        return None
+    if idx >= len(all_pods):
+        raise CliFailure(
+            "stale_pod_index",
+            f"Pod index {target} was {shown[idx].get('huid')} in the last 'lium ps' but that row is gone. {hint}",
+            EXIT_CONFIGURATION_ERROR,
+        )
+    current = all_pods[idx]
+    if current.id != shown[idx].get("id"):
+        raise CliFailure(
+            "stale_pod_index",
+            f"Pod index {target} was {shown[idx].get('huid')} in the last 'lium ps' but is now "
+            f"{_pod_label(current)} — the pod list changed. {hint}",
+            EXIT_CONFIGURATION_ERROR,
+        )
+    return current
+
+
+def resolve_targets(
+    targets: str,
+    all_pods: List[PodInfo],
+    *,
+    allow_index: Optional[bool] = None,
+    now: Optional[datetime] = None,
+) -> List[TargetMatch]:
+    """Resolve a comma-separated TARGETS spec against the live pod list.
+
+    Each target is a pod id, name, huid, or — when indexes are allowed and the
+    last `lium ps` still matches — a row number of that listing. ``allow_index``
+    defaults to the ``LIUM_NO_POD_INDEX`` environment setting.
+    """
     if targets.lower() == "all":
-        return all_pods
-    
-    selected = []
+        return [TargetMatch(pod, "all") for pod in all_pods]
+
+    if allow_index is None:
+        allow_index = pod_indexes_allowed()
+    now = now or datetime.now(timezone.utc)
+    snapshot = get_pod_selection() if allow_index else None
+
+    matches: List[TargetMatch] = []
     for target in targets.split(","):
         target = target.strip()
-        
-        # Try as index (1-based from ps output)
-        try:
-            idx = int(target) - 1
-            if 0 <= idx < len(all_pods):
-                selected.append(all_pods[idx])
+        if not target:
+            continue
+
+        if allow_index:
+            pod = _resolve_pod_index(target, all_pods, snapshot, now)
+            if pod is not None:
+                matches.append(TargetMatch(pod, target, via_index=True))
                 continue
-        except ValueError:
-            pass
-        
-        # Try as pod ID/name/huid
+
         for pod in all_pods:
             if target in (pod.id, pod.name, pod.huid):
-                selected.append(pod)
+                matches.append(TargetMatch(pod, target))
                 break
-    
-    return selected
+
+    return matches
+
+
+def parse_targets(targets: str, all_pods: List[PodInfo], *, allow_index: Optional[bool] = None) -> List[PodInfo]:
+    """Parse target specification and return matching pods (see :func:`resolve_targets`)."""
+    return [match.pod for match in resolve_targets(targets, all_pods, allow_index=allow_index)]
 
 
 def wait_ready_no_timeout(lium_client, pod_id: str):

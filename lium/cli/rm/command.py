@@ -1,7 +1,7 @@
 """Remove (rm) command implementation."""
 
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional
 import click
@@ -13,6 +13,7 @@ from lium.cli.utils import (
     EXIT_GENERAL_ERROR,
     EXIT_POD_NOT_FOUND,
     CliFailure,
+    TargetMatch,
     handle_errors,
 )
 from . import validation, parsing
@@ -25,6 +26,9 @@ class RemovalPlan:
 
     pods: List[PodInfo]
     termination_time: Optional[datetime]
+    # Targets that were `lium ps` row numbers rather than names; the command
+    # spells out what each one resolved to before acting on it.
+    index_matches: List[TargetMatch] = field(default_factory=list)
 
 
 def build_removal_plan(
@@ -33,6 +37,7 @@ def build_removal_plan(
     remove_all: bool,
     in_duration: Optional[str],
     at_time: Optional[str],
+    allow_index: Optional[bool] = None,
 ) -> Optional[RemovalPlan]:
     """Resolve TARGETS into a plan. None means there was nothing to remove."""
     is_valid, error = validation.validate(targets, remove_all, in_duration, at_time)
@@ -51,7 +56,9 @@ def build_removal_plan(
             "pod_not_found", f"{parsing.NO_MATCHING_PODS}: {targets}", EXIT_POD_NOT_FOUND
         )
 
-    parsed, error = parsing.parse(targets, remove_all, all_pods, in_duration, at_time)
+    parsed, error = parsing.parse(
+        targets, remove_all, all_pods, in_duration, at_time, allow_index=allow_index
+    )
     if error:
         raise CliFailure(
             "pod_not_found" if error.startswith(parsing.NO_MATCHING_PODS) else "invalid_arguments",
@@ -62,8 +69,37 @@ def build_removal_plan(
         )
 
     return RemovalPlan(
-        pods=parsed["selected_pods"], termination_time=parsed.get("termination_time")
+        pods=parsed["selected_pods"],
+        termination_time=parsed.get("termination_time"),
+        index_matches=parsed.get("index_matches", []),
     )
+
+
+def describe_index_match(match: TargetMatch) -> str:
+    """'1 → eager-wolf-aa (name: train)': what a row number stands for."""
+    pod = match.pod
+    name = f" (name: {pod.name})" if pod.name and pod.name != pod.huid else ""
+    return f"{match.target} → {pod.huid}{name}"
+
+
+def human_approved_index_targets(matches: List[TargetMatch], yes: bool = False) -> bool:
+    """Show what each row number resolved to; ask before acting when someone can answer.
+
+    A number is the one way to name a pod the caller may never have looked at, so
+    the pod behind it is spelled out here — huid and name — before anything is
+    removed, with or without --yes. Without a terminal the line is still printed
+    and the removal goes ahead: the index has already been checked against the
+    last `lium ps`.
+    """
+    for match in matches:
+        ui.info(f"Pod {describe_index_match(match)}")
+    if yes or not sys.stdin.isatty():
+        return True
+    try:
+        return ui.confirm(f"Remove {len(matches)} pod(s) selected by index?")
+    except EOFError:
+        ui.warning("\nNo answer — nothing removed")
+        return False
 
 
 def human_approved_removing_every_pod(pods: List[PodInfo]) -> bool:
@@ -88,6 +124,12 @@ def human_approved_removing_every_pod(pods: List[PodInfo]) -> bool:
 @click.option("--yes", "-y", is_flag=True, help="Skip the confirmation prompt")
 @click.option("--in", "in_duration", help="Schedule removal after duration")
 @click.option("--at", "at_time", help="Schedule removal at time")
+@click.option(
+    "--name-only",
+    "name_only",
+    is_flag=True,
+    help="Treat TARGETS as ids, names or huids only; never as 'lium ps' row numbers (for scripts).",
+)
 @handle_errors
 def rm_command(
     targets: Optional[str],
@@ -95,19 +137,32 @@ def rm_command(
     yes: bool,
     in_duration: Optional[str],
     at_time: Optional[str],
+    name_only: bool,
 ):
     """Remove (terminate) GPU pods.
+
+    \b
+    TARGETS: comma-separated pod huids, names or ids (eager-wolf-aa,my-pod).
+    A row number from your last 'lium ps' (1, 2) is accepted only while that
+    row still holds the same pod and for 10 minutes after the listing; the
+    pod list is account-wide and changes as pods come and go. Use --name-only
+    or LIUM_NO_POD_INDEX=1 to refuse numbers altogether.
 
     \b
     Removal is irreversible. Exits non-zero when nothing matched TARGETS, so a
     typo cannot look like a successful teardown.
     """
     lium = Lium()
-    plan = build_removal_plan(lium, targets, remove_all, in_duration, at_time)
+    plan = build_removal_plan(
+        lium, targets, remove_all, in_duration, at_time, allow_index=False if name_only else None
+    )
     if plan is None:
         return
 
     if remove_all and not yes and not human_approved_removing_every_pod(plan.pods):
+        return
+
+    if plan.index_matches and not human_approved_index_targets(plan.index_matches, yes):
         return
 
     context = {"pods": plan.pods, "lium": lium}
