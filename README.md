@@ -384,6 +384,7 @@ lium up --gpu H100 -y --no-ssh     # -y: rent without the confirmation prompt
 lium rm my-pod -y                  # -y on every destructive command
 lium fund -w default -a 1.5 -y     # values that would be prompted for must be passed as options
 ```
+`LIUM_API_KEY` takes precedence over the config file. To see which key a shell is using, run `lium balance` or `lium config get api.api_key`: both print the key's fingerprint and source (`env:LIUM_API_KEY` or `config:~/.lium/config.ini [api] api_key`), and authentication errors name the same key.
 
 ## Requirements
 
