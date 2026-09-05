@@ -31,6 +31,7 @@ from .exceptions import (
     LiumPermissionError,
     LiumRateLimitError,
     LiumServerError,
+    PodStartError,
 )
 from .models import (
     BackupConfig,
@@ -1187,22 +1188,41 @@ class Lium:
         with ThreadPoolExecutor(max_workers=min(max_workers, len(pods))) as executor:
             return list(executor.map(exec_single, pods))
 
+    # Statuses a pod never leaves. Seeing one while waiting means "stop waiting",
+    # not "keep polling until the timeout".
+    TERMINAL_POD_STATUSES = frozenset(
+        {"FAILED", "STOPPED", "ERROR", "TERMINATED", "DELETED", "REMOVED", "CANCELLED"}
+    )
+    # How many consecutive ``ps`` calls may omit a pod that was never listed
+    # before it is declared missing (a wrong id, or a rent the backend dropped).
+    MISSING_POLLS_BEFORE_ERROR = 3
+
     def wait_ready(
         self,
         pod: Union[str, PodInfo, Dict],
         *,
-        timeout: int = 300,
+        timeout: Optional[int] = 300,
         poll_interval: int = 10,
     ) -> Optional[PodInfo]:
         """Poll until a pod reports RUNNING + SSH metadata.
 
         Args:
             pod: Pod identifier, PodInfo, or dict with an ``id`` field.
-            timeout: Maximum number of seconds to wait.
+            timeout: Maximum number of seconds to wait; ``None`` waits until the
+                pod is ready or fails.
             poll_interval: Interval between successive ``ps`` calls.
 
         Returns:
-            PodInfo when the pod is ready, otherwise ``None`` if timeout expires.
+            PodInfo when the pod is ready, otherwise ``None`` if the timeout
+            expires while the pod is still starting.
+
+        Raises:
+            PodStartError: The pod reached a terminal status (``FAILED``,
+                ``STOPPED``, …), vanished from the pod list after being seen, or
+                was never listed in :attr:`MISSING_POLLS_BEFORE_ERROR` polls.
+                The error carries the last ``PodInfo``, its status and the
+                status history, so a caller can tell a dead pod from a slow one
+                and clean up instead of retrying.
         """
         if isinstance(pod, PodInfo):
             pod_id = pod.id
@@ -1212,12 +1232,44 @@ class Lium:
             pod_id = pod
 
         start = time.time()
-        while time.time() - start < timeout:
+        history: List[str] = []
+        last_seen: Optional[PodInfo] = None
+        missing_polls = 0
+        while timeout is None or time.time() - start < timeout:
             fresh_pods = self.ps()
             current = next((p for p in fresh_pods if p.id == pod_id), None)
 
-            if current and current.status.upper() == "RUNNING" and current.ssh_cmd:
+            if current is None:
+                missing_polls += 1
+                if last_seen is not None:
+                    raise PodStartError(
+                        f"Pod {last_seen.huid} ({pod_id}) disappeared while starting; "
+                        f"last status {history[-1] if history else 'unknown'}",
+                        pod_id=pod_id, pod=last_seen, status=history[-1] if history else None,
+                        history=history,
+                    )
+                if missing_polls >= self.MISSING_POLLS_BEFORE_ERROR:
+                    raise PodStartError(
+                        f"Pod {pod_id} is not in the pod list after {missing_polls} checks",
+                        pod_id=pod_id,
+                    )
+                time.sleep(poll_interval)
+                continue
+
+            missing_polls = 0
+            last_seen = current
+            status = (current.status or "unknown").upper()
+            if not history or history[-1] != status:
+                history.append(status)
+
+            if status == "RUNNING" and current.ssh_cmd:
                 return current
+            if status in self.TERMINAL_POD_STATUSES:
+                raise PodStartError(
+                    f"Pod {current.huid} ({pod_id}) will not start: status {status}"
+                    f" (seen: {' → '.join(history)})",
+                    pod_id=pod_id, pod=current, status=status, history=history,
+                )
 
             time.sleep(poll_interval)
         return None

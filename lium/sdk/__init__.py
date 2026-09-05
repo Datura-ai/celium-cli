@@ -10,6 +10,7 @@ from .exceptions import (
     LiumPermissionError,
     LiumRateLimitError,
     LiumServerError,
+    PodStartError,
 )
 from .models import (
     BackupConfig,
@@ -40,5 +41,6 @@ __all__ = [
     "LiumServerError",
     "LiumNotFoundError",
     "LiumPermissionError",
+    "PodStartError",
     "machine",
 ]
