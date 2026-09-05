@@ -16,6 +16,7 @@ from decimal import Decimal
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Callable, Dict, Generator, List, Optional, Union
 from pathlib import Path
+from typing import Any, Dict, Generator, List, Optional, Tuple, Union
 from urllib.parse import parse_qs, urlparse
 
 import paramiko
@@ -29,6 +30,7 @@ from .exceptions import (
     LiumAuthError,
     LiumError,
     LiumHostKeyError,
+    LiumInsufficientBalanceError,
     LiumNotFoundError,
     LiumPermissionError,
     LiumRateLimitError,
@@ -180,19 +182,19 @@ _REQUIRED_AMOUNT_KEYS = ("required_balance", "required_amount", "required", "cos
 _AVAILABLE_AMOUNT_KEYS = ("available_balance", "current_balance", "available", "balance")
 
 
-def _balance_detail(response: requests.Response) -> str:
-    """``(required $X, available $Y)`` when an insufficient-balance error says so.
+def _balance_amounts(response: requests.Response) -> Tuple[Optional[float], Optional[float]]:
+    """``(required, available)`` in USD from an insufficient-balance error, ``None`` where unknown.
 
     The server is not consistent about where it puts the numbers, so the
     top-level payload and a structured ``detail``/``message`` object are both
-    searched. An empty string when nothing usable is there.
+    searched.
     """
     try:
         payload = response.json()
     except Exception:
-        return ""
+        return None, None
     if not isinstance(payload, dict):
-        return ""
+        return None, None
 
     candidates = [payload]
     for key in ("detail", "message", "data"):
@@ -205,7 +207,7 @@ def _balance_detail(response: requests.Response) -> str:
             for key in keys:
                 value = candidate.get(key)
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
-                    return value
+                    return float(value)
                 if isinstance(value, str):
                     try:
                         return float(value)
@@ -213,14 +215,21 @@ def _balance_detail(response: requests.Response) -> str:
                         continue
         return None
 
-    required = _first_number(_REQUIRED_AMOUNT_KEYS)
-    available = _first_number(_AVAILABLE_AMOUNT_KEYS)
+    return _first_number(_REQUIRED_AMOUNT_KEYS), _first_number(_AVAILABLE_AMOUNT_KEYS)
+
+
+def _balance_detail(required: Optional[float], available: Optional[float]) -> str:
+    """``" (required $X, available $Y)"`` for the message; empty when neither is known."""
     parts = []
     if required is not None:
         parts.append(f"required ${required:.2f}")
     if available is not None:
         parts.append(f"available ${available:.2f}")
     return f" ({', '.join(parts)})" if parts else ""
+
+
+def _is_balance_error(message: str) -> bool:
+    return "balance" in message.lower() or "insufficient funds" in message.lower()
 
 
 def _get_client_version() -> str:
@@ -304,8 +313,14 @@ class Lium:
             raise LiumAuthError(f"Invalid API key ({self.config.api_key_description})")
         if resp.status_code == 403:
             message = _response_error_message(resp)
-            if "balance" in message.lower():
-                message += _balance_detail(resp)
+            if _is_balance_error(message):
+                required, available = _balance_amounts(resp)
+                raise LiumInsufficientBalanceError(
+                    f"Permission denied: {message}{_balance_detail(required, available)} "
+                    f"({self.config.api_key_description})",
+                    required=required,
+                    available=available,
+                )
             raise LiumPermissionError(
                 f"Permission denied: {message} ({self.config.api_key_description})"
             )

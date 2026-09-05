@@ -7,6 +7,7 @@ from .exceptions import (
     LiumAuthError,
     LiumError,
     LiumHostKeyError,
+    LiumInsufficientBalanceError,
     LiumNotFoundError,
     LiumPermissionError,
     LiumRateLimitError,
@@ -46,5 +47,6 @@ __all__ = [
     "LiumHostKeyError",
     "RemoteExecutionError",
     "PodStartError",
+    "LiumInsufficientBalanceError",
     "machine",
 ]

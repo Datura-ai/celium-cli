@@ -74,6 +74,24 @@ class PodStartError(LiumError):
         self.status = status
         self.history = list(history or [])
         self.cause = cause
+class LiumInsufficientBalanceError(LiumPermissionError):
+    """The account cannot pay for this (403 with a balance reason).
+
+    ``required`` and ``available`` are USD amounts when the server said what
+    they are, else ``None``. Callers that catch :class:`LiumPermissionError`
+    keep working; ones that want the numbers catch this class.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        required: float | None = None,
+        available: float | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.required = required
+        self.available = available
 
 
 __all__ = [
@@ -86,4 +104,5 @@ __all__ = [
     "LiumHostKeyError",
     "RemoteExecutionError",
     "PodStartError",
+    "LiumInsufficientBalanceError",
 ]
