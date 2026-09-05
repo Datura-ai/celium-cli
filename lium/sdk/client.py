@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Dict, Generator, List, Optional, Union
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import paramiko
@@ -27,6 +28,7 @@ from .config import Config
 from .exceptions import (
     LiumAuthError,
     LiumError,
+    LiumHostKeyError,
     LiumNotFoundError,
     LiumPermissionError,
     LiumRateLimitError,
@@ -50,6 +52,57 @@ load_dotenv()
 # Public API key for the pay API (pay-tao-api-v2). Single source of truth so the
 # literal is not re-typed across every pay-API call site.
 _PAY_API_KEY = "6RhXQ788J9BdnqeLua8z7ZSkXBDahclxhwjMB17qW1M"
+
+# Set LIUM_SSH_INSECURE=1 to restore the old behaviour (accept any host key, never pin).
+_SSH_INSECURE_ENV = "LIUM_SSH_INSECURE"
+_POD_ID_SAFE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def ssh_insecure() -> bool:
+    """True when host-key pinning is disabled via ``LIUM_SSH_INSECURE=1``."""
+    return os.getenv(_SSH_INSECURE_ENV, "").strip().lower() in ("1", "true", "yes")
+
+
+def known_hosts_path(pod: PodInfo) -> Path:
+    """Per-pod known_hosts file: ``~/.lium/known_hosts/<pod id>``.
+
+    Pods are ephemeral and executors reuse ``host:port`` for new rentals, so a
+    single OpenSSH-style file keyed by address would flag every new pod on a
+    recycled address as a key change. Keying by pod id pins the key for the
+    lifetime of the pod and lets a fresh pod on the same address start clean.
+    """
+    safe_id = _POD_ID_SAFE.sub("_", pod.id or "unknown")
+    return Path.home() / ".lium" / "known_hosts" / safe_id
+
+
+def _ensure_known_hosts_file(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(path.parent, 0o700)
+    except OSError:
+        pass
+    if not path.exists():
+        path.touch(mode=0o600)
+
+
+class _PinOnFirstUsePolicy(paramiko.MissingHostKeyPolicy):
+    """Trust-on-first-use: record the key of a pod we have never talked to.
+
+    Later connections to the same pod are checked against the recorded key by
+    paramiko itself (``BadHostKeyException`` on mismatch); ``ssh_connection``
+    turns that into :class:`LiumHostKeyError`.
+    """
+
+    def missing_host_key(self, client, hostname, key):  # noqa: D401 - paramiko interface
+        client._host_keys.add(hostname, key.get_name(), key)
+        if client._host_keys_filename is not None:
+            client.save_host_keys(client._host_keys_filename)
+        fp = key.get_fingerprint().hex(":")
+        warnings.warn(
+            f"Pinning {key.get_name()} host key {fp} for {hostname} "
+            f"(first connection to this pod; {_SSH_INSECURE_ENV}=1 disables pinning)",
+            stacklevel=2,
+        )
 
 
 def _response_error_message(response: requests.Response) -> str:
@@ -1056,9 +1109,16 @@ class Lium:
             except (paramiko.SSHException, FileNotFoundError, PermissionError):
                 continue
 
-        # Connect
+        # Connect. Host keys are pinned per pod under ~/.lium/known_hosts/ (trust
+        # on first use, reject on change) unless LIUM_SSH_INSECURE=1.
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        if ssh_insecure():
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        else:
+            hosts_file = known_hosts_path(pod)
+            _ensure_known_hosts_file(hosts_file)
+            client.load_host_keys(str(hosts_file))
+            client.set_missing_host_key_policy(_PinOnFirstUsePolicy())
         connect_kwargs = {
             "hostname": host,
             "port": port,
@@ -1074,7 +1134,18 @@ class Lium:
             # Paramiko cannot parse the private key file directly.
             connect_kwargs["key_filename"] = str(self.config.ssh_key_path)
             connect_kwargs["allow_agent"] = True
-        client.connect(**connect_kwargs)
+        try:
+            client.connect(**connect_kwargs)
+        except paramiko.BadHostKeyException as e:
+            hosts_file = known_hosts_path(pod)
+            raise LiumHostKeyError(
+                f"Host key for pod {pod.name} ({host}:{port}) changed: got "
+                f"{e.key.get_fingerprint().hex(':')}, pinned "
+                f"{e.expected_key.get_fingerprint().hex(':')}. This can mean the pod was "
+                f"re-provisioned or that the connection is being intercepted. If you trust "
+                f"the new key, delete {hosts_file} and reconnect; {_SSH_INSECURE_ENV}=1 "
+                f"disables pinning."
+            ) from e
 
         try:
             yield client
@@ -1291,7 +1362,13 @@ class Lium:
         if not pod.ssh_cmd or not self.config.ssh_key_path:
             raise ValueError("No SSH configured")
 
-        ssh_cmd = f"ssh -i {self.config.ssh_key_path} -p {pod.ssh_port} -o StrictHostKeyChecking=no"
+        ssh_cmd = f"ssh -i {shlex.quote(str(self.config.ssh_key_path))} -p {pod.ssh_port}"
+        if ssh_insecure():
+            ssh_cmd += " -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+        else:
+            hosts_file = known_hosts_path(pod)
+            _ensure_known_hosts_file(hosts_file)
+            ssh_cmd += f" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={shlex.quote(str(hosts_file))}"
         cmd = ["rsync", "-avz", "-e", ssh_cmd, local,  f"{pod.username}@{pod.host}:{remote}"]
 
         result = subprocess.run(cmd, capture_output=True, text=True)
