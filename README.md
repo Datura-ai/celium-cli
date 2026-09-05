@@ -58,6 +58,8 @@ lium up --gpu A100  # Auto-select best A100 node
 
 # List your pods
 lium ps
+lium ps --filter status=RUNNING --sort spent   # running pods, most expensive so far first
+lium spend                                     # burn per hour, spend per pod, runway
 
 # Copy files to pod
 lium scp 1 ./my_script.py
@@ -125,7 +127,8 @@ The `lium` CLI exposes the full pod lifecycle. Run `lium --help` to see everythi
 - `lium init` - Initialize configuration (API key, SSH keys)
 - `lium ls [GPU_TYPE]` - List available nodes
 - `lium up [NODE_ID]` - Create a pod (use node ID or filters like `--gpu`, `--count`, `--country`)
-- `lium ps` - List active pods
+- `lium ps [--sort KEY] [--filter KEY=VALUE] [--watch N] [--wide] [--format json]` - List active pods
+- `lium spend [--json]` - Hourly burn, estimated spend per pod, balance and runway
 - `lium describe <POD>` - Full manifest of one pod: ports, GPU, template, billing (add `--json` for machine-readable output)
 - `lium ssh <POD>` - SSH into a pod
 - `lium exec <POD> <COMMAND>` - Execute command on pod

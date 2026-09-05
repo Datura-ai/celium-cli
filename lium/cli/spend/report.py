@@ -1,0 +1,118 @@
+"""What the active pods cost: per pod, per hour, and how long the balance lasts.
+
+The API reports each pod's hourly price and creation time but not what it has
+billed so far, so "spent" is price × wall time since creation: an estimate
+that ignores restarts, pauses and price changes.
+"""
+
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+from rich.table import Table
+
+from lium.sdk import PodInfo
+from lium.cli.ps.display import _parse_timestamp
+
+ESTIMATE_NOTE = "spent is price × wall time since creation; the API does not report billed spend"
+
+
+@dataclass
+class PodSpend:
+    huid: str
+    name: Optional[str]
+    status: Optional[str]
+    config: Optional[str]
+    price_per_hour: Optional[float]
+    since: Optional[str]
+    uptime_hours: Optional[float]
+    spent_usd: Optional[float]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+def pod_spend(pod: PodInfo, now: Optional[datetime] = None) -> PodSpend:
+    now = now or datetime.now(timezone.utc)
+    executor = pod.executor
+    price = executor.price_per_hour if executor and executor.price_per_hour is not None else None
+    created = _parse_timestamp(pod.created_at) if pod.created_at else None
+    hours = round((now - created).total_seconds() / 3600, 3) if created else None
+    config = None
+    if executor:
+        config = f"{executor.gpu_count}×{executor.gpu_type}" if executor.gpu_count and executor.gpu_count > 1 else executor.gpu_type
+    return PodSpend(
+        huid=pod.huid,
+        name=pod.name,
+        status=pod.status.upper() if pod.status else None,
+        config=config,
+        price_per_hour=price,
+        since=created.isoformat(timespec="seconds") if created else None,
+        uptime_hours=hours,
+        spent_usd=round(hours * price, 2) if hours is not None and price is not None else None,
+    )
+
+
+@dataclass
+class SpendReport:
+    pods: List[PodSpend]
+    burn_per_hour: float
+    spent_usd: float
+    balance_usd: Optional[float]
+    runway_hours: Optional[float]
+    note: str = ESTIMATE_NOTE
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = asdict(self)
+        data["pods"] = [p.to_dict() for p in self.pods]
+        return data
+
+
+def build_report(pods: List[PodInfo], balance: Optional[float], now: Optional[datetime] = None) -> SpendReport:
+    rows = sorted((pod_spend(p, now) for p in pods), key=lambda r: -(r.spent_usd or 0))
+    burn = round(sum(r.price_per_hour or 0 for r in rows), 4)
+    spent = round(sum(r.spent_usd or 0 for r in rows), 2)
+    runway = round(balance / burn, 1) if balance is not None and burn > 0 and balance > 0 else None
+    if balance is not None and burn > 0 and balance <= 0:
+        runway = 0.0
+    return SpendReport(pods=rows, burn_per_hour=burn, spent_usd=spent, balance_usd=balance, runway_hours=runway)
+
+
+def _hours(value: Optional[float]) -> str:
+    if value is None:
+        return "-"
+    if value < 1:
+        return f"{value * 60:.0f}m"
+    if value < 48:
+        return f"{value:.1f}h"
+    return f"{value / 24:.1f}d"
+
+
+def _usd(value: Optional[float]) -> str:
+    return "-" if value is None else f"${value:,.2f}"
+
+
+def build_table(report: SpendReport) -> Table:
+    table = Table(show_header=True, header_style="dim", box=None, pad_edge=False, padding=(0, 1))
+    table.add_column("Pod", no_wrap=True)
+    table.add_column("Config", no_wrap=True)
+    table.add_column("$/h", justify="right", no_wrap=True)
+    table.add_column("Uptime", justify="right", no_wrap=True)
+    table.add_column("Spent", justify="right", no_wrap=True)
+    table.add_column("Since (UTC)", no_wrap=True)
+    for row in report.pods:
+        since = row.since.replace("T", " ")[:16] if row.since else "-"
+        table.add_row(row.name or row.huid, row.config or "-", _usd(row.price_per_hour), _hours(row.uptime_hours), _usd(row.spent_usd), since)
+    return table
+
+
+def summary_lines(report: SpendReport) -> List[str]:
+    pods = len(report.pods)
+    lines = [
+        f"Burn {_usd(report.burn_per_hour)}/h across {pods} pod{'s' if pods != 1 else ''}; "
+        f"spent so far {_usd(report.spent_usd)} (estimated)",
+    ]
+    if report.balance_usd is not None:
+        runway = "-" if report.runway_hours is None else _hours(report.runway_hours)
+        lines.append(f"Balance {_usd(report.balance_usd)}; runway at this burn ~{runway}")
+    return lines
