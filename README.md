@@ -140,6 +140,7 @@ The `lium` CLI exposes the full pod lifecycle. Run `lium --help` to see everythi
 - `lium describe <POD>` - Full manifest of one pod: ports, GPU, template, billing (add `--json` for machine-readable output)
 - `lium ssh <POD>` - SSH into a pod
 - `lium exec <POD> <COMMAND>` - Execute command on pod
+- `lium top <POD> [--watch N] [--all] [--format json]` - GPU utilisation, memory, temperature and power per GPU
 - `lium scp <POD> <LOCAL_FILE> [REMOTE_PATH]` - Copy files to pods (add `-d` to download from pods)
 - `lium rsync <POD> <LOCAL_DIR> [REMOTE_PATH]` - Sync directories to pods
 - `lium rm <POD>` - Remove/stop a pod
@@ -262,6 +263,8 @@ lium up 1 --jupyter --yes
 
 # Execute commands
 lium exec my-pod "nvidia-smi"
+lium top my-pod --watch 5                    # Per-GPU utilisation, refreshed every 5 s
+lium top --all --format json                 # Every pod, machine-readable
 lium exec my-pod "python train.py"
 
 # Copy files to and from pods
