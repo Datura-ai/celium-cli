@@ -97,11 +97,22 @@ from lium.sdk import Lium
 
 lium = Lium()
 node = lium.ls(gpu_type="A100")[0]
-pod = lium.up(executor_id=node.id, name="demo")
-ready = lium.wait_ready(pod, timeout=600)
-print(lium.exec(ready, command="nvidia-smi")["stdout"])
-lium.down(ready)
+pod = lium.up(executor_id=node.id, name="demo", wait=True)   # a ready PodInfo
+print(lium.exec(pod, command="nvidia-smi", timeout=60)["stdout"])
+lium.down(pod)
 ```
+
+For a pod that must not outlive the code using it, `rent()` removes it on the way out of the block, whatever happened inside:
+
+```python
+with lium.rent(executor_id=node.id, name="job") as pod:
+    job = lium.exec(pod, command="python train.py", detach=True)   # {"pid", "log_path", "command"}
+    for gpu in lium.gpu_stats(pod):                                  # parsed nvidia-smi
+        print(gpu.index, gpu.utilization_pct, gpu.memory_pct)
+    print(pod.to_dict())                                             # JSON-ready
+```
+
+`lium.pod_by_name("job")` finds a pod by name, huid or id.
 
 Full API reference: https://docs.lium.io/developers/sdk/reference
 
