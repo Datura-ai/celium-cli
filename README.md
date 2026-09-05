@@ -69,6 +69,18 @@ lium ssh <pod-name>
 lium rm <pod-name>
 ```
 
+### First hour on a pod
+
+A few things that save time on a freshly rented pod (full version in `docs/getting-started.rst`):
+
+- Always pass `--ttl` (or `--until`) to `lium up`; a pod bills until it is removed.
+- Keep weights, datasets and the Hugging Face cache on `/workspace`. With volume encryption on (the default) `/root` is an encrypted FUSE mount, which is slower for large sequential reads. `export HF_HOME=/workspace/hf HF_HUB_ENABLE_HF_TRANSFER=1`.
+- Ubuntu 24.04 images: use a venv (`python -m venv /workspace/venv`) or `export PIP_BREAK_SYSTEM_PACKAGES=1` before `pip install`.
+- Blackwell GPUs (B200, B300, RTX PRO 6000, RTX 5090) need a cu128+ PyTorch build: `pip install torch --index-url https://download.pytorch.org/whl/cu130`. FlashAttention-3 is Hopper-only; use FlashAttention-4 or cuDNN attention on Blackwell.
+- Missing tools: `apt-get update && apt-get install -y ffmpeg rsync`.
+- Background jobs: `nohup setsid cmd > /workspace/logs/x.log 2>&1 < /dev/null &`, or `lium exec <pod> -d "cmd"`.
+- Check utilisation: `nvidia-smi --query-gpu=timestamp,index,utilization.gpu,memory.used --format=csv -l 5 > /workspace/logs/gpu.csv &`.
+
 ### SDK
 
 The SDK mirrors the CLI's capabilities for programmatic use. Two entry points: the `@lium.machine` decorator for quickly offloading isolated functions, and the `Lium()` client for long-lived orchestration code.
