@@ -84,14 +84,15 @@ def up_command(
     Create a new GPU pod on a node.
     \b
     NODE_ID: Node UUID, HUID, or index from last 'lium ls'.
-    If not provided, uses filters to auto-select best node.
+    If not provided, uses filters to auto-select the cheapest ★ optimal node
+    ($/GPU·h; ties keep the 'lium ls' order) and prints the pick before renting.
     \b
     Examples:
       lium up cosmic-hawk-f2                # Create pod on specific node
       lium up 1                             # Create pod on node #1 from last ls
-      lium up --gpu H200                    # Auto-select best H200 node
-      lium up --gpu A6000 -c 2              # Auto-select best 2×A6000 node
-      lium up --country US                  # Auto-select best node in US
+      lium up --gpu H200                    # Auto-select cheapest optimal H200 node
+      lium up --gpu A6000 -c 2              # Auto-select cheapest optimal 2×A6000 node
+      lium up --country US                  # Auto-select cheapest optimal node in US
       lium up --gpu H200 --country FR       # Combine multiple filters
       lium up --ports 5                     # Auto-select with minimum 5 ports
       lium up 1 --name my-pod               # Create with custom name
@@ -220,6 +221,15 @@ def up_command(
         raise CliFailure("node_selection_failed", result.error, EXIT_GENERAL_ERROR)
 
     executor = result.data["executor"]
+    if result.data.get("auto_selected"):
+        # Name the pick and its total $/h before anything is billed: with -y the
+        # confirmation below is skipped and the price would first appear in `ps`.
+        country = (executor.location or {}).get("country") or (executor.location or {}).get("country_code")
+        ui.info(
+            f"Selected {ui.styled(executor.huid, 'id')} "
+            f"({executor.gpu_count}×{executor.gpu_type}{', ' + country if country else ''}) "
+            f"at ${executor.price_per_hour:.2f}/h — cheapest of {result.data['candidates']} optimal node(s)"
+        )
 
     def _show_estimate(est_secs, dl_speed, img_gb, is_slow, warning_msg):
         est_min, est_sec = divmod(est_secs, 60)
