@@ -792,6 +792,9 @@ class Lium:
                 jupyter_url=d.get("jupyter_url"),
                 enable_volume_encryption=d.get("enable_volume_encryption"),
                 volume_encryption_status=d.get("volume_encryption_status"),
+                estimated_ready_seconds=d.get("estimated_ready_seconds"),
+                eta_basis=d.get("eta_basis"),
+                phase=d.get("phase"),
             ))
 
         return pods
