@@ -50,13 +50,26 @@ class FakeLium:
         self.sandbox = sandbox
         self.calls = []
         self.uploaded = {}
+        self.pods = {}      # id -> PodInfo the fake "server" has running
+        self.rented = 0
 
     def ls(self, **kw):
+        self.calls.append(("ls",))
         return list(EXECUTORS)
+
+    def ps(self):
+        self.calls.append(("ps",))
+        return list(self.pods.values())
 
     def up(self, **kw):
         self.calls.append(("up", kw))
-        return {"id": "pod-1", "name": kw["name"]}
+        self.rented += 1
+        pod_id = f"pod-{self.rented}"
+        pod = _pod(pod_id)
+        pod.name = kw["name"]
+        pod.executor = next(e for e in EXECUTORS if e.id == kw["executor_id"])
+        self.pods[pod_id] = pod
+        return {"id": pod_id, "name": kw["name"]}
 
     def schedule_termination(self, pod, *, termination_time):
         self.calls.append(("schedule_termination", pod.id, termination_time))
@@ -64,7 +77,7 @@ class FakeLium:
 
     def wait_ready(self, pod, timeout=300):
         self.calls.append(("wait_ready", pod["id"], timeout))
-        return _pod(pod["id"]) if self.ready else None
+        return self.pods[pod["id"]] if self.ready else None
 
     def upload(self, pod, *, local, remote):
         text = Path(local).read_text().replace("'/tmp/", f"'{self.sandbox}/")
@@ -93,6 +106,7 @@ class FakeLium:
 
     def down(self, pod):
         self.calls.append(("down", pod.id))
+        self.pods.pop(pod.id, None)
         return {}
 
 
@@ -104,6 +118,7 @@ def _execs(fake):
 def fake(monkeypatch, tmp_path):
     client = FakeLium(tmp_path)
     monkeypatch.setattr(D, "Lium", lambda: client)
+    monkeypatch.setattr(D, "_WARM", {})
     FakeLium.ready = True
     FakeLium.run_exit_code = None
     return client
@@ -443,3 +458,104 @@ def test_inner_imports_shadowing_module_imports_are_not_flagged(fake):
         return Path(p).name + sys.platform[:0]
 
     assert uses_inner_imports("/a/b") == "b"
+
+
+# --- warm pods, map/local/close, local=True (DAH-3018) -------------------------------------------
+
+def _rents(fake):
+    return [c for c in fake.calls if c[0] == "up"]
+
+
+def test_default_still_rents_and_removes_per_call(fake):
+    f = D.machine(machine="A100", quiet=True)(double)
+    assert f(1) == 2 and f(2) == 4
+    assert len(_rents(fake)) == 2
+    assert [c for c in fake.calls if c[0] == "down"] == [("down", "pod-1"), ("down", "pod-2")]
+    assert fake.pods == {}
+
+
+def test_keep_warm_reuses_the_pod_and_rearms_its_ttl(fake, capsys):
+    f = D.machine(machine="A100", keep_warm=300, timeout=600)(double)
+    assert f(1) == 2
+    assert f(2) == 4
+    assert len(_rents(fake)) == 1
+    assert _rents(fake)[0][1]["name"] == f"lium-fn-{D._warm_key('A100', None)}"   # findable by the next run
+    assert not any(c[0] == "down" for c in fake.calls)
+    ttls = [c for c in fake.calls if c[0] == "schedule_termination"]
+    # rent: timeout + keep_warm + 15 min; after call: keep_warm + 2 min; before call 2: re-armed; after: again
+    delays = [(datetime.fromisoformat(c[2]) - datetime.now(timezone.utc)).total_seconds() for c in ttls]
+    assert len(delays) == 4
+    assert 600 + 300 + 14 * 60 < delays[0] <= 600 + 300 + 15 * 60
+    assert 300 + 60 < delays[1] <= 300 + 120
+    assert 600 + 300 + 14 * 60 < delays[2] <= 600 + 300 + 15 * 60
+    err = capsys.readouterr().err
+    assert "pod stays warm 300s" in err
+    assert err.count("renting") == 1
+    assert "pod ready" in err.split("done in")[0] and "pod ready" not in err.split("done in")[1]
+
+    f.close()
+    assert ("down", "pod-1") in fake.calls and fake.pods == {}
+    f.close()  # no-op when nothing is warm
+
+
+def test_a_new_process_finds_the_warm_pod_by_name(fake, capsys):
+    """`_WARM` is empty (fresh interpreter) but `ps` shows the pod the previous run left."""
+    warm = _pod("pod-9")
+    warm.name = f"lium-fn-{D._warm_key('1xA100', None)}"
+    warm.executor = EXECUTORS[2]
+    fake.pods["pod-9"] = warm
+
+    assert D.machine(machine="A100")(double)(4) == 8
+    assert _rents(fake) == []
+    assert "reusing warm pod swift-fox-c8 (1xA100 $1.20/h)" in capsys.readouterr().err
+    assert "pod-9" in fake.pods                       # left as warm as it was found
+
+
+def test_map_rents_once_and_removes_at_the_end(fake):
+    f = D.machine(machine="A100", quiet=True)(double)
+    assert f.map([1, 2, 3]) == [2, 4, 6]
+    assert len(_rents(fake)) == 1
+    assert [c for c in fake.calls if c[0] == "down"] == [("down", "pod-1")]
+
+
+def test_map_with_keep_warm_leaves_the_pod(fake):
+    f = D.machine(machine="A100", keep_warm=60, quiet=True)(double)
+    assert f.map([1, 2]) == [2, 4]
+    assert not any(c[0] == "down" for c in fake.calls)
+
+
+def test_remote_and_local_aliases(fake):
+    f = D.machine(machine="A100", quiet=True)(double)
+    assert f.remote(5) == 10 and len(_rents(fake)) == 1
+    assert f.local(5) == 10 and len(_rents(fake)) == 1
+    assert f.local is double
+
+
+def test_local_true_never_touches_the_api(fake):
+    k = 3
+
+    @D.machine(machine="A100", local=True)
+    def add_k(x):                # closure: would be refused by the portability check remotely
+        return x + k
+
+    assert add_k(1) == 4
+    assert fake.calls == []
+
+
+def test_env_var_forces_local(fake, monkeypatch):
+    monkeypatch.setenv("LIUM_MACHINE_LOCAL", "1")
+    assert D.machine(machine="A100")(double)(2) == 4
+    assert fake.calls == []
+
+
+def test_atexit_removes_held_pods_but_leaves_keep_warm_ones(fake, capsys):
+    held = D.machine(machine="A100", quiet=True)(double)
+    D._WARM["held"] = D._Warm(fake, fake.pods.setdefault("pod-h", _pod("pod-h")), EXECUTORS[2], 0)
+    D._WARM["warm"] = D._Warm(fake, fake.pods.setdefault("pod-w", _pod("pod-w")), EXECUTORS[2], 120)
+
+    D._close_all()
+
+    assert ("down", "pod-h") in fake.calls
+    assert not any(c == ("down", "pod-w") for c in fake.calls)
+    assert D._WARM == {}
+    assert "stays warm 120s for the next run" in capsys.readouterr().err
