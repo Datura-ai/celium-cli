@@ -55,7 +55,7 @@ def patched_build_client(
 
 
 @pytest.mark.xfail(strict=True, reason="_render_generic_rows reads keys.index() inside list.sort(); fixed by #158 (DAH-2936)")
-def test_billing_list_default(patched_build_client) -> None:
+def test_billing_list_default(patched_build_client, fake_signer) -> None:
     portal = _Portal(get_body={"data": [{"id": 1}, {"id": 2}, {"id": 3}], "total": 3})
     patched_build_client(portal)
     runner = CliRunner()
@@ -66,6 +66,20 @@ def test_billing_list_default(patched_build_client) -> None:
     assert result.exit_code == 0, result.output
     assert "billing entries: 3" in result.output
     assert portal.gets[0][0] == "/billing"
+    # Global portal listing → scoped to the caller's hotkey by default.
+    assert portal.gets[0][1] == {"miner_hotkey": fake_signer.ss58_address}
+
+
+def test_billing_list_all_is_unfiltered(patched_build_client) -> None:
+    portal = _Portal(get_body={"data": [{"id": "b-1"}], "total": 1})
+    patched_build_client(portal)
+    runner = CliRunner()
+    result = runner.invoke(
+        provider_command, ["--hotkey", "hk1", "--json", "billing", "list", "--all"]
+    )
+    assert result.exit_code == 0, result.output
+    assert portal.gets[0][0] == "/billing"
+    assert portal.gets[0][1] is None
 
 
 def test_billing_list_by_miner_uses_path_form(patched_build_client) -> None:

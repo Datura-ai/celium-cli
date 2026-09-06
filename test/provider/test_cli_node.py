@@ -142,6 +142,58 @@ def test_node_list_shows_computed_status_column(patched_build_client) -> None:
     # A row without computed_status renders a dash, not a crash.
     assert "e-3" in result.output
     assert "—" in result.output
+def test_node_list_defaults_to_own_hotkey(
+    patched_build_client, fake_signer: LocalKeypairSigner
+) -> None:
+    """The portal's ``GET /executors`` is a global listing; without a
+    ``miner_hotkey`` filter a provider with zero nodes sees other providers'
+    machines listed as its own. Default the filter to the active hotkey."""
+    portal = _Portal(get_body={"data": [], "total": 0})
+    patched_build_client(portal)
+    runner = CliRunner()
+    result = runner.invoke(provider_command, ["--hotkey", "hk1", "node", "list"])
+    assert result.exit_code == 0, result.output
+    path, params, _ = portal.gets[0]
+    assert path == "/executors"
+    assert params == {"miner_hotkey": fake_signer.ss58_address}
+
+
+def test_node_list_all_drops_hotkey_filter(patched_build_client) -> None:
+    portal = _Portal(get_body={"data": [{"id": "e-1"}], "total": 1})
+    patched_build_client(portal)
+    runner = CliRunner()
+    result = runner.invoke(
+        provider_command,
+        ["--hotkey", "hk1", "--json", "node", "list", "--all", "--limit", "5"],
+    )
+    assert result.exit_code == 0, result.output
+    path, params, _ = portal.gets[0]
+    assert path == "/executors"
+    assert params == {"limit": 5}
+
+
+def test_node_list_all_and_miner_hotkey_are_exclusive(patched_build_client) -> None:
+    portal = _Portal(get_body={"data": [], "total": 0})
+    patched_build_client(portal)
+    runner = CliRunner()
+    result = runner.invoke(
+        provider_command,
+        [
+            "--hotkey",
+            "hk1",
+            "--json",
+            "node",
+            "list",
+            "--all",
+            "--miner-hotkey",
+            "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+        ],
+    )
+    assert result.exit_code != 0
+    payload = json.loads(result.output.strip())
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "ARG_INVALID"
+    assert portal.gets == []
 
 
 def test_node_list_json(patched_build_client) -> None:
