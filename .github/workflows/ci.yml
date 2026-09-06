@@ -2,19 +2,11 @@ name: CI - Build Verification
 
 on:
   pull_request:
-    # `labeled`: adding the build-binaries label starts the release-binary builds below
+    # `labeled`: adding the build-binaries label starts the release-binary builds below.
+    # No `paths:` filter: `ci-ok` is to be a required status check, and a check that never
+    # reports blocks the merge button (a docs-only PR would sit unmergeable). The whole
+    # run costs about 4 Linux-minutes.
     types: [opened, synchronize, reopened, labeled]
-    paths:
-    - 'lium/**'
-    - 'pyproject.toml'
-    - 'uv.lock'
-    - 'lium.spec'
-    - 'lium_entry.py'
-    - 'Dockerfile.build'
-    - 'scripts/install.sh'
-    - 'test/**'
-    - '.github/workflows/ci.yml'
-    - '.github/workflows/release.yml'
   workflow_dispatch:
 
 concurrency:
