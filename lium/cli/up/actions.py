@@ -19,6 +19,7 @@ class ResolveExecutorAction:
         gpu: Optional[str] = ctx.get("gpu")
         count: Optional[int] = ctx.get("count")
         country: Optional[str] = ctx.get("country")
+        min_cpus: Optional[int] = ctx.get("min_cpus")
         ports: Optional[int] = ctx.get("ports")
 
         if executor_id:
@@ -40,7 +41,7 @@ class ResolveExecutorAction:
                     error=f"Node {executor.huid} has insufficient ports (available: {available}, required: {ports})"
                 )
         else:
-            executors = lium.ls(gpu_type=gpu)
+            executors = lium.ls(gpu_type=gpu, min_cpus=min_cpus)
 
             if count:
                 executors = [e for e in executors if e.gpu_count == count]
@@ -63,6 +64,8 @@ class ResolveExecutorAction:
                     filters.append(f"GPU count={count}")
                 if country:
                     filters.append(f"country={country}")
+                if min_cpus:
+                    filters.append(f"min CPUs={min_cpus}")
                 if ports:
                     filters.append(f"min ports={ports}")
                 filter_desc = ', '.join(filters) if filters else "specified filters"

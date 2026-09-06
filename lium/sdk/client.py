@@ -570,6 +570,7 @@ class Lium:
         lon: Optional[float] = None,
         max_distance_miles: Optional[int] = None,
         min_cuda_version: Optional[float] = None,
+        min_cpus: Optional[int] = None,
     ) -> List[ExecutorInfo]:
         """List available nodes.
 
@@ -582,6 +583,8 @@ class Lium:
             min_cuda_version: Optional minimum CUDA version to require (e.g. ``12.4``). Nodes whose
                 ``max_cuda_version`` is ``None`` or below this threshold are excluded. NVIDIA drivers are
                 backward compatible, so a node with a higher driver CUDA version satisfies the requirement.
+            min_cpus: Optional minimum CPU thread count (``specs.cpu.count``). Nodes that report fewer
+                CPUs, or none, are excluded.
 
         Returns:
             A list of :class:`ExecutorInfo` objects that satisfy the filters.
@@ -615,6 +618,9 @@ class Lium:
                 e for e in executors
                 if e.max_cuda_version is not None and e.max_cuda_version >= min_cuda_version
             ]
+
+        if min_cpus is not None:
+            executors = [e for e in executors if e.cpu_count is not None and e.cpu_count >= min_cpus]
 
         return executors
 

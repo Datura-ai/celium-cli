@@ -7,6 +7,7 @@ def validate(
     lon: float | None,
     max_distance: int | None,
     min_cuda_version: float | None = None,
+    min_cpus: int | None = None,
 ) -> tuple[bool, str | None]:
     """Validate ls command options, returns (is_valid, error_message)."""
 
@@ -25,5 +26,8 @@ def validate(
 
     if min_cuda_version is not None and min_cuda_version <= 0:
         return False, "--min-cuda must be positive"
+
+    if min_cpus is not None and min_cpus <= 0:
+        return False, "--min-cpus must be a positive integer"
 
     return True, None

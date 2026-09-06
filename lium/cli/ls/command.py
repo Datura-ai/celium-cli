@@ -44,6 +44,7 @@ def ls_store_executor(gpu_type: Optional[str] = None, sort_by: str = "download")
 @click.option("--gpu", "gpu_type", shell_complete=get_gpu_completions, help="Filter by GPU type, e.g. A100")
 @click.option("--count", "gpu_count", type=int, help="Exact GPU count to match (e.g., 1, 8)")
 @click.option("--min-cuda", "min_cuda_version", type=float, help="Minimum CUDA version, e.g. 12.4 (NVIDIA drivers are backward compatible)")
+@click.option("--min-cpus", "min_cpus", type=int, help="Minimum CPU thread count, e.g. 32 (the CPUs column)")
 @click.option("--lat", type=float, help="Latitude for distance filtering")
 @click.option("--lon", type=float, help="Longitude for distance filtering")
 @click.option("--max-distance", "max_distance", type=int, help="Maximum distance in miles from --lat/--lon")
@@ -72,10 +73,11 @@ def ls_command(
     limit: Optional[int],
     output_format: str,
     min_cuda_version: Optional[float],
+    min_cpus: Optional[int],
 ):
     """List available GPU nodes."""
 
-    _, error = validation.validate(limit, lat, lon, max_distance, min_cuda_version)
+    _, error = validation.validate(limit, lat, lon, max_distance, min_cuda_version, min_cpus)
     if error:
         raise CliFailure("invalid_arguments", error, EXIT_CONFIGURATION_ERROR)
 
@@ -89,6 +91,7 @@ def ls_command(
         "lon": lon,
         "max_distance": max_distance,
         "min_cuda_version": min_cuda_version,
+        "min_cpus": min_cpus,
     }
 
     action = GetExecutorsAction()
