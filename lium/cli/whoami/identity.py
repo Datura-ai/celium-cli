@@ -1,4 +1,4 @@
-"""What `lium whoami` and `lium doctor` know about the local setup and the account."""
+"""What `lium whoami` knows about the local setup and the account."""
 
 import shutil
 import time

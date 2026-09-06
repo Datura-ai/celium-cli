@@ -9,7 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `lium whoami [--json]`: the API key in use (fingerprint and source), account id, email, balance, API reachability and latency, the local SSH key and whether it is registered, and the CLI version. Exits 2 without a key and 3 when the API cannot be reached.
-- `lium doctor [POD] [--json]`: a checklist with `ok`/`warn`/`fail` and a hint per item — API key, API, balance, SSH key (present, `.pub` readable, registered), `ssh` and `rsync` clients, CLI version; with a pod also its status, whether its SSH port accepts connections, and a template/GPU mismatch warning (Blackwell node with a CUDA < 12.8 image, or an image newer than the node's driver). Exits 1 when any check fails.
 - SDK: `Lium.me()` returns the `/users/me` record.
 
 ### Changed
