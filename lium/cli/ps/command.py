@@ -69,12 +69,17 @@ def ps_command(pod_id: Optional[str], output_format: str):
         # Only a full listing defines what "pod 1" means; a filtered one does not.
         store_pod_selection(pods)
 
-    # Check if empty
+    # Check if empty. An empty list is correct for the account the key belongs to, so name the
+    # key and where it came from: a stale LIUM_API_KEY in the shell silently answers for a
+    # different account than ~/.lium/config.ini, and "No active pods" alone looks like an outage.
     if not pods:
         if output_format == "json":
             click.echo("[]")
         else:
             ui.warning("No active pods")
+            key_config = getattr(lium, "config", None)
+            if key_config is not None:
+                ui.dim(f"Account: {key_config.api_key_description}")
         return
 
     if output_format == "json":

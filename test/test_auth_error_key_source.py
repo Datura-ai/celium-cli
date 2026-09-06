@@ -224,3 +224,25 @@ def test_config_manager_source_follows_get_precedence(monkeypatch, tmp_path):
 
     monkeypatch.setenv("LIUM_API_KEY", ENV_KEY)
     assert manager.get_source("api.api_key") == "env:LIUM_API_KEY"
+
+
+class _FakeEmptyPsLium:
+    def __init__(self, *args, **kwargs):
+        self.config = Config(api_key=ENV_KEY, api_key_source="env:LIUM_API_KEY")
+
+    def ps(self):
+        return []
+
+
+def test_ps_empty_list_names_the_key_source(monkeypatch):
+    from lium.cli.ps import command as ps_module
+
+    monkeypatch.setattr(ps_module, "Lium", _FakeEmptyPsLium)
+    monkeypatch.setattr(ps_module, "ensure_config", lambda: None)
+
+    result = CliRunner().invoke(cli, ["ps"])
+
+    assert result.exit_code == 0, result.output
+    assert "No active pods" in result.output
+    assert "key env-ke…tail from env:LIUM_API_KEY" in result.output
+    assert ENV_KEY not in result.output
