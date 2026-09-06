@@ -1212,6 +1212,24 @@ class Lium:
     # How many consecutive ``ps`` calls may omit a pod that was never listed
     # before it is declared missing (a wrong id, or a rent the backend dropped).
     MISSING_POLLS_BEFORE_ERROR = 3
+    # DAH-3002: the backend marks a cached-template pod RUNNING at p50 22.5 s after the rent
+    # (7 d to 6 Sep 2026); polled every 10 s the caller learnt it 0–10 s late. Poll every
+    # 2 s while a normal start is still plausible, then fall back to the old 10 s.
+    FAST_POLL_SECONDS = 2
+    FAST_POLL_WINDOW_SECONDS = 90
+    SLOW_POLL_SECONDS = 10
+
+    @classmethod
+    def poll_delay(cls, elapsed: float, poll_interval: Optional[int] = None) -> float:
+        """Seconds to sleep between two ``wait_ready`` polls.
+
+        A caller-given ``poll_interval`` is used as-is; ``None`` selects the adaptive
+        schedule (:attr:`FAST_POLL_SECONDS` for the first :attr:`FAST_POLL_WINDOW_SECONDS`
+        seconds, :attr:`SLOW_POLL_SECONDS` after that).
+        """
+        if poll_interval is not None:
+            return poll_interval
+        return cls.FAST_POLL_SECONDS if elapsed < cls.FAST_POLL_WINDOW_SECONDS else cls.SLOW_POLL_SECONDS
 
     def pod_events(self, pod_id: str) -> List[Dict[str, Any]]:
         """The pod's event log, oldest first — creation, reboots, failures with their error, and
@@ -1248,7 +1266,7 @@ class Lium:
         pod: Union[str, PodInfo, Dict],
         *,
         timeout: Optional[int] = 300,
-        poll_interval: int = 10,
+        poll_interval: Optional[int] = None,
         on_poll: Optional[Callable[[Optional[PodInfo], str, float], None]] = None,
     ) -> Optional[PodInfo]:
         """Poll until a pod reports RUNNING + SSH metadata.
@@ -1257,7 +1275,10 @@ class Lium:
             pod: Pod identifier, PodInfo, or dict with an ``id`` field.
             timeout: Maximum number of seconds to wait; ``None`` waits until the
                 pod is ready or fails.
-            poll_interval: Interval between successive ``ps`` calls.
+            poll_interval: Fixed interval between successive ``ps`` calls; ``None``
+                (default) polls every :attr:`FAST_POLL_SECONDS` for the first
+                :attr:`FAST_POLL_WINDOW_SECONDS` seconds, then every
+                :attr:`SLOW_POLL_SECONDS` — see :meth:`poll_delay`.
             on_poll: Called after every poll with the pod as last listed (or
                 ``None``), its status (``"missing"`` when not listed) and the
                 seconds elapsed, so a caller can show progress while waiting.
@@ -1286,14 +1307,17 @@ class Lium:
         history: List[str] = []
         last_seen: Optional[PodInfo] = None
         missing_polls = 0
-        while timeout is None or time.time() - start < timeout:
+        while True:
+            elapsed = time.time() - start
+            if timeout is not None and elapsed >= timeout:
+                break
             fresh_pods = self.ps()
             current = next((p for p in fresh_pods if p.id == pod_id), None)
 
             if current is None:
                 missing_polls += 1
                 if on_poll:
-                    on_poll(last_seen, "missing", time.time() - start)
+                    on_poll(last_seen, "missing", elapsed)
                 if last_seen is not None:
                     raise PodStartError(
                         f"Pod {last_seen.huid} ({pod_id}) disappeared while starting; "
@@ -1306,7 +1330,7 @@ class Lium:
                         f"Pod {pod_id} is not in the pod list after {missing_polls} checks",
                         pod_id=pod_id, cause=self.pod_failure_cause(pod_id),
                     )
-                time.sleep(poll_interval)
+                time.sleep(self.poll_delay(elapsed, poll_interval))
                 continue
 
             missing_polls = 0
@@ -1315,7 +1339,7 @@ class Lium:
             if not history or history[-1] != status:
                 history.append(status)
             if on_poll:
-                on_poll(current, status, time.time() - start)
+                on_poll(current, status, elapsed)
 
             if status == "RUNNING" and current.ssh_cmd:
                 return current
@@ -1327,7 +1351,7 @@ class Lium:
                     pod_id=pod_id, pod=current, status=status, history=history, cause=cause,
                 )
 
-            time.sleep(poll_interval)
+            time.sleep(self.poll_delay(elapsed, poll_interval))
         return None
 
     def scp(self, pod: PodInfo, *, local: str, remote: str) -> None:
