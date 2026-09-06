@@ -34,9 +34,9 @@ from lium.cli.provider._guards import (
     require_persona_ack,
 )
 from lium.cli.provider._overrides import with_provider_overrides
-from lium.cli.provider._render import render
+from lium.cli.provider._render import fatal, render
 from lium.provider._shared_config import default_price_for_gpu, fetch_shared_config
-from lium.provider.errors import ProviderError
+from lium.provider.errors import ARG_INVALID, ProviderError
 
 
 @click.group("node")
@@ -45,7 +45,18 @@ def node_command() -> None:
 
 
 @node_command.command("list", short_help="List nodes for this provider.")
-@click.option("--miner-hotkey", "miner_hotkey", help="Filter by miner hotkey.")
+@click.option(
+    "--miner-hotkey",
+    "miner_hotkey",
+    help="Show another provider's nodes (ss58). Defaults to the active hotkey.",
+)
+@click.option(
+    "--all",
+    "all_miners",
+    is_flag=True,
+    default=False,
+    help="List every provider's nodes (the portal's global view), not only yours.",
+)
 @click.option("--page", type=int, default=None, help="1-indexed page number.")
 @click.option("--limit", type=int, default=None, help="Page size.")
 @with_provider_overrides
@@ -53,13 +64,31 @@ def node_command() -> None:
 def list_nodes(
     ctx: click.Context,
     miner_hotkey: str | None,
+    all_miners: bool,
     page: int | None,
     limit: int | None,
 ) -> None:
+    """List nodes registered with the portal.
+
+    By default only the active hotkey's nodes are listed. The portal's
+    listing is global, so ``--all`` shows every provider's nodes and
+    ``--miner-hotkey`` shows one other provider's.
+    """
     require_hotkey(ctx, group="node")
+    if all_miners and miner_hotkey:
+        fatal(
+            ctx,
+            ProviderError(
+                "--all and --miner-hotkey are mutually exclusive",
+                code=ARG_INVALID,
+                hint="Use --all for every provider, or --miner-hotkey for one.",
+            ),
+        )
     client = build_client(ctx)
     try:
-        body = client.list_nodes(miner_hotkey=miner_hotkey, page=page, limit=limit)
+        body = client.list_nodes(
+            miner_hotkey=miner_hotkey, page=page, limit=limit, all_miners=all_miners
+        )
     except ProviderError as e:
         ctx.exit(handle_provider_error(ctx, e))
         return

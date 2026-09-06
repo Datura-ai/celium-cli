@@ -264,13 +264,16 @@ class ProviderClient:
             warnings.append(f"whoami: {e.code}")
         out.provider_id = provider_id
 
-        # Node list (skip silently if portal not authed).
+        # Node list (skip silently if portal not authed). Scoped to this
+        # hotkey: the portal's ``GET /executors`` is a global listing and
+        # would otherwise report other providers' nodes as ours.
         if out.portal_session_active:
             try:
                 from lium.provider._routes import EXECUTORS
                 from lium.provider.models import ExecutorInfo
 
-                body = self._http.get(EXECUTORS)
+                params = {"miner_hotkey": out.hotkey} if out.hotkey else None
+                body = self._http.get(EXECUTORS, params=params)
                 rows = body.get("data") if isinstance(body, dict) else body
                 if not isinstance(rows, list):
                     rows = []
@@ -405,13 +408,22 @@ class ProviderClient:
         miner_hotkey: str | None = None,
         page: int | None = None,
         limit: int | None = None,
+        all_miners: bool = False,
     ) -> dict[str, Any]:
         """``GET /executors`` -- paginated node list.
+
+        The portal endpoint is a global listing (its frontend exposes an
+        "All miners" mode), so without a ``miner_hotkey`` filter it returns
+        every provider's nodes. Default to the caller's own hotkey so the
+        result describes *this* provider's fleet; pass ``all_miners=True``
+        for the unfiltered view, or ``miner_hotkey`` for another provider.
 
         Returns the raw envelope (``{data: [...], total, page, limit}``) so
         list callers can read pagination metadata.
         """
         params: dict[str, Any] = {}
+        if miner_hotkey is None and not all_miners:
+            miner_hotkey = self._safe_hotkey()
         if miner_hotkey is not None:
             params["miner_hotkey"] = _safe_hotkey_segment(miner_hotkey)
         if page is not None:
@@ -574,13 +586,22 @@ class ProviderClient:
         miner_hotkey: str | None = None,
         page: int | None = None,
         limit: int | None = None,
+        all_miners: bool = False,
     ) -> dict[str, Any]:
-        """``GET /billing`` (paginated) or ``/billing/{miner_hotkey}``."""
+        """``GET /billing`` (paginated) or ``/billing/{miner_hotkey}``.
+
+        Like ``list_nodes``, the paginated portal endpoint is global; the
+        default scopes it to this provider's hotkey. ``all_miners=True``
+        returns every provider's history, ``miner_hotkey`` one provider's
+        (unpaginated ``/billing/{hotkey}`` when no page/limit is given).
+        """
         if miner_hotkey is not None and page is None and limit is None:
             return self._http.get(
                 BILLING_BY_MINER.format(miner_hotkey=_safe_hotkey_segment(miner_hotkey))
             )
         params: dict[str, Any] = {}
+        if miner_hotkey is None and not all_miners:
+            miner_hotkey = self._safe_hotkey()
         if miner_hotkey is not None:
             params["miner_hotkey"] = _safe_hotkey_segment(miner_hotkey)
         if page is not None:
