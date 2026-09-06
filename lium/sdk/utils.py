@@ -72,6 +72,27 @@ def normalize_gpu_short(gpu_short: str) -> str:
     return GPU_TYPE_ALIASES.get(key, key)
 
 
+def gpu_short_matches(gpu_short: str, gpu_type: str) -> bool:
+    """Whether a user-typed short name names the GPU type extracted from a machine name.
+
+    Exact after normalisation (``"rtx 4090"`` → ``RTX4090``), or a bare model number
+    naming the type's number: ``"4090"`` matches ``RTX4090``, ``"6000"`` matches
+    ``RTX6000``, ``RTXPRO6000`` and ``A6000`` alike (the caller gets every match).
+    The number has to match whole: ``"100"`` matches ``H100`` and ``A100`` (both are
+    "the 100s"), while ``"90"`` matches nothing.
+    """
+    wanted = normalize_gpu_short(gpu_short)
+    have = (gpu_type or "").upper()
+    if not wanted or not have:
+        return False
+    if wanted == have:
+        return True
+    if wanted.isdigit():
+        number = re.search(r"(\d+)[A-Z]*$", have)
+        return bool(number) and number.group(1) == wanted
+    return False
+
+
 def expand_gpu_shorthand(gpu_short: str) -> str:
     """Expand GPU shorthand to a pattern that matches full machine names.
 
@@ -125,4 +146,4 @@ def with_retry(max_attempts: int = 3, delay: float = 1.0):
     return decorator
 
 
-__all__ = ["generate_huid", "extract_gpu_type", "expand_gpu_shorthand", "with_retry"]
+__all__ = ["generate_huid", "extract_gpu_type", "expand_gpu_shorthand", "normalize_gpu_short", "gpu_short_matches", "with_retry"]

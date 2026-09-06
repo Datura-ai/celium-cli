@@ -45,7 +45,7 @@ from .models import (
     VolumeInfo,
 )
 from .ssh_key_cache import fingerprint, load_cache, save_cache
-from .utils import extract_gpu_type, generate_huid, normalize_gpu_short, with_retry
+from .utils import extract_gpu_type, generate_huid, gpu_short_matches, normalize_gpu_short, with_retry
 
 load_dotenv()
 
@@ -976,14 +976,14 @@ class Lium:
         """
         try:
             available_machines = self._request("GET", "/machines").json()
-            gpu_short_normalized = normalize_gpu_short(gpu_short)
             matching_machines = []
 
             for machine in available_machines:
                 machine_name = machine.get("name", "")
                 # Check if the short name matches the extracted GPU type
-                # ("pro6000", "RTX PRO 6000" and "RTXPRO6000" all resolve the same way)
-                if extract_gpu_type(machine_name) == gpu_short_normalized:
+                # ("pro6000", "RTX PRO 6000" and "RTXPRO6000" all resolve the same way, and a bare
+                # "4090" names RTX4090 — the form users type most)
+                if gpu_short_matches(gpu_short, extract_gpu_type(machine_name)):
                     matching_machines.append(machine_name)
 
             # Return comma-separated list of all matches
@@ -1002,6 +1002,33 @@ class Lium:
         available_machines = self._request("GET", "/machines").json()
         gpu_types = {machine.get("name") or "" for machine in available_machines}
         return gpu_types
+
+    def gpu_short_types(self) -> List[str]:
+        """The short GPU types the marketplace knows (``H100``, ``RTX4090``, ...), sorted.
+
+        These are the values ``--gpu`` / ``ls(gpu_type=)`` accept; a bare model number
+        (``4090``) and spacing/case variants (``rtx 4090``) resolve to them too. Names
+        the extractor could not type (it falls back to the last word: ``Ti``, ``SUPER``,
+        ``V``) are left out — they are not something ``--gpu`` can usefully take.
+        """
+        types = {extract_gpu_type(name) for name in self.gpu_types() if name}
+        return sorted(t for t in types if re.fullmatch(r"[A-Z]*\d{2,4}[A-Z]*", t))
+
+    def unknown_gpu_type(self, gpu_short: str) -> Optional[List[str]]:
+        """``None`` when ``gpu_short`` names a known GPU type; otherwise the list of known types.
+
+        Lets a caller tell "every 4090 is rented" from "nothing is called 4090" — the
+        second case is what a typo or an unsupported spelling produces, and the two need
+        different messages. Never raises: on an API failure the answer is ``None``
+        (assume known), so a listing failure is reported as such and not as a typo.
+        """
+        try:
+            known = self.gpu_short_types()
+        except Exception:
+            return None
+        if any(gpu_short_matches(gpu_short, t) for t in known):
+            return None
+        return known
 
     def get_template(self, template_id: str) -> Optional[Template]:
         """Fetch a template by ID/HUID/name.

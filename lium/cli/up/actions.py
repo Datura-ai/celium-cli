@@ -56,6 +56,11 @@ class ResolveExecutorAction:
                 ]
 
             if not executors:
+                if gpu and (known := lium.unknown_gpu_type(gpu)) is not None:
+                    return ActionResult(
+                        ok=False, data={},
+                        error=f"No GPU type matches '{gpu}'. Types on the marketplace: {', '.join(known)}",
+                    )
                 filters = []
                 if gpu:
                     filters.append(f"GPU type={gpu}")
