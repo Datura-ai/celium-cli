@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SDK: `Lium.pod_by_name(name)` (name, huid or id); `with lium.rent(executor_id=..., ...) as pod:` rents a pod for the block and always removes it — on return, on exception, and when it never became ready.
 - SDK: `Lium.exec(..., timeout=)` raises `TimeoutError` and closes the channel; `Lium.exec(..., detach=True, log_path=)` starts the command under `nohup setsid … < /dev/null &` and returns `{"pid", "log_path", "command"}` (`Lium.build_detached_command` is the reusable command line).
 - SDK: `Lium.gpu_stats(pod)` returns `GpuStats` per GPU from `nvidia-smi --query-gpu`; `Lium.parse_gpu_stats(text)` is the parser.
+- SDK: background jobs. `Lium.run_background(pod, command, name=)` starts a command under `nohup setsid` with a PID file, an exit-code file and a log under `/workspace/logs/<name>.*` and returns a `Job`; `job.wait_for_port(port, timeout)` polls the port inside the pod and fails at once (with the log tail) if the process dies first; `job.status()`, `poll()`, `wait()`, `logs(tail=)`, `kill()`; `Lium.job(pod, name)` re-attaches from another process or a later agent turn, `Lium.jobs(pod)` lists them. `Lium.wait_for_port(pod, port)` probes a port on its own and `Lium.wait_ready(..., ready_port=N)` waits for RUNNING *and* the port.
 - SDK: every model has `to_dict()` (nested models included, plus derived fields such as `PodInfo.host`/`ssh_port` and `ExecutorInfo.gpu_model`).
 
 ### Fixed

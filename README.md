@@ -114,6 +114,18 @@ with lium.rent(executor_id=node.id, name="job") as pod:
 
 `lium.pod_by_name("job")` finds a pod by name, huid or id.
 
+A server or a training run should outlive the call that starts it. `run_background()` starts it detached with a PID file, an exit-code file and a log on the pod, and the returned `Job` knows how to wait for it:
+
+```python
+job = lium.run_background(pod, "vllm serve Qwen/Qwen3-8B --port 8000", name="vllm")
+job.wait_for_port(8000, timeout=900)   # raises at once, with the log tail, if vllm dies first
+print(job.logs(tail=20))
+# later, from another process or agent turn:
+job = lium.job(pod, "vllm")            # re-attach by name; job.status(), job.kill()
+```
+
+`lium.wait_for_port(pod, 8000)` probes a port without a job (a template that serves on start), and `lium.wait_ready(pod, ready_port=8000)` waits for RUNNING and the port together.
+
 Full API reference: https://docs.lium.io/developers/sdk/reference
 
 ## Documentation
