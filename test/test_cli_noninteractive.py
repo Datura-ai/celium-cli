@@ -8,7 +8,6 @@ now goes through one gate: with no terminal on stdin, or with
 once with a hint naming the flag to pass.
 """
 
-import json
 from types import SimpleNamespace
 
 import pytest

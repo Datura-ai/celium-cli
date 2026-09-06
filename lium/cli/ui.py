@@ -5,7 +5,7 @@ All formatting and domain logic should live in command-specific modules.
 """
 
 import os
-from typing import Callable, Optional, TypeVar, List, Tuple, Any
+from typing import Callable, Optional, TypeVar, List
 from contextlib import contextmanager
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
