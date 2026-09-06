@@ -2,6 +2,7 @@
 
 import ast
 import base64
+import hashlib
 import inspect
 import os
 import pickle
@@ -178,6 +179,28 @@ finally:
 '''
 
 
+def _venv_path(reqs: Sequence[str]) -> str:
+    """One environment per distinct requirements list, shared by every call on the pod."""
+    digest = hashlib.sha1(" ".join(sorted(reqs)).encode()).hexdigest()[:10]
+    return f"/tmp/lium-venv-{digest}"
+
+
+def _setup_command(venv_path: str, reqs: Sequence[str]) -> str:
+    """Create the venv and install ``reqs`` once; later calls find the marker and skip both.
+
+    ``--system-site-packages`` keeps the image's own packages (the PyTorch templates ship
+    torch + CUDA) visible, so ``requirements=["torch", ...]`` is satisfied in seconds
+    instead of downloading torch again.
+    """
+    q = shlex.quote
+    marker = q(f"{venv_path}/.lium-ready")
+    steps = [f"python3 -m venv --system-site-packages {q(venv_path)}"]
+    if reqs:
+        steps.append(f"{q(venv_path)}/bin/python -m pip install -q --disable-pip-version-check {' '.join(q(r) for r in reqs)}")
+    steps.append(f"touch {marker}")
+    return f"if test -f {marker}; then echo LIUM_ENV_CACHED; else {' && '.join(steps)}; fi"
+
+
 def _run_streaming(sdk: Lium, pod, command: str) -> Dict[str, Any]:
     """Run ``command`` on the pod, relaying its stdout/stderr to ours as it happens.
 
@@ -252,7 +275,9 @@ def machine(
             exactly that many GPUs of that type is rented.
         template_id: Docker template ID (optional, uses the node's default if not specified)
         cleanup: Whether to delete the pod after execution (default: True)
-        requirements: Optional iterable of pip-installable packages to install on the pod
+        requirements: Optional iterable of pip-installable packages to install on the pod.
+            They go into a venv that also sees the image's own packages, created and
+            populated once per pod and reused by later calls with the same list.
         timeout: Seconds the function may run on the pod before it is killed (default 1 h;
             ``None`` for no limit). The pod is also scheduled for removal at
             ``timeout + 15 min`` (24 h when ``timeout=None``) so a caller that dies
@@ -320,26 +345,24 @@ def machine(
                 try:
                     sdk.upload(pod_info, local=runner_file, remote=remote_runner)
 
-                    # Step 4: Create isolated virtual environment
-                    venv_path = f"/tmp/lium_venv_{call_id}"
-                    venv_python = f"{venv_path}/bin/python"
-                    venv_cmd = f"python3 -m venv {shlex.quote(venv_path)}"
-                    venv_result = sdk.exec(pod_info, command=venv_cmd)
-                    if not venv_result['success']:
-                        raise LiumError(f"Failed to create virtual environment:\n{venv_result['stderr']}")
-
-                    # Step 5: Install requirements if requested
+                    # Steps 4-5: one round trip creates the environment and installs the
+                    # requirements — or finds both already there from an earlier call.
                     reqs = [req for req in (requirements or []) if req]
+                    venv_path = _venv_path(reqs)
+                    venv_python = f"{venv_path}/bin/python"
                     if reqs:
-                        say(f"installing {len(reqs)} package(s): {', '.join(reqs)}")
-                        packages = " ".join(shlex.quote(req) for req in reqs)
-                        install_cmd = f"{shlex.quote(venv_python)} -m pip install {packages}"
-                        install_result = sdk.exec(pod_info, command=install_cmd)
-                        if not install_result['success']:
-                            raise LiumError(
-                                "Failed installing requirements "
-                                f"({', '.join(reqs)}):\n{install_result['stderr']}"
-                            )
+                        say(f"preparing environment ({len(reqs)} package(s): {', '.join(reqs)})")
+                    t_env = time.time()
+                    env_result = sdk.exec(pod_info, command=_setup_command(venv_path, reqs))
+                    if not env_result['success']:
+                        raise LiumError(
+                            f"Failed preparing the environment ({', '.join(reqs) or 'no requirements'}):\n"
+                            f"{env_result['stderr'] or env_result['stdout']}"
+                        )
+                    if "LIUM_ENV_CACHED" in env_result['stdout']:
+                        say("environment already on the pod")
+                    elif reqs:
+                        say(f"environment ready in {time.time() - t_env:.0f}s")
 
                     # Step 6: Execute runner via virtual environment python, bounded by `timeout`,
                     # relaying its output live (-u: no block buffering behind the ssh channel)
@@ -383,10 +406,10 @@ def machine(
                     os.unlink(runner_file)
 
             finally:
-                # Remove virtual environment directory best-effort when pod stays alive
-                if pod_info and 'venv_path' in locals() and not cleanup:
+                # Remove this call's files when the pod stays alive (the venv stays: it is the cache)
+                if pod_info and not cleanup and 'runner_file' in locals():
                     try:
-                        sdk.exec(pod_info, command=f"rm -rf {shlex.quote(venv_path)} {remote_runner} {remote_result}")
+                        sdk.exec(pod_info, command=f"rm -f {remote_runner} {remote_result}")
                     except Exception:
                         pass
 
