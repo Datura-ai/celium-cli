@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Docs: `docs/agents.md`, a single page an LLM agent or unattended script follows end to end (environment-variable auth, JSON output and the error envelope, exit codes, rent → exec → GPU stats → rsync → rm, pod gotchas), with a table saying which flags are on `main` and which on a pending branch. `AGENTS.md` at the repository root points to it; README links both.
+- Docs: `docs/agents.md`, a single page an LLM agent or unattended script follows end to end (environment-variable auth, JSON output and the error envelope, exit codes, rent → exec → GPU stats → rsync → rm, pod gotchas), with a table saying which flags are on `main` and which on a pending branch. Linked from the README.
 
 ## [0.4.3] - 2025-10-23
 
