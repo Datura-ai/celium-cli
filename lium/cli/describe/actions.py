@@ -1,11 +1,14 @@
 import contextlib
+import re
 
-from lium.sdk import Lium, PodInfo
-from lium.cli.utils import CliFailure, EXIT_POD_NOT_FOUND, loading_status
+from lium.sdk import Lium, LiumError, PodInfo
+from lium.cli.utils import loading_status
+
+_UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
 
 
-def resolve_pod_or_fail(lium: Lium, target: str, show_progress: bool) -> PodInfo:
-    """The pod matching TARGET by id, huid or name; no match is a hard failure.
+def resolve_pod(lium: Lium, target: str, show_progress: bool) -> PodInfo | None:
+    """The pod matching TARGET by id, huid or name, or None when nothing listed matches.
 
     Errors raised by the SDK travel up untouched — classifying them here by
     message would misreport an API outage as a mistyped pod id.
@@ -13,8 +16,32 @@ def resolve_pod_or_fail(lium: Lium, target: str, show_progress: bool) -> PodInfo
     with loading_status("Loading pod", "") if show_progress else contextlib.nullcontext():
         pods = lium.ps()
 
-    pod = next((p for p in pods if target in (p.id, p.huid, p.name)), None)
-    if pod is None:
-        raise CliFailure("pod_not_found", f"Pod '{target}' not found", EXIT_POD_NOT_FOUND)
+    return next((p for p in pods if target in (p.id, p.huid, p.name)), None)
 
-    return pod
+
+def pod_history(lium: Lium, target: str) -> list[dict]:
+    """The event log of a pod that is no longer listed, when TARGET is its id.
+
+    A deleted pod has no row for `ps` to return, but the backend keeps its events (DAH-2927):
+    the delete, the reason, a failed reboot's cause. Only a pod id can be looked up — a huid
+    is derived from the id and a name is not unique — so anything else yields [].
+    """
+    if not _UUID.match(target):
+        return []
+    try:
+        return lium.pod_events(target)
+    except LiumError:
+        return []
+
+
+def pod_detail(lium: Lium, pod_id: str) -> dict:
+    """GET /pods/{id}: the fields `ps` does not carry (last_event, the node's disk verdict).
+
+    Best effort — a detail call failing must not take `describe` down with it, the listing
+    already answered.
+    """
+    try:
+        detail = lium.pod(pod_id)
+    except LiumError:
+        return {}
+    return detail if isinstance(detail, dict) else {}
