@@ -511,10 +511,13 @@ def _render_generic_rows(items: list[Mapping[str, Any]]) -> None:
         if k not in keys:
             keys.append(k)
     # Push complex (dict/list) keys to the back so they get pruned by the cap.
+    # Snapshot the original order first: ``list.sort`` empties the list while
+    # it runs, so ``keys.index(k)`` inside the key function raises ValueError.
+    order = {k: i for i, k in enumerate(keys)}
     keys.sort(
         key=lambda k: (
             isinstance(items[0].get(k), (dict, list, tuple)),
-            keys.index(k),
+            order[k],
         )
     )
     keys = keys[:6]
