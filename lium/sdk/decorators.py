@@ -178,6 +178,31 @@ finally:
 '''
 
 
+def _run_streaming(sdk: Lium, pod, command: str) -> Dict[str, Any]:
+    """Run ``command`` on the pod, relaying its stdout/stderr to ours as it happens.
+
+    Returns the same dict as :meth:`Lium.exec` so the caller can keep the captured output.
+    """
+    chunks: Dict[str, List[str]] = {"stdout": [], "stderr": []}
+    streams = {"stdout": sys.stdout, "stderr": sys.stderr}
+    gen = sdk.stream_exec(pod, command=command, pty=False)
+    while True:
+        try:
+            chunk = next(gen)
+        except StopIteration as stop:
+            exit_code = stop.value
+            break
+        chunks[chunk["type"]].append(chunk["data"])
+        streams[chunk["type"]].write(chunk["data"])
+        streams[chunk["type"]].flush()
+    return {
+        "stdout": "".join(chunks["stdout"]),
+        "stderr": "".join(chunks["stderr"]),
+        "exit_code": exit_code,
+        "success": exit_code == 0,
+    }
+
+
 def _raise_remote(payload: Optional[Dict[str, Any]], func_name: str, exec_result: Dict[str, Any], timeout) -> None:
     """Turn what came back from the pod into the caller's exception."""
     exit_code = exec_result.get("exit_code")
@@ -216,7 +241,8 @@ def machine(
     Arguments and the return value travel as pickles, so anything picklable that both
     sides can import (numpy arrays, dataclasses from an installed package, ...) works.
     Only the function's own ``def`` is sent: import what it needs inside the body and
-    pass everything else as arguments. An exception raised on the pod is re-raised
+    pass everything else as arguments. Whatever the function prints is relayed to this
+    process's stdout/stderr while it runs. An exception raised on the pod is re-raised
     here with the same type; its ``__cause__`` is a :class:`RemoteExecutionError`
     carrying the remote traceback, exit code and captured output.
 
@@ -315,14 +341,15 @@ def machine(
                                 f"({', '.join(reqs)}):\n{install_result['stderr']}"
                             )
 
-                    # Step 6: Execute runner via virtual environment python, bounded by `timeout`
+                    # Step 6: Execute runner via virtual environment python, bounded by `timeout`,
+                    # relaying its output live (-u: no block buffering behind the ssh channel)
                     say("running")
-                    run_cmd = f"{shlex.quote(venv_python)} {remote_runner}"
+                    run_cmd = f"{shlex.quote(venv_python)} -u {remote_runner}"
                     if timeout:
                         # TERM first, KILL 5 s later. (`-s KILL` would kill the process group,
                         # `timeout` included, and the ssh session would report no exit status.)
                         run_cmd = f"timeout -k 5 {int(timeout)} {run_cmd}"
-                    exec_result = sdk.exec(pod_info, command=run_cmd)
+                    exec_result = _run_streaming(sdk, pod_info, run_cmd)
 
                     # Step 7: Download the result (also when the run failed: it carries the exception)
                     payload = None

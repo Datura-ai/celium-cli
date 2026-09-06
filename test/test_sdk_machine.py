@@ -73,13 +73,20 @@ class FakeLium:
 
     def exec(self, pod, *, command, env=None):
         self.calls.append(("exec", command))
-        runner = next((r for r in self.uploaded if r in command), None)
-        if runner is None:
-            return {"stdout": "", "stderr": "", "exit_code": 0, "success": True}
+        return {"stdout": "", "stderr": "", "exit_code": 0, "success": True}
+
+    def stream_exec(self, pod, *, command, env=None, pty=True):
+        self.calls.append(("stream_exec", command, pty))
+        runner = next(r for r in self.uploaded if r in command)
         if self.run_exit_code is not None:
-            return {"stdout": "", "stderr": "", "exit_code": self.run_exit_code, "success": False}
-        r = subprocess.run([sys.executable, str(self.sandbox / Path(runner).name)], capture_output=True, text=True, timeout=30)
-        return {"stdout": r.stdout, "stderr": r.stderr, "exit_code": r.returncode, "success": r.returncode == 0}
+            return self.run_exit_code
+        proc = subprocess.Popen([sys.executable, "-u", str(self.sandbox / Path(runner).name)],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        for line in proc.stdout:
+            yield {"type": "stdout", "data": line}
+        for line in proc.stderr:
+            yield {"type": "stderr", "data": line}
+        return proc.wait(timeout=30)
 
     def download(self, pod, *, remote, local):
         Path(local).write_bytes((self.sandbox / Path(remote).name).read_bytes())
@@ -90,7 +97,7 @@ class FakeLium:
 
 
 def _execs(fake):
-    return [c[1] for c in fake.calls if c[0] == "exec"]
+    return [c[1] for c in fake.calls if c[0] in ("exec", "stream_exec")]
 
 
 @pytest.fixture
@@ -174,7 +181,7 @@ def test_call_rents_cheapest_sets_ttl_bounds_run_and_cleans_up(fake, capsys):
     assert 600 + 14 * 60 < ttl.total_seconds() <= 600 + 15 * 60
 
     run = next(cmd for cmd in _execs(fake) if cmd.endswith(".py"))
-    assert run.startswith("timeout -k 5 600 ")
+    assert run.startswith("timeout -k 5 600 ") and " -u " in run
     assert ("down", "pod-1") in fake.calls
     assert not any(cmd.startswith("rm -rf") for cmd in _execs(fake))
 
@@ -364,6 +371,27 @@ def test_unpicklable_argument_is_refused_before_renting(fake):
 def test_lambda_is_refused():
     with pytest.raises(LiumError, match="lambdas"):
         D.machine(machine="A100")(lambda x: x)
+
+
+# --- output reaches the caller (DAH-3016) -------------------------------------------------------
+
+def test_prints_are_relayed_live_and_kept_on_the_error(fake, capsys):
+    @D.machine(machine="A100", quiet=True)
+    def chatty(n):
+        import sys
+        for i in range(n):
+            print("step", i)
+        print("careful", file=sys.stderr)
+        raise RuntimeError("after printing")
+
+    with pytest.raises(RuntimeError) as info:
+        chatty(2)
+    captured = capsys.readouterr()
+    assert captured.out == "step 0\nstep 1\n"
+    assert "careful" in captured.err
+    assert info.value.__cause__.stdout == "step 0\nstep 1\n"
+    assert "careful" in info.value.__cause__.stderr
+    assert any(c[0] == "stream_exec" and c[2] is False for c in fake.calls)  # no pty: streams stay apart
 
 
 def test_inner_imports_shadowing_module_imports_are_not_flagged(fake):
