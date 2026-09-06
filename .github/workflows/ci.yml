@@ -143,18 +143,13 @@ jobs:
         retention-days: 7
 
   build-linux-arm64-binary:
-    name: Build Linux binary (${{ matrix.asset_name }})
+    name: Build Linux binary (lium-linux-arm64)
     if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'build-binaries')
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-        - runner: ubuntu-24.04-arm
-          platform: linux/arm64
-          asset_name: lium-linux-arm64
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
+    env:
+      ASSET_NAME: lium-linux-arm64
     steps:
     - uses: actions/checkout@v4
 
@@ -163,11 +158,11 @@ jobs:
         mkdir -p dist
         rm -rf dist/lium
         docker rm -f lium-extract >/dev/null 2>&1 || true
-        docker build --platform ${{ matrix.platform }} -f Dockerfile.build -t lium-build:${GITHUB_SHA}-${{ matrix.asset_name }} .
-        docker create --name lium-extract lium-build:${GITHUB_SHA}-${{ matrix.asset_name }} true
+        docker build --platform linux/arm64 -f Dockerfile.build -t lium-build:${GITHUB_SHA}-${ASSET_NAME} .
+        docker create --name lium-extract lium-build:${GITHUB_SHA}-${ASSET_NAME} true
         docker cp lium-extract:/app/dist/lium dist/lium
         docker rm -f lium-extract
-        tar -czf dist/${{ matrix.asset_name }}.tar.gz -C dist lium
+        tar -czf dist/${ASSET_NAME}.tar.gz -C dist lium
 
     - name: Smoke test Linux bundle
       run: |
@@ -177,14 +172,15 @@ jobs:
     - name: Upload Linux artifact
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ matrix.asset_name }}
+        name: ${{ env.ASSET_NAME }}
         path: |
-          dist/${{ matrix.asset_name }}.tar.gz
-          dist/${{ matrix.asset_name }}
+          dist/${{ env.ASSET_NAME }}.tar.gz
+          dist/${{ env.ASSET_NAME }}
         retention-days: 7
 
   build-macos-binary:
-    name: Build macOS binary (${{ matrix.asset_name }})
+    # no matrix value in the name: a skipped matrix job would show it unexpanded
+    name: Build macOS binary
     if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'build-binaries')
     strategy:
       fail-fast: false
