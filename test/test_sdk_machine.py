@@ -220,10 +220,49 @@ def test_quiet_prints_nothing(fake, capsys):
     assert capsys.readouterr().err == ""
 
 
-def test_cleanup_false_keeps_pod_and_removes_venv(fake):
+def test_cleanup_false_keeps_pod_and_its_environment(fake):
     D.machine(machine="A100", cleanup=False, quiet=True)(one)()
     assert not any(c[0] == "down" for c in fake.calls)
-    assert any(cmd.startswith("rm -rf") for cmd in _execs(fake))
+    rm = next(cmd for cmd in _execs(fake) if cmd.startswith("rm "))
+    assert "lium-venv" not in rm and rm.endswith(".pkl")       # call files go, the venv cache stays
+
+
+# --- one environment per requirements list, built once (DAH-3017) --------------------------------
+
+def test_environment_is_created_once_with_system_site_packages(fake, capsys):
+    D.machine(machine="A100", requirements=["transformers", "torch"])(one)()
+    setup = next(cmd for cmd in _execs(fake) if "venv" in cmd)
+    venv = D._venv_path(["torch", "transformers"])
+    assert venv == D._venv_path(["transformers", "torch"])           # order-independent cache key
+    assert setup == (
+        f"if test -f {venv}/.lium-ready; then echo LIUM_ENV_CACHED; else "
+        f"python3 -m venv --system-site-packages {venv} && "
+        f"{venv}/bin/python -m pip install -q --disable-pip-version-check transformers torch && "
+        f"touch {venv}/.lium-ready; fi"
+    )
+    run = next(cmd for cmd in _execs(fake) if cmd.endswith(".py"))
+    assert f"{venv}/bin/python -u " in run
+    assert "environment ready in" in capsys.readouterr().err
+    assert len([c for c in fake.calls if c[0] == "exec"]) == 1          # setup is one round trip
+
+
+def test_cached_environment_is_reported(fake, capsys):
+    fake.exec = lambda pod, *, command, env=None: {"stdout": "LIUM_ENV_CACHED\n", "stderr": "", "exit_code": 0, "success": True}
+    D.machine(machine="A100", requirements=["numpy"])(one)()
+    assert "environment already on the pod" in capsys.readouterr().err
+
+
+def test_no_requirements_still_gets_a_venv_that_sees_the_image(fake):
+    D.machine(machine="A100", quiet=True)(one)()
+    setup = next(cmd for cmd in _execs(fake) if "venv" in cmd)
+    assert "--system-site-packages" in setup and "pip install" not in setup
+
+
+def test_failed_install_is_reported_with_pip_output(fake):
+    fake.exec = lambda pod, *, command, env=None: {"stdout": "", "stderr": "ERROR: No matching distribution for nosuchpkg", "exit_code": 1, "success": False}
+    with pytest.raises(LiumError, match="Failed preparing the environment \\(nosuchpkg\\):\\nERROR: No matching distribution"):
+        D.machine(machine="A100", requirements=["nosuchpkg"], quiet=True)(one)()
+    assert ("down", "pod-1") in fake.calls
 
 
 # --- what travels to the pod (DAH-3015) ---------------------------------------------------------
