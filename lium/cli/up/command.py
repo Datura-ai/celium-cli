@@ -1,7 +1,17 @@
+import time
 from typing import Optional, Tuple
 import click
+import requests
 
-from lium.sdk import Lium, PodStartError
+from lium.sdk import (
+    Lium,
+    LiumAuthError,
+    LiumError,
+    LiumPermissionError,
+    LiumRateLimitError,
+    LiumServerError,
+    PodStartError,
+)
 from lium.cli import ui
 from lium.cli.utils import (
     CliFailure,
@@ -27,6 +37,17 @@ from .actions import (
     PrepareSSHAction,
 )
 
+# The whole command's budget. Rentals start in ~25 s at the median and a cold image pull takes a
+# few minutes; a wait that has passed fifteen minutes is a rent that is not going to come up on its
+# own, and the caller is billed for every one of those minutes.
+DEFAULT_TIMEOUT_SECONDS = 900
+
+
+def _wait_budget(deadline: float, ready_timeout: Optional[int]) -> int:
+    """Seconds the ready wait may take: what --timeout has left, capped by --ready-timeout."""
+    remaining = max(1, int(deadline - time.monotonic()))
+    return min(remaining, ready_timeout) if ready_timeout else remaining
+
 
 @click.command("up")
 @click.argument("executor_id", required=False, metavar="NODE_ID")
@@ -51,12 +72,21 @@ from .actions import (
     help="Remove the pod automatically when its GPU count does not match what was requested or billed",
 )
 @click.option(
+    "--timeout",
+    "timeout",
+    type=click.IntRange(min=1),
+    default=DEFAULT_TIMEOUT_SECONDS,
+    show_default=True,
+    metavar="SECONDS",
+    help="Time budget for the whole command: finding the node, renting it and waiting for the pod. When it runs out while the pod is still starting, exit 1 with the pod named (it keeps running and billing).",
+)
+@click.option(
     "--ready-timeout",
     "ready_timeout",
     type=click.IntRange(min=1),
     default=None,
     metavar="SECONDS",
-    help="Give up waiting for the pod to become ready after this many seconds (exit 1, pod left running and named). Default: wait until it is ready or fails.",
+    help="Bound only the wait for the pod to become ready (exit 1, pod left running and named). Default: whatever --timeout leaves.",
 )
 @click.option("--restore-backup", "restore_backup_id", help="Backup ID to restore after the pod starts")
 @click.option("--restore-to", "restore_path", help="New or empty subdirectory for the startup restore")
@@ -89,6 +119,7 @@ def up_command(
     no_ssh: bool,
     verify_gpus: bool,
     strict_gpus: bool,
+    timeout: int,
     ready_timeout: Optional[int],
     restore_backup_id: Optional[str],
     restore_path: Optional[str],
@@ -120,6 +151,7 @@ def up_command(
       lium up 1 --volume new:name=my-data   # Create and attach new volume
       lium up 1 --volume new:name=my-data,desc="Training data"  # With description
       lium up 1 --ttl 6h                    # Auto-terminate after 6 hours
+      lium up --gpu H100 --timeout 600      # Give the whole rent 10 minutes, then exit 1 naming the pod
       lium up 1 --until "today 23:00"       # Auto-terminate at 23:00 local time today
       lium up 1 --until "tomorrow 01:00"    # Auto-terminate at 01:00 local time tomorrow
       lium up 1 --jupyter                   # Install Jupyter Notebook (auto-selects port)
@@ -140,6 +172,7 @@ def up_command(
       lium up cosmic-hawk-f2 --dockerfile ./Dockerfile --name my-build
     """
     ensure_config()
+    deadline = time.monotonic() + timeout
 
     # Check if we're in docker-run mode or custom-Dockerfile build mode
     docker_run_mode = image is not None
@@ -335,29 +368,53 @@ def up_command(
 
         volume_id = result.data["volume_id"]
 
+    ui.dim(f"renting {executor.huid}…")
     action = RentPodAction()
-    result = ui.load(
-        "Renting machine",
-        lambda: action.execute({
-            "lium": lium,
-            "executor": executor,
-            "template": template,
-            "dockerfile_content": dockerfile_content,
-            "name": name,
-            "volume_id": volume_id,
-            "ports": ports,
-            "ssh_name": ssh_name,
-            "enable_volume_encryption": volume_encryption,
-            "backup_id": restore_backup_id,
-            "restore_path": restore_path,
-        })
-    )
+    try:
+        result = ui.load(
+            "Renting machine",
+            lambda: action.execute({
+                "lium": lium,
+                "executor": executor,
+                "template": template,
+                "dockerfile_content": dockerfile_content,
+                "name": name,
+                "volume_id": volume_id,
+                "ports": ports,
+                "ssh_name": ssh_name,
+                "enable_volume_encryption": volume_encryption,
+                "backup_id": restore_backup_id,
+                "restore_path": restore_path,
+            })
+        )
+    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+        # The API did not answer the rent request. Whether a pod was created is unknown, so the
+        # caller must look before renting again — a blind retry is how one `up` made two pods.
+        raise CliFailure(
+            "api_timeout",
+            f"The rent request for {executor.huid} got no answer from the API ({exc.__class__.__name__}). "
+            f"Run 'lium ps' before retrying: a pod named {name or executor.huid} may exist and be billing.",
+            EXIT_API_ERROR,
+        )
+    except (LiumAuthError, LiumPermissionError, LiumServerError, LiumRateLimitError):
+        raise  # handle_errors already names these (bad key, no permission, server down, throttled)
+    except LiumError as exc:
+        # The API answered and said no: the node is no longer rentable (taken, offline, pending
+        # rental) or the request was refused. No pod exists, so this is safe to retry elsewhere.
+        raise CliFailure(
+            "rent_rejected",
+            f"Node {executor.huid} could not be rented: {exc}. No pod was created. "
+            "Run 'lium ls --format json' for the nodes rentable now.",
+            EXIT_API_ERROR,
+        )
 
     pod_id = result.data["pod_id"]
     pod_name = result.data["pod_name"]
+    ui.dim(f"pod {pod_name} (id: {pod_id}) created; waiting for it to become ready")
 
     # The pod is rented and already billing from here on. Every failure below
     # names it before propagating, or the caller cannot clean up what it pays for.
+    wait_timeout = _wait_budget(deadline, ready_timeout)
     action = WaitReadyAction()
     try:
         result = ui.load(
@@ -365,12 +422,14 @@ def up_command(
             lambda: action.execute({
                 "lium": lium,
                 "pod_id": pod_id,
-                "timeout": ready_timeout,
+                "timeout": wait_timeout,
+                "report": ui.dim,
             })
         )
     except PodStartError as exc:
-        # The pod is dead (FAILED/STOPPED) or gone; say so with its last status so
-        # a script does not retry a rent that will never come up.
+        # The pod is dead (FAILED/CREATION_FAILED/STOPPED) or gone; say so with its last status
+        # and the cause the backend recorded, so a script does not retry a rent that will never
+        # come up — and can tell an unreachable host from a bad image.
         label = exc.pod.huid if exc.pod is not None else pod_name
         raise CliFailure(
             "pod_start_failed",
@@ -383,11 +442,11 @@ def up_command(
         raise
 
     if not result.ok:
-        # Still starting when --ready-timeout ran out: the pod keeps billing, so
+        # Still starting when the budget ran out: the pod keeps billing, so
         # name it and hand the decision back to the caller.
         raise CliFailure(
             "pod_not_ready",
-            f"Pod {pod_name} (id: {pod_id}) is still starting after {ready_timeout}s and is billing. "
+            f"Pod {pod_name} (id: {pod_id}) is still starting after {wait_timeout}s and is billing. "
             f"Wait with 'lium ps', or remove it with 'lium rm {pod_name}'.",
             EXIT_GENERAL_ERROR,
         )

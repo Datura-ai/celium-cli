@@ -197,12 +197,16 @@ class WaitReadyAction:
     still paying for. A timeout is reported as ``ok=False`` with the same intent.
     """
 
+    # A line every this many seconds while nothing changes; every status change prints one too.
+    PROGRESS_EVERY_SECONDS = 30
+
     def execute(self, ctx: dict) -> ActionResult:
         lium: Lium = ctx["lium"]
         pod_id: str = ctx["pod_id"]
         timeout: Optional[int] = ctx.get("timeout")
+        report = ctx.get("report")
 
-        pod = wait_ready_no_timeout(lium, pod_id, timeout=timeout)
+        pod = wait_ready_no_timeout(lium, pod_id, timeout=timeout, on_poll=self._progress(report))
         if pod is None:
             return ActionResult(
                 ok=False,
@@ -210,6 +214,27 @@ class WaitReadyAction:
                 error=f"Pod {pod_id} was still starting after {timeout}s",
             )
         return ActionResult(ok=True, data={"pod": pod})
+
+    def _progress(self, report):
+        """An on_poll callback that says what the pod is doing, without repeating itself every poll.
+
+        A silent wait is what turned a slow rent into a killed command: nothing tells the caller
+        (or an agent behind a pipe, where the spinner is not drawn) whether the pod is PENDING,
+        pulling an image, or already gone.
+        """
+        if report is None:
+            return None
+        last = {"status": None, "at": 0.0}
+
+        def on_poll(pod: Optional[PodInfo], status: str, elapsed: float) -> None:
+            changed = status != last["status"]
+            if not changed and elapsed - last["at"] < self.PROGRESS_EVERY_SECONDS:
+                return
+            last["status"], last["at"] = status, elapsed
+            label = pod.huid if pod is not None else "pod"
+            report(f"waiting for {label}… {status} ({int(elapsed)} s)")
+
+        return on_poll
 
 
 def billed_gpu_count(pod: PodInfo) -> Optional[int]:
