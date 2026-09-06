@@ -33,6 +33,7 @@ from lium.provider._routes import (
     EXECUTOR_MIN_GPU_FOR_RENTAL,
     EXECUTOR_NOTICE_PERIOD,
     EXECUTOR_PODS,
+    EXECUTOR_VERIFICATION,
     EXECUTORS,
     LOGIN_FLEXIBLE,
     MACHINE_REQUEST_BY_ID,
@@ -450,6 +451,14 @@ class ProviderClient:
         """``GET /executors/{id}`` -- fetch one node's full record."""
         return self._http.get(
             EXECUTOR_BY_ID.format(id=_safe_id(node_id, label="node_id"))
+        )
+
+    def get_node_verification(self, node_id: str) -> dict[str, Any]:
+        """``GET /executors/{id}/verification`` -- which validator step the
+        node is on, elapsed and estimated time left while a check runs; the
+        last run's per-step timeline otherwise (portal DAH-3019)."""
+        return self._http.get(
+            EXECUTOR_VERIFICATION.format(id=_safe_id(node_id, label="node_id"))
         )
 
     def add_node(

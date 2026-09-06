@@ -4,6 +4,7 @@ Subcommands:
 
 - ``list``                    -- paginated node listing.
 - ``get <id>``                -- single node record.
+- ``status <id> [--watch]``   -- verification step in progress / last run timeline.
 - ``add``                     -- queue a new node (calls /executors).
 - ``rm <id>``                 -- delete a node.
 - ``update-price <id>``       -- set price-per-GPU.
@@ -25,6 +26,8 @@ because that's the user-facing terminology.
 
 from __future__ import annotations
 
+import time
+
 import click
 
 from lium.cli.provider._client import build_client
@@ -35,6 +38,7 @@ from lium.cli.provider._guards import (
 )
 from lium.cli.provider._overrides import with_provider_overrides
 from lium.cli.provider._render import fatal, render
+from lium.cli.provider._verification import render_text
 from lium.provider._shared_config import default_price_for_gpu, fetch_shared_config
 from lium.provider.errors import ARG_INVALID, ProviderError
 
@@ -113,6 +117,57 @@ def get_node(ctx: click.Context, node_id: str) -> None:
         ctx.exit(handle_provider_error(ctx, e))
         return
     render(ctx, body, summary=f"node {node_id}")
+
+
+@node_command.command("status", short_help="Verification progress of one node.")
+@click.argument("node_id", required=True)
+@click.option(
+    "--watch",
+    is_flag=True,
+    help="Refresh until interrupted (Ctrl-C). In --json mode prints one object per refresh.",
+)
+@click.option(
+    "--interval",
+    type=click.IntRange(min=2),
+    default=5,
+    show_default=True,
+    help="Seconds between refreshes with --watch.",
+)
+@with_provider_overrides
+@click.pass_context
+def status_node(ctx: click.Context, node_id: str, watch: bool, interval: int) -> None:
+    """Which validator step the node is on, elapsed and estimated time left
+    while a check runs; the last run's per-step timeline otherwise.
+
+    \b
+      verifying · step 3/6 Bandwidth & GPU proof · 42 s elapsed · ~70 s left
+        ✓ 1. Upload checks — 4 s (estimated)
+        …
+
+    The position is an estimate from this node's (or the fleet's) recent runs;
+    the verdict itself lands when the validator publishes the cycle.
+    """
+    require_hotkey(ctx, group="node")
+    client = build_client(ctx)
+    json_mode = bool(((ctx.obj or {}).get("provider_opts") or {}).get("json"))
+    while True:
+        try:
+            body = client.get_node_verification(node_id)
+        except ProviderError as e:
+            ctx.exit(handle_provider_error(ctx, e))
+            return
+        if json_mode:
+            render(ctx, body)
+        else:
+            if watch:
+                click.clear()
+            click.echo(render_text(body))
+        if not watch:
+            return
+        try:
+            time.sleep(interval)
+        except KeyboardInterrupt:
+            return
 
 
 @node_command.command("add", short_help="Queue a new node addition.")
