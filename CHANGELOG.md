@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `lium provider node list` shows the portal's computed node **Status** (AVAILABLE, VALIDATION_PENDING, VALIDATION_FAILED, OFFLINE, …) as the first column; `lium provider node get` prints the status with its one-line reason and the validator's last error (impact and fix) instead of collapsing `computed_status` to `{4 fields}`. JSON output is unchanged.
+
 ## [0.4.3] - 2025-10-23
 
 ### Added

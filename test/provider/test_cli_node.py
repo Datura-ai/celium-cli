@@ -94,6 +94,56 @@ def test_node_list_renders_summary(patched_build_client) -> None:
     assert portal.gets[0][0] == "/executors"
 
 
+def test_node_list_shows_computed_status_column(patched_build_client) -> None:
+    # The portal returns computed_status on every row; the human table must
+    # show it, or a VALIDATION_FAILED node looks identical to an AVAILABLE one.
+    rows = [
+        {
+            "id": "e-1",
+            "executor_ip_address": "1.2.3.4",
+            "executor_ip_port": "8080",
+            "price_per_gpu": 1.0,
+            "gpu_count": 1,
+            "gpu_type": "RTX 4090",
+            "computed_status": {"status": "AVAILABLE", "message": "1 of 1 GPUs ready for rent"},
+        },
+        {
+            "id": "e-2",
+            "executor_ip_address": "5.6.7.8",
+            "executor_ip_port": "8080",
+            "price_per_gpu": 1.0,
+            "gpu_count": 1,
+            "gpu_type": "RTX 4090",
+            "computed_status": {"status": "VALIDATION_PENDING", "message": "Waiting for next validator check"},
+        },
+        {
+            "id": "e-3",
+            "executor_ip_address": "9.9.9.9",
+            "executor_ip_port": "8080",
+            "price_per_gpu": 1.0,
+            "gpu_count": 1,
+            "gpu_type": "RTX 4090",
+        },
+    ]
+    portal = _Portal(get_body={"data": rows, "total": 3})
+    patched_build_client(portal)
+    runner = CliRunner()
+    # Rich sizes the table from COLUMNS (ignored under TERM=dumb); at 80 the
+    # seven columns collapse to ellipses and the status text is unreadable.
+    result = runner.invoke(
+        provider_command,
+        ["--hotkey", "hk1", "node", "list"],
+        env={"COLUMNS": "200", "TERM": "xterm-256color"},
+    )
+    assert result.exit_code == 0, result.output
+    assert "Status" in result.output
+    assert "AVAILABLE" in result.output
+    assert "VALIDATION_PENDING" in result.output
+    # A row without computed_status renders a dash, not a crash.
+    assert "e-3" in result.output
+    assert "—" in result.output
+
+
 def test_node_list_json(patched_build_client) -> None:
     portal = _Portal(get_body={"data": [{"id": "e-1"}], "total": 1})
     patched_build_client(portal)
@@ -143,6 +193,69 @@ def test_node_get_renders(patched_build_client) -> None:
         ["--hotkey", "hk1", "node", "get", "e-1"],
     )
     assert result.exit_code == 0, result.output
+
+
+def test_node_get_prints_status_message_and_last_error(patched_build_client) -> None:
+    portal = _Portal(
+        get_body={
+            "id": "e-1",
+            "gpu_type": "H100",
+            "computed_status": {
+                "status": "VALIDATION_FAILED",
+                "message": "VerifyX validation failed (network speed too slow) (last success: 3 hours ago)",
+                "last_error": {
+                    "title": "VerifyX validation failed (network speed too slow)",
+                    "message": "VerifyX validation failed (network speed too slow)",
+                    "source": "Validator",
+                    "reason_code": "VERIFYX_FAILED_NETWORK_SPEED_TOO_SLOW",
+                    "impact": "Score set to 0",
+                    "remediation": "EMA download speed is below the minimum threshold.",
+                    "what_we_saw": {"ema_verifyx_download_speed": 61.2},
+                },
+                "last_successful_validation": None,
+            },
+        }
+    )
+    patched_build_client(portal)
+    runner = CliRunner()
+    result = runner.invoke(
+        provider_command,
+        ["--hotkey", "hk1", "node", "get", "e-1"],
+        terminal_width=200,
+    )
+    assert result.exit_code == 0, result.output
+    assert "VALIDATION_FAILED" in result.output
+    assert "network speed too slow" in result.output
+    assert "Impact: Score set to 0" in result.output
+    assert "Fix: EMA download speed is below the minimum threshold." in result.output
+    # The dict is rendered once, as Status / Last Error, not also as a collapsed blob.
+    assert "{4 fields}" not in result.output
+    assert "Computed Status" not in result.output
+
+
+def test_node_get_status_without_last_error(patched_build_client) -> None:
+    portal = _Portal(
+        get_body={
+            "id": "e-1",
+            "computed_status": {
+                "status": "AVAILABLE",
+                "message": "8 of 8 GPUs ready for rent",
+                "last_error": None,
+                "last_successful_validation": "2026-09-06T10:00:00Z",
+            },
+        }
+    )
+    patched_build_client(portal)
+    runner = CliRunner()
+    result = runner.invoke(
+        provider_command,
+        ["--hotkey", "hk1", "node", "get", "e-1"],
+        terminal_width=200,
+    )
+    assert result.exit_code == 0, result.output
+    assert "AVAILABLE" in result.output
+    assert "8 of 8 GPUs ready for rent" in result.output
+    assert "Last Error" not in result.output
 
 
 def test_node_get_rejects_path_traversal_in_id(patched_build_client) -> None:

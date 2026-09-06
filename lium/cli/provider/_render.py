@@ -295,6 +295,52 @@ def _short_timestamp(value: Any) -> str:
     return console.get_styled(text, "dim")
 
 
+# Portal ``computed_status.status`` values that mean the node is not earning.
+_NODE_STATUS_BAD = frozenset({"OFFLINE", "VALIDATION_FAILED", "NOT_DETECTED", "RECLAIMING"})
+_NODE_STATUS_GOOD = frozenset({"AVAILABLE", "RENTED"})
+
+
+def _node_status_label(status: Any) -> str:
+    if not status:
+        return console.get_styled("—", "dim")
+    text = str(status)
+    if text in _NODE_STATUS_GOOD:
+        return console.get_styled(text, "success")
+    if text in _NODE_STATUS_BAD:
+        return console.get_styled(text, "error")
+    return console.get_styled(text, "warning")
+
+
+def _node_status(row: Mapping[str, Any]) -> str:
+    computed = row.get("computed_status")
+    if not isinstance(computed, Mapping):
+        return console.get_styled("—", "dim")
+    return _node_status_label(computed.get("status"))
+
+
+def _computed_status_rows(value: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """Portal ``computed_status`` -> ``Status`` (and ``Last Error``) record rows.
+
+    The portal computes the badge, its one-line reason and the validator's
+    last verdict server-side; the generic renderer collapses that dict to
+    ``{4 fields}`` and hides all three.
+    """
+    text = _node_status_label(value.get("status"))
+    message = value.get("message")
+    if message:
+        text = f"{text} — {message}"
+    rows = [("Status", text)]
+    err = value.get("last_error")
+    if isinstance(err, Mapping):
+        lines = [str(err.get("title") or err.get("message") or "")]
+        if err.get("impact"):
+            lines.append(f"Impact: {err['impact']}")
+        if err.get("remediation"):
+            lines.append(f"Fix: {err['remediation']}")
+        rows.append(("Last Error", "\n".join(line for line in lines if line)))
+    return rows
+
+
 def _gpu_config(row: Mapping[str, Any]) -> str:
     gpu_count = row.get("gpu_count")
     gpu_type = row.get("gpu_type") or row.get("executor_machine_name") or "—"
@@ -367,6 +413,7 @@ def _trim_money(value: Any, decimals: int = 4) -> str:
 
 def _node_preset() -> _TablePreset:
     return [
+        ("Status",    _node_status,                                                  "left",  3, 10, True),
         ("ID",        lambda r: _truncate_id(r.get("id"), 14),                      "left",  3, 12, True),
         ("GPUs",      _gpu_config,                                                   "left",  4, 14, True),
         ("Endpoint",  _ip_port,                                                      "left",  3, 15, True),
@@ -582,6 +629,10 @@ def _render_record(body: Mapping[str, Any]) -> None:
     extra_incentive_note_rendered = False
     for key, value in body.items():
         if key == "extra_incentive_eligible" and extra_incentives_disabled:
+            continue
+        if key == "computed_status" and isinstance(value, Mapping):
+            for label, text in _computed_status_rows(value):
+                table.add_row(label, text)
             continue
         table.add_row(_human_label(key), _format_record_value(key, value))
         if key == "discord_connected" and extra_incentives_disabled:
