@@ -348,6 +348,24 @@ def _validate_executor(extra_args=None):
         raise Exception(message)
 
 
+def _mine_status(args: list) -> int:
+    """Run `lium provider node status <args>`; `--json` may come after the node id here."""
+    from lium.cli.provider.command import provider_command
+
+    group_args = ["--json"] if "--json" in args else []
+    sub_args = [a for a in args if a != "--json"]
+    try:
+        code = provider_command.main(
+            args=[*group_args, "node", "status", *sub_args],
+            prog_name="lium mine status",
+            standalone_mode=False,
+        )
+    except click.ClickException as e:
+        e.show()
+        return e.exit_code
+    return int(code or 0)
+
+
 # --------------------------
 # CLI
 # --------------------------
@@ -360,6 +378,12 @@ def _validate_executor(extra_args=None):
 @click.pass_context
 @handle_errors
 def mine_command(ctx, hotkey, dir_, branch, auto, verbose):
+    if ctx.args and ctx.args[0] == "status":
+        # `lium mine` is the provider's first command; `lium mine status <node>` is where they look
+        # next, so it is the same command as `lium provider node status` (auth from
+        # LIUM_PROVIDER_HOTKEY / ~/.lium/config.ini). Extra args are otherwise the validator's.
+        raise SystemExit(_mine_status(ctx.args[1:]))
+
     if verbose:
         _show_setup_summary()   # keep the banner only when asked
 
