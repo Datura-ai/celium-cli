@@ -1,8 +1,9 @@
 """Remove (rm) command implementation."""
 
+import json
 import sys
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 import click
 
@@ -15,7 +16,7 @@ from lium.cli.utils import (
     CliFailure,
     handle_errors,
 )
-from . import validation, parsing
+from . import validation, parsing, display
 from .actions import RemovePodsAction, ScheduleRemovalAction
 
 
@@ -88,6 +89,12 @@ def human_approved_removing_every_pod(pods: List[PodInfo]) -> bool:
 @click.option("--yes", "-y", is_flag=True, help="Skip the confirmation prompt")
 @click.option("--in", "in_duration", help="Schedule removal after duration")
 @click.option("--at", "at_time", help="Schedule removal at time")
+@click.option(
+    "--format", "output_format",
+    type=click.Choice(["table", "json"]),
+    default="table",
+    help="Output format. 'json' emits the removed pods with uptime and estimated spend.",
+)
 @handle_errors
 def rm_command(
     targets: Optional[str],
@@ -95,12 +102,16 @@ def rm_command(
     yes: bool,
     in_duration: Optional[str],
     at_time: Optional[str],
+    output_format: str,
 ):
     """Remove (terminate) GPU pods.
 
     \b
     Removal is irreversible. Exits non-zero when nothing matched TARGETS, so a
     typo cannot look like a successful teardown.
+    \b
+    Each removed pod is reported with its uptime and estimated spend
+    (uptime × $/h, marked ≈ because the API returns no billed figure).
     """
     lium = Lium()
     plan = build_removal_plan(lium, targets, remove_all, in_duration, at_time)
@@ -120,11 +131,31 @@ def rm_command(
         done_verb = "Removed"
 
     failed_huids = action.execute(context).data["failed_huids"]
-    removed_huids = [pod.huid for pod in plan.pods if pod.huid not in failed_huids]
+    done_pods = [pod for pod in plan.pods if pod.huid not in failed_huids]
+    removed_huids = [pod.huid for pod in done_pods]
 
-    # Say what happened: silence is indistinguishable from having done nothing.
-    if removed_huids:
+    # The pods were listed before the delete, so their $/h and start time are
+    # still in hand: report the final spend now, or the caller has to rebuild
+    # it from `ps` history.
+    now = datetime.now(timezone.utc)
+    spends = {pod.huid: display.pod_spend(pod, now) for pod in done_pods}
+
+    if output_format == "json":
+        payload = {
+            "scheduled" if plan.termination_time else "removed": [
+                {"id": pod.id, "huid": pod.huid, "name": pod.name, **spends[pod.huid]} for pod in done_pods
+            ],
+            "failed": failed_huids,
+        }
+        if plan.termination_time:
+            payload["termination_time"] = context["termination_time"]
+        click.echo(json.dumps(payload, indent=2, ensure_ascii=False))
+    elif removed_huids:
+        # Say what happened: silence is indistinguishable from having done nothing.
         ui.success(f"{done_verb} {len(removed_huids)} pod(s): {', '.join(removed_huids)}")
+        if not plan.termination_time:
+            for pod in done_pods:
+                ui.info(display.format_removed_line(pod, spends[pod.huid]))
 
     if failed_huids:
         raise CliFailure(
