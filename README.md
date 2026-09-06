@@ -109,7 +109,7 @@ Full API reference: https://docs.lium.io/developers/sdk/reference
 
 - **CLI docs:** https://docs.lium.io/category/cli
 - **SDK docs:** https://docs.lium.io/developers/sdk
-- **Agents and scripts:** [docs/agents.md](docs/agents.md) — the non-interactive path end to end (env-var auth, JSON output, exit codes, `up → exec → rsync → rm`, pod gotchas). Also summarised in [AGENTS.md](AGENTS.md).
+- **Agents and scripts:** [docs/agents.md](docs/agents.md) — the non-interactive path end to end (env-var auth, JSON output, exit codes, `up → exec → rsync → rm`, pod gotchas).
 
 ## Binary Releases
 

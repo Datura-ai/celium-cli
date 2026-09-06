@@ -43,13 +43,11 @@ def test_flags_the_guide_attributes_to_main_exist(command, flag):
     assert flag in _params(command), f"docs/agents.md relies on 'lium {command} {flag}'"
 
 
-def test_guide_and_root_pointer_exist_and_link_each_other():
-    agents_md = (ROOT / "AGENTS.md").read_text()
+def test_guide_exists_and_readme_links_it():
     readme = (ROOT / "README.md").read_text()
 
     assert AGENTS_DOC.exists()
-    assert "docs/agents.md" in agents_md
-    assert "docs/agents.md" in readme and "AGENTS.md" in readme
+    assert "docs/agents.md" in readme
 
 
 def test_guide_covers_the_lifecycle_and_the_gotchas():
