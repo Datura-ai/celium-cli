@@ -201,33 +201,45 @@ class WaitReadyAction:
         timeout: Optional[int] = ctx.get("timeout")
         report = ctx.get("report")
 
-        pod = wait_ready_no_timeout(lium, pod_id, timeout=timeout, on_poll=self._progress(report))
+        last_seen: dict = {"pod": None}
+        pod = wait_ready_no_timeout(
+            lium, pod_id, timeout=timeout, on_poll=self._progress(report, last_seen) if report else None
+        )
         if pod is None:
-            return ActionResult(
-                ok=False,
-                data={},
-                error=f"Pod {pod_id} was still starting after {timeout}s",
-            )
+            error = f"Pod {pod_id} was still starting after {timeout}s"
+            # DAH-3005: the backend's own estimate tells a slow-but-coming pod from a stuck one.
+            hint = last_seen["pod"].eta_hint() if last_seen["pod"] is not None else None
+            if hint:
+                error += f" (backend: {hint})"
+            return ActionResult(ok=False, data={}, error=error)
         return ActionResult(ok=True, data={"pod": pod})
 
-    def _progress(self, report):
+    def _progress(self, report, last_seen: Optional[dict] = None):
         """An on_poll callback that says what the pod is doing, without repeating itself every poll.
 
         A silent wait is what turned a slow rent into a killed command: nothing tells the caller
         (or an agent behind a pipe, where the spinner is not drawn) whether the pod is PENDING,
-        pulling an image, or already gone.
+        pulling an image, or already gone. DAH-3005: the line carries the backend's estimate and
+        creation phase when it sends them, and is printed again whenever the phase moves.
         """
         if report is None:
             return None
-        last = {"status": None, "at": 0.0}
+        last = {"status": None, "phase": None, "at": 0.0}
 
         def on_poll(pod: Optional[PodInfo], status: str, elapsed: float) -> None:
-            changed = status != last["status"]
+            if last_seen is not None and pod is not None:
+                last_seen["pod"] = pod
+            phase = pod.phase if pod is not None else None
+            changed = status != last["status"] or phase != last["phase"]
             if not changed and elapsed - last["at"] < self.PROGRESS_EVERY_SECONDS:
                 return
-            last["status"], last["at"] = status, elapsed
+            last["status"], last["phase"], last["at"] = status, phase, elapsed
             label = pod.huid if pod is not None else "pod"
-            report(f"waiting for {label}… {status} ({int(elapsed)} s)")
+            line = f"waiting for {label}… {status} ({int(elapsed)} s)"
+            hint = pod.eta_hint() if pod is not None else None
+            if hint:
+                line += f" · {hint}"
+            report(line)
 
         return on_poll
 
