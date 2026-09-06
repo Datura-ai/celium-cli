@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- `@lium.machine(machine=...)` reads `"<count>x<gpu>"` / `"<gpu>"` (`"1xH200"`, `"RTX4090"`, `"2xA100"`; count defaults to 1) and rents the cheapest node with exactly that many GPUs of that type. It used to take the first node whose full name contained the string, so `"1xH200"` matched nothing and `"A100"` rented an 8×A100. The pick is printed to stderr (`[lium] fn: renting 1xA100 $1.20/h (...)`; `quiet=True` silences it).
+- `@lium.machine`: new `timeout=` (default 1 h, `None` for none) kills the remote run, and the pod is scheduled for removal at `timeout + 15 min` (24 h without a timeout), so a caller that dies mid-call cannot leave it billing. A pod that never becomes ready is now removed instead of left behind. The per-call venv is no longer deleted right before the pod itself is (one SSH round trip less).
+
 ## [0.4.3] - 2025-10-23
 
 ### Added
