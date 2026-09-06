@@ -325,3 +325,97 @@ def test_resolve_restore_id_searches_active_pods(monkeypatch):
 
     assert client.resolve_restore_id("9b6c8d90") == restore_id
     assert client.resolve_restore_id("9B6C8D90") == restore_id
+
+
+class _FakeChannel:
+    """Two stdout chunks, one stderr chunk, then the exit status."""
+
+    def __init__(self):
+        self.out = [b"one\n", b"two\n"]
+        self.err = [b"warn\n"]
+        self.polls = 0
+
+    def recv_ready(self):
+        return bool(self.out)
+
+    def recv(self, n):
+        return self.out.pop(0)
+
+    def recv_stderr_ready(self):
+        return bool(self.err)
+
+    def recv_stderr(self, n):
+        return self.err.pop(0)
+
+    def exit_status_ready(self):
+        self.polls += 1
+        return self.polls > 1  # first poll: not finished yet
+
+    def recv_exit_status(self):
+        return 3
+
+
+def _stream_client(monkeypatch, channel):
+    from contextlib import contextmanager
+
+    calls = {}
+
+    class _Stdin:
+        def write(self, data):
+            calls["stdin"] = data
+
+        def close(self):
+            pass
+
+    class _Std:
+        def __init__(self, ch):
+            self.channel = ch
+
+    class _SSH:
+        def exec_command(self, command, get_pty=False):
+            calls["command"] = command
+            calls["get_pty"] = get_pty
+            return _Stdin(), _Std(channel), _Std(channel)
+
+    client = Lium(Config(api_key="test"))
+
+    @contextmanager
+    def fake_connection(pod, timeout=30):
+        yield _SSH()
+
+    monkeypatch.setattr(client, "ssh_connection", fake_connection)
+    monkeypatch.setattr("lium.sdk.client.time.sleep", lambda s: None)
+    return client, calls
+
+
+def test_stream_exec_without_pty_keeps_streams_apart_and_returns_exit_status(monkeypatch):
+    client, calls = _stream_client(monkeypatch, _FakeChannel())
+    pod = SimpleNamespace(id="pod-1", name="p", ssh_cmd="ssh root@10.0.0.1 -p 22")
+
+    gen = client.stream_exec(pod, command="python -u run.py", env={"A": "x y"}, pty=False)
+    chunks = []
+    while True:
+        try:
+            chunks.append(next(gen))
+        except StopIteration as stop:
+            exit_code = stop.value
+            break
+
+    assert chunks == [  # one stdout and one stderr read per loop turn
+        {"type": "stdout", "data": "one\n"},
+        {"type": "stderr", "data": "warn\n"},
+        {"type": "stdout", "data": "two\n"},
+    ]
+    assert exit_code == 3
+    assert calls["get_pty"] is False
+    assert calls["command"] == 'export A="x y" && python -u run.py'
+
+
+def test_stream_exec_default_pty_is_unchanged(monkeypatch):
+    client, calls = _stream_client(monkeypatch, _FakeChannel())
+    pod = SimpleNamespace(id="pod-1", name="p", ssh_cmd="ssh root@10.0.0.1 -p 22")
+
+    list(client.stream_exec(pod, command="ls", env={"A": "1"}))
+
+    assert calls["get_pty"] is True
+    assert calls["command"] == 'export A="1" && ls'
