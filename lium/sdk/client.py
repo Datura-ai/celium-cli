@@ -44,7 +44,6 @@ from .models import (
 )
 from .ssh_key_cache import fingerprint, load_cache, save_cache
 from .utils import (
-    expand_gpu_shorthand,
     extract_gpu_type,
     generate_huid,
     parse_api_timestamp,
