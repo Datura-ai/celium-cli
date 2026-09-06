@@ -348,6 +348,21 @@ You can also use environment variables:
 export LIUM_API_KEY=your-api-key-here
 ```
 
+### Crash reporting (opt-in, off by default)
+
+The CLI never sends telemetry unless you turn it on:
+
+```bash
+lium config set telemetry.enabled true    # or: export LIUM_TELEMETRY=1
+lium config set telemetry.enabled false   # off again
+```
+
+When on, an *unexpected* error (a bug, shown as `Unexpected error: …`) is reported once with the
+exception, its stack trace, the command name (`lium up`), the CLI version, the Python version and
+the OS. API errors, usage errors, arguments, option values, local variables, pod names, hosts,
+paths under your home directory, e-mails and API keys are never sent. Reports go to Lium's Sentry
+project; `LIUM_SENTRY_DSN` points them somewhere else (a self-hosted GlitchTip, for example).
+
 ## Requirements
 
 - Python 3.9+
