@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from decimal import Decimal
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any, Dict, Generator, List, Optional, Union
+from typing import Any, Callable, Dict, Generator, List, Optional, Union
 from urllib.parse import parse_qs, urlparse
 
 import paramiko
@@ -1191,11 +1191,57 @@ class Lium:
     # Statuses a pod never leaves. Seeing one while waiting means "stop waiting",
     # not "keep polling until the timeout".
     TERMINAL_POD_STATUSES = frozenset(
-        {"FAILED", "STOPPED", "ERROR", "TERMINATED", "DELETED", "REMOVED", "CANCELLED"}
+        {
+            "FAILED",
+            "STOPPED",
+            "ERROR",
+            "TERMINATED",
+            "DELETED",
+            "REMOVED",
+            "CANCELLED",
+            # The backend's own names for a rent that will not come up: a failed create is
+            # CREATION_FAILED for three minutes before its row is deleted, a force-closed pod is
+            # BROKEN, a reboot the host never came back from is REBOOT_FAILED, a delete in flight
+            # is DELETING.
+            "CREATION_FAILED",
+            "BROKEN",
+            "REBOOT_FAILED",
+            "DELETING",
+        }
     )
     # How many consecutive ``ps`` calls may omit a pod that was never listed
     # before it is declared missing (a wrong id, or a rent the backend dropped).
     MISSING_POLLS_BEFORE_ERROR = 3
+
+    def pod_events(self, pod_id: str) -> List[Dict[str, Any]]:
+        """The pod's event log, oldest first — creation, reboots, failures with their error, and
+        lifecycle entries saying why it left RUNNING. Answers for a pod whose row is already gone.
+
+        Returns ``[]`` against a backend that predates the endpoint.
+        """
+        try:
+            data = self._request("GET", f"/pods/{pod_id}/events").json()
+        except LiumNotFoundError:
+            return []
+        return data if isinstance(data, list) else []
+
+    def pod_failure_cause(self, pod_id: str) -> Optional[str]:
+        """What the backend recorded as the reason the pod failed or was closed, or ``None``.
+
+        The latest event carrying an ``error`` (a failed create or reboot: the validator's headline)
+        or a lifecycle ``reason``/``detail`` wins. Never raises — this is read on a failure path.
+        """
+        try:
+            events = self.pod_events(pod_id)
+        except LiumError:
+            return None
+        for event in reversed(events):
+            if event.get("error"):
+                return event["error"]
+            if event.get("reason"):
+                detail = event.get("detail")
+                return f"{event['reason']}: {detail}" if detail else event["reason"]
+        return None
 
     def wait_ready(
         self,
@@ -1203,6 +1249,7 @@ class Lium:
         *,
         timeout: Optional[int] = 300,
         poll_interval: int = 10,
+        on_poll: Optional[Callable[[Optional[PodInfo], str, float], None]] = None,
     ) -> Optional[PodInfo]:
         """Poll until a pod reports RUNNING + SSH metadata.
 
@@ -1211,6 +1258,9 @@ class Lium:
             timeout: Maximum number of seconds to wait; ``None`` waits until the
                 pod is ready or fails.
             poll_interval: Interval between successive ``ps`` calls.
+            on_poll: Called after every poll with the pod as last listed (or
+                ``None``), its status (``"missing"`` when not listed) and the
+                seconds elapsed, so a caller can show progress while waiting.
 
         Returns:
             PodInfo when the pod is ready, otherwise ``None`` if the timeout
@@ -1218,11 +1268,12 @@ class Lium:
 
         Raises:
             PodStartError: The pod reached a terminal status (``FAILED``,
-                ``STOPPED``, …), vanished from the pod list after being seen, or
-                was never listed in :attr:`MISSING_POLLS_BEFORE_ERROR` polls.
-                The error carries the last ``PodInfo``, its status and the
-                status history, so a caller can tell a dead pod from a slow one
-                and clean up instead of retrying.
+                ``CREATION_FAILED``, ``STOPPED``, …), vanished from the pod list
+                after being seen, or was never listed in
+                :attr:`MISSING_POLLS_BEFORE_ERROR` polls. The error carries the
+                last ``PodInfo``, its status, the status history and the cause
+                the backend recorded (``cause``), so a caller can tell a dead pod
+                from a slow one and clean up instead of retrying.
         """
         if isinstance(pod, PodInfo):
             pod_id = pod.id
@@ -1241,17 +1292,19 @@ class Lium:
 
             if current is None:
                 missing_polls += 1
+                if on_poll:
+                    on_poll(last_seen, "missing", time.time() - start)
                 if last_seen is not None:
                     raise PodStartError(
                         f"Pod {last_seen.huid} ({pod_id}) disappeared while starting; "
                         f"last status {history[-1] if history else 'unknown'}",
                         pod_id=pod_id, pod=last_seen, status=history[-1] if history else None,
-                        history=history,
+                        history=history, cause=self.pod_failure_cause(pod_id),
                     )
                 if missing_polls >= self.MISSING_POLLS_BEFORE_ERROR:
                     raise PodStartError(
                         f"Pod {pod_id} is not in the pod list after {missing_polls} checks",
-                        pod_id=pod_id,
+                        pod_id=pod_id, cause=self.pod_failure_cause(pod_id),
                     )
                 time.sleep(poll_interval)
                 continue
@@ -1261,14 +1314,17 @@ class Lium:
             status = (current.status or "unknown").upper()
             if not history or history[-1] != status:
                 history.append(status)
+            if on_poll:
+                on_poll(current, status, time.time() - start)
 
             if status == "RUNNING" and current.ssh_cmd:
                 return current
             if status in self.TERMINAL_POD_STATUSES:
+                cause = self.pod_failure_cause(pod_id)
                 raise PodStartError(
                     f"Pod {current.huid} ({pod_id}) will not start: status {status}"
-                    f" (seen: {' → '.join(history)})",
-                    pod_id=pod_id, pod=current, status=status, history=history,
+                    f" (seen: {' → '.join(history)})" + (f"; cause: {cause}" if cause else ""),
+                    pod_id=pod_id, pod=current, status=status, history=history, cause=cause,
                 )
 
             time.sleep(poll_interval)
