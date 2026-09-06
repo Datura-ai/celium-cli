@@ -225,7 +225,8 @@ def test_up_ready_timeout_with_until_says_termination_was_not_scheduled(monkeypa
     assert "NOT scheduled" not in result.output
 
 
-def test_up_waits_without_limit_by_default(monkeypatch):
+def test_up_bounds_the_wait_by_the_default_budget(monkeypatch):
+    # DAH-2931: the wait is no longer unbounded by default; --timeout (900 s) is what it gets.
     seen = {}
 
     class _Wait:
@@ -236,12 +237,12 @@ def test_up_waits_without_limit_by_default(monkeypatch):
     result = _run_up(monkeypatch, _Wait)
 
     assert result.exit_code == 0, result.output
-    assert seen["timeout"] is None
+    assert 0 < seen["timeout"] <= up_command.DEFAULT_TIMEOUT_SECONDS
 
 
 def test_wait_ready_action_reports_a_timeout_as_not_ok():
     class _Lium:
-        def wait_ready(self, pod_id, *, timeout, poll_interval):
+        def wait_ready(self, pod_id, *, timeout, poll_interval, on_poll=None):
             assert (pod_id, timeout) == ("pod-1", 5)
             return None
 
@@ -253,7 +254,7 @@ def test_wait_ready_action_reports_a_timeout_as_not_ok():
 
 def test_wait_ready_action_lets_a_start_error_through():
     class _Lium:
-        def wait_ready(self, pod_id, *, timeout, poll_interval):
+        def wait_ready(self, pod_id, *, timeout, poll_interval, on_poll=None):
             raise PodStartError("dead", pod_id=pod_id, status="FAILED")
 
     with pytest.raises(PodStartError):
