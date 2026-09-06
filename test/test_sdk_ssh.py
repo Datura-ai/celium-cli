@@ -162,7 +162,7 @@ def test_known_hosts_path_sanitises_pod_id(monkeypatch, tmp_path):
     assert sdk_client.known_hosts_path(pod) == tmp_path / ".lium" / "known_hosts" / ".._etc_passwd"
 
 
-def test_ssh_insecure_env_restores_auto_add_policy(monkeypatch, tmp_path):
+def test_ssh_insecure_env_installs_the_accept_any_key_policy(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("LIUM_SSH_INSECURE", "1")
     monkeypatch.setattr(sdk_client.paramiko.Ed25519Key, "from_private_key_file", lambda *a, **k: object())
@@ -188,9 +188,30 @@ def test_ssh_insecure_env_restores_auto_add_policy(monkeypatch, tmp_path):
     with client.ssh_connection(_pod()):
         pass
 
-    assert isinstance(seen["policy"], sdk_client.paramiko.AutoAddPolicy)
+    assert isinstance(seen["policy"], sdk_client._InsecureAcceptPolicy)
+    assert isinstance(seen["policy"], sdk_client.paramiko.MissingHostKeyPolicy)
     assert "loaded" not in seen
     assert not (tmp_path / ".lium" / "known_hosts").exists()
+
+
+def test_insecure_policy_accepts_the_key_for_the_session_and_warns(monkeypatch, tmp_path):
+    """Same effect as paramiko's AutoAddPolicy, but the acceptance is named, not silent."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    ssh_client = sdk_client.paramiko.SSHClient()
+    key = sdk_client.paramiko.ECDSAKey.generate()
+    fp = key.get_fingerprint().hex(":")
+
+    with pytest.warns(UserWarning) as record:
+        sdk_client._InsecureAcceptPolicy().missing_host_key(ssh_client, "[203.0.113.7]:20299", key)
+
+    message = str(record[0].message)
+    assert "[203.0.113.7]:20299" in message
+    assert fp in message
+    assert "LIUM_SSH_INSECURE=1 disabled host key verification" in message
+    # The key is trusted for this client only: paramiko will not raise on connect ...
+    assert ssh_client.get_host_keys().lookup("[203.0.113.7]:20299")["ecdsa-sha2-nistp256"] == key
+    # ... and nothing is pinned on disk.
+    assert not (tmp_path / ".lium").exists()
 
 
 def test_rsync_uses_pinned_known_hosts_unless_insecure(monkeypatch, tmp_path):
