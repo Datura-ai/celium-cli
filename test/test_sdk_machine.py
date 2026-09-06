@@ -2,6 +2,7 @@
 
 import subprocess
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -80,6 +81,7 @@ class FakeLium:
         return self.pods[pod["id"]] if self.ready else None
 
     def upload(self, pod, *, local, remote):
+        self.calls.append(("upload", remote))
         text = Path(local).read_text().replace("'/tmp/", f"'{self.sandbox}/")
         self.uploaded[remote] = text
         (self.sandbox / Path(remote).name).write_text(text)
@@ -103,6 +105,11 @@ class FakeLium:
 
     def download(self, pod, *, remote, local):
         Path(local).write_bytes((self.sandbox / Path(remote).name).read_bytes())
+
+    @contextmanager
+    def ssh_session(self, pod, timeout=30):
+        self.calls.append(("ssh_session", pod.id))
+        yield object()
 
     def down(self, pod):
         self.calls.append(("down", pod.id))
@@ -559,3 +566,12 @@ def test_atexit_removes_held_pods_but_leaves_keep_warm_ones(fake, capsys):
     assert not any(c == ("down", "pod-w") for c in fake.calls)
     assert D._WARM == {}
     assert "stays warm 120s for the next run" in capsys.readouterr().err
+
+
+# --- one SSH connection per call (DAH-3027) -------------------------------------------------------
+
+def test_pod_work_happens_inside_one_ssh_session(fake):
+    D.machine(machine="A100", quiet=True)(one)()
+    kinds = [c[0] for c in fake.calls]
+    assert kinds.count("ssh_session") == 1
+    assert kinds.index("ssh_session") < kinds.index("upload") < kinds.index("stream_exec") < kinds.index("down")

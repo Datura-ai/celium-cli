@@ -420,76 +420,78 @@ def machine(
                     runner_file = f.name
                     f.write(runner_script)
 
-                try:
-                    sdk.upload(pod_info, local=runner_file, remote=remote_runner)
-
-                    # Steps 4-5: one round trip creates the environment and installs the
-                    # requirements — or finds both already there from an earlier call.
-                    reqs = [req for req in (requirements or []) if req]
-                    venv_path = _venv_path(reqs)
-                    venv_python = f"{venv_path}/bin/python"
-                    if reqs:
-                        say(f"preparing environment ({len(reqs)} package(s): {', '.join(reqs)})")
-                    t_env = time.time()
-                    env_result = sdk.exec(pod_info, command=_setup_command(venv_path, reqs))
-                    if not env_result['success']:
-                        raise LiumError(
-                            f"Failed preparing the environment ({', '.join(reqs) or 'no requirements'}):\n"
-                            f"{env_result['stderr'] or env_result['stdout']}"
-                        )
-                    if "LIUM_ENV_CACHED" in env_result['stdout']:
-                        say("environment already on the pod")
-                    elif reqs:
-                        say(f"environment ready in {time.time() - t_env:.0f}s")
-
-                    # Step 6: Execute runner via virtual environment python, bounded by `timeout`,
-                    # relaying its output live (-u: no block buffering behind the ssh channel)
-                    say("running")
-                    run_cmd = f"{shlex.quote(venv_python)} -u {remote_runner}"
-                    if timeout:
-                        # TERM first, KILL 5 s later. (`-s KILL` would kill the process group,
-                        # `timeout` included, and the ssh session would report no exit status.)
-                        run_cmd = f"timeout -k 5 {int(timeout)} {run_cmd}"
-                    exec_result = _run_streaming(sdk, pod_info, run_cmd)
-
-                    # Step 7: Download the result (also when the run failed: it carries the exception)
-                    payload = None
-                    with tempfile.NamedTemporaryFile(delete=False) as f:
-                        result_file = f.name
+                # One SSH connection for the upload, the environment, the run and the download
+                with sdk.ssh_session(pod_info):
                     try:
-                        sdk.download(pod_info, remote=remote_result, local=result_file)
-                        with open(result_file, 'rb') as f:
-                            payload = pickle.load(f)
-                    except (OSError, IOError):
-                        payload = None  # the runner never got to write it
-                    except Exception as exc:  # noqa: BLE001 — unpickling: e.g. numpy missing locally
-                        raise RemoteExecutionError(
-                            f"the result of {func.__name__} could not be unpickled locally: {exc}. "
-                            "Return plain Python types (str(), .tolist(), .cpu().numpy()) or install "
-                            "the missing package here",
-                            exit_code=exec_result.get("exit_code"),
-                        ) from exc
+                        sdk.upload(pod_info, local=runner_file, remote=remote_runner)
+
+                        # Steps 4-5: one round trip creates the environment and installs the
+                        # requirements — or finds both already there from an earlier call.
+                        reqs = [req for req in (requirements or []) if req]
+                        venv_path = _venv_path(reqs)
+                        venv_python = f"{venv_path}/bin/python"
+                        if reqs:
+                            say(f"preparing environment ({len(reqs)} package(s): {', '.join(reqs)})")
+                        t_env = time.time()
+                        env_result = sdk.exec(pod_info, command=_setup_command(venv_path, reqs))
+                        if not env_result['success']:
+                            raise LiumError(
+                                f"Failed preparing the environment ({', '.join(reqs) or 'no requirements'}):\n"
+                                f"{env_result['stderr'] or env_result['stdout']}"
+                            )
+                        if "LIUM_ENV_CACHED" in env_result['stdout']:
+                            say("environment already on the pod")
+                        elif reqs:
+                            say(f"environment ready in {time.time() - t_env:.0f}s")
+
+                        # Step 6: Execute runner via virtual environment python, bounded by `timeout`,
+                        # relaying its output live (-u: no block buffering behind the ssh channel)
+                        say("running")
+                        run_cmd = f"{shlex.quote(venv_python)} -u {remote_runner}"
+                        if timeout:
+                            # TERM first, KILL 5 s later. (`-s KILL` would kill the process group,
+                            # `timeout` included, and the ssh session would report no exit status.)
+                            run_cmd = f"timeout -k 5 {int(timeout)} {run_cmd}"
+                        exec_result = _run_streaming(sdk, pod_info, run_cmd)
+
+                        # Step 7: Download the result (also when the run failed: it carries the exception)
+                        payload = None
+                        with tempfile.NamedTemporaryFile(delete=False) as f:
+                            result_file = f.name
+                        try:
+                            sdk.download(pod_info, remote=remote_result, local=result_file)
+                            with open(result_file, 'rb') as f:
+                                payload = pickle.load(f)
+                        except (OSError, IOError):
+                            payload = None  # the runner never got to write it
+                        except Exception as exc:  # noqa: BLE001 — unpickling: e.g. numpy missing locally
+                            raise RemoteExecutionError(
+                                f"the result of {func.__name__} could not be unpickled locally: {exc}. "
+                                "Return plain Python types (str(), .tolist(), .cpu().numpy()) or install "
+                                "the missing package here",
+                                exit_code=exec_result.get("exit_code"),
+                            ) from exc
+                        finally:
+                            if os.path.exists(result_file):
+                                os.unlink(result_file)
+
+                        if payload and payload.get('ok'):
+                            elapsed = time.time() - started
+                            say(f"done in {elapsed:.0f}s (~${executor.price_per_hour * elapsed / 3600:.4f})")
+                            return payload['result']
+                        _raise_remote(payload, func.__name__, exec_result, timeout)
+
                     finally:
-                        if os.path.exists(result_file):
-                            os.unlink(result_file)
-
-                    if payload and payload.get('ok'):
-                        elapsed = time.time() - started
-                        say(f"done in {elapsed:.0f}s (~${executor.price_per_hour * elapsed / 3600:.4f})")
-                        return payload['result']
-                    _raise_remote(payload, func.__name__, exec_result, timeout)
-
-                finally:
-                    # Clean up local temp file
-                    os.unlink(runner_file)
+                        # Clean up local temp file
+                        os.unlink(runner_file)
+                        # Remove this call's files when the pod stays alive (the venv stays: it is the cache)
+                        if keep or warm or not cleanup:
+                            try:
+                                sdk.exec(pod_info, command=f"rm -f {remote_runner} {remote_result}")
+                            except Exception:
+                                pass
 
             finally:
-                # Remove this call's files when the pod stays alive (the venv stays: it is the cache)
-                if pod_info and (keep or warm or not cleanup) and 'runner_file' in locals():
-                    try:
-                        sdk.exec(pod_info, command=f"rm -f {remote_runner} {remote_result}")
-                    except Exception:
-                        pass
 
                 # Step 8: Release the pod — remove it, or keep it warm for the next call
                 if pod_info and (keep or warm) and getattr(pod_info, "ssh_cmd", None):

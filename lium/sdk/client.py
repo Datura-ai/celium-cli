@@ -127,6 +127,7 @@ class Lium:
             "X-Source": source,
             "X-Lium-Client-Version": _get_client_version(),
         }
+        self._ssh_sessions: Dict[str, paramiko.SSHClient] = {}  # pod id -> connection held by ssh_session()
 
     @with_retry()
     def _request(
@@ -906,6 +907,11 @@ class Lium:
         Yields:
             An active ``paramiko.SSHClient``.
         """
+        held = self._ssh_sessions.get(pod.id)
+        if held is not None:
+            yield held
+            return
+
         if not pod.ssh_cmd:
             raise ValueError(f"No SSH for pod {pod.name}")
 
@@ -951,6 +957,24 @@ class Lium:
             yield client
         finally:
             client.close()
+
+    @contextmanager
+    def ssh_session(self, pod: PodInfo, timeout: int = 30):
+        """Keep one SSH connection to ``pod`` open for the whole block.
+
+        Every :meth:`exec`, :meth:`stream_exec`, :meth:`upload` and :meth:`download`
+        inside it runs over this connection instead of paying a fresh TCP + SSH
+        handshake each (several seconds per call to a distant node).
+
+        Yields:
+            The active ``paramiko.SSHClient``.
+        """
+        with self.ssh_connection(pod, timeout) as client:
+            self._ssh_sessions[pod.id] = client
+            try:
+                yield client
+            finally:
+                self._ssh_sessions.pop(pod.id, None)
 
     def _prep_command(self, command: str, env: Optional[Dict[str, str]] = None) -> str:
         """Prepare command with environment variables."""
