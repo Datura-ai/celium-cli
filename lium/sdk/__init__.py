@@ -11,6 +11,7 @@ from .exceptions import (
     LiumPermissionError,
     LiumRateLimitError,
     LiumServerError,
+    RemoteExecutionError,
 )
 from .models import (
     BackupConfig,
@@ -42,5 +43,6 @@ __all__ = [
     "LiumNotFoundError",
     "LiumPermissionError",
     "LiumHostKeyError",
+    "RemoteExecutionError",
     "machine",
 ]
