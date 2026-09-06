@@ -69,20 +69,15 @@ def ps_command(pod_id: Optional[str], output_format: str):
         # Only a full listing defines what "pod 1" means; a filtered one does not.
         store_pod_selection(pods)
 
-    # Check if empty. An empty list is correct for the account the key belongs to, so name the
-    # key and where it came from: a stale LIUM_API_KEY in the shell silently answers for a
-    # different account than ~/.lium/config.ini, and "No active pods" alone looks like an outage.
-    if not pods:
-        if output_format == "json":
-            click.echo("[]")
-        else:
-            ui.warning("No active pods")
-            key_config = getattr(lium, "config", None)
-            if key_config is not None:
-                ui.dim(f"Account: {key_config.api_key_description}")
-        return
+    # Always say which account answered. Two shells can hold different keys (a stale
+    # LIUM_API_KEY vs ~/.lium/config.ini), and a pod list without its account is ambiguous —
+    # an empty one even reads as an outage. JSON stays a bare array for jq; the line goes to stderr.
+    key_config = getattr(lium, "config", None)
+    account = f"Account: {key_config.api_key_description}" if key_config is not None else None
 
     if output_format == "json":
+        if account:
+            click.echo(account, err=True)
         payload = [
             display.compact_pod(p, index=None if pod_id else position)
             for position, p in enumerate(pods, start=1)
@@ -90,6 +85,12 @@ def ps_command(pod_id: Optional[str], output_format: str):
         if pod_id:
             payload[0]["last_event"] = last_event
         click.echo(json.dumps(payload, indent=2, ensure_ascii=False))
+        return
+
+    if not pods:
+        ui.warning("No active pods")
+        if account:
+            ui.dim(account)
         return
 
     # Build table
@@ -100,3 +101,5 @@ def ps_command(pod_id: Optional[str], output_format: str):
     ui.print(table)
     if last_event:
         ui.dim(f"last event: {format_event(last_event)}")
+    if account:
+        ui.dim(account)

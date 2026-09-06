@@ -226,23 +226,52 @@ def test_config_manager_source_follows_get_precedence(monkeypatch, tmp_path):
     assert manager.get_source("api.api_key") == "env:LIUM_API_KEY"
 
 
-class _FakeEmptyPsLium:
+class _FakePsLium:
+    pods = []
+
     def __init__(self, *args, **kwargs):
         self.config = Config(api_key=ENV_KEY, api_key_source="env:LIUM_API_KEY")
 
     def ps(self):
-        return []
+        return list(self.pods)
+
+
+def _ps(monkeypatch, pods, *args):
+    from lium.cli.ps import command as ps_module
+
+    monkeypatch.setattr(_FakePsLium, "pods", pods)
+    monkeypatch.setattr(ps_module, "Lium", _FakePsLium)
+    monkeypatch.setattr(ps_module, "ensure_config", lambda: None)
+    return CliRunner().invoke(cli, ["ps", *args])
 
 
 def test_ps_empty_list_names_the_key_source(monkeypatch):
-    from lium.cli.ps import command as ps_module
-
-    monkeypatch.setattr(ps_module, "Lium", _FakeEmptyPsLium)
-    monkeypatch.setattr(ps_module, "ensure_config", lambda: None)
-
-    result = CliRunner().invoke(cli, ["ps"])
+    result = _ps(monkeypatch, [])
 
     assert result.exit_code == 0, result.output
     assert "No active pods" in result.output
     assert "key env-ke…tail from env:LIUM_API_KEY" in result.output
     assert ENV_KEY not in result.output
+
+
+def test_ps_table_names_the_key_source(monkeypatch):
+    from lium.sdk import PodInfo
+
+    pod = PodInfo(id="pod-1", name="alpha", status="RUNNING", huid="alpha-1", ssh_cmd=None, ports={},
+                  created_at="2026-09-06T00:00:00", updated_at="2026-09-06T00:00:00", executor=None, template={},
+                  removal_scheduled_at=None, jupyter_installation_status=None, jupyter_url=None)
+    result = _ps(monkeypatch, [pod])
+
+    assert result.exit_code == 0, result.output
+    assert "alpha" in result.output
+    assert "key env-ke…tail from env:LIUM_API_KEY" in result.output
+
+
+def test_ps_json_keeps_stdout_a_bare_array_and_names_the_account_on_stderr(monkeypatch):
+    import json
+
+    result = _ps(monkeypatch, [], "--format", "json")
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == []
+    assert "key env-ke…tail from env:LIUM_API_KEY" in result.stderr
