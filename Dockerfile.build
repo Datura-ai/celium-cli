@@ -1,33 +1,20 @@
 FROM python:3.12-slim-bullseye
 
-# Debian 11 (bullseye) left LTS on 31 Aug 2026: its apt suites are frozen and being
-# moved to archive.debian.org, and while that happens the deb.debian.org CDN can serve
-# an index that lists files a pool edge no longer has (404 on libssl1.1/libperl5.32
-# failed every amd64 build on 5 Sep 2026). Retry update+install with a fresh index,
-# do not fail on the frozen suites' expiring Release files, and from the third try
-# fetch the security suite under its own hostname (a different CDN cache key).
-# --fix-missing is not used on purpose: it would continue without libssl-dev.
+# Debian 11 (bullseye) left LTS on 31 Aug 2026. Its pool is being purged from the live
+# mirrors (bullseye-security .deb files 404 on deb.debian.org and security.debian.org
+# alike since 5 Sep 2026, failing every Linux build) and the suites live on
+# archive.debian.org, whose Release files are no longer re-signed. Fetch from the
+# archive and skip the expiry check; drop bullseye-security, which the archive does
+# not carry yet and which nothing below needs.
+#
+# Every locked dependency ships a manylinux wheel for x86_64 and aarch64 (uv.lock), so
+# no compiler or Rust toolchain is installed; PyInstaller only needs objdump (binutils).
+# A future sdist-only dependency fails here with "no compiler" instead of building.
 RUN set -eu; \
-    for attempt in 1 2 3 4 5; do \
-        if apt-get update -o Acquire::Retries=3 -o Acquire::Check-Valid-Until=false \
-            && apt-get install -y --no-install-recommends -o Acquire::Retries=3 \
-                build-essential \
-                curl \
-                pkg-config \
-                libssl-dev; then \
-            break; \
-        fi; \
-        if [ "$attempt" -ge 5 ]; then echo "apt-get failed after $attempt attempts" >&2; exit 1; fi; \
-        if [ "$attempt" -eq 2 ]; then \
-            sed -i 's|http://deb.debian.org/debian-security|http://security.debian.org/debian-security|' /etc/apt/sources.list; \
-        fi; \
-        echo "apt-get attempt $attempt failed; retrying in $((attempt * 15))s" >&2; \
-        sleep $((attempt * 15)); \
-    done; \
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y; \
+    sed -i -e '/bullseye-security/d' -e 's|http://deb.debian.org/debian|http://archive.debian.org/debian|' /etc/apt/sources.list; \
+    apt-get update -o Acquire::Check-Valid-Until=false -o Acquire::Retries=3; \
+    apt-get install -y --no-install-recommends -o Acquire::Retries=3 binutils; \
     rm -rf /var/lib/apt/lists/*
-
-ENV PATH="/root/.cargo/bin:${PATH}"
 
 RUN pip install --no-cache-dir uv
 
