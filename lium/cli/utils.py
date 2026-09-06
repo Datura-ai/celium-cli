@@ -348,6 +348,7 @@ def handle_errors(func):
                 console.error("No API key configured")
                 console.warning("Please run 'lium init' to set up your API key")
                 console.dim("Or set LIUM_API_KEY environment variable")
+                console.dim("No account yet? 'lium signup --email you@example.com' creates one and stores its key")
             else:
                 console.error(f"Error: {escape(str(e))}")
             raise SystemExit(EXIT_CONFIGURATION_ERROR)
