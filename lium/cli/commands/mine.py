@@ -221,6 +221,95 @@ def _setup_executor_env(
     env_f.write_text("\n".join(map(str, out_lines)) + "\n")
 
 
+def _listening_process(port: int) -> str:
+    """Best-effort 'who owns this port' hint from ``ss -ltnp`` (Linux only)."""
+    if not _exists("ss"):
+        return ""
+    out, _ = _run("ss -ltnp", check=False)
+    # Without root, ss hides the owner of other users' sockets (e.g. docker-proxy).
+    if "users:" not in out and _exists("sudo"):
+        sudo_out, _ = _run("sudo -n ss -ltnp", check=False)
+        out = sudo_out or out
+    for line in out.splitlines():
+        if re.search(rf"[:\]]{port}\s", line):
+            m = re.search(r'users:\(\("([^"]+)",pid=(\d+)', line)
+            if m:
+                return f"{m.group(1)} pid {m.group(2)}"
+            return "unknown process"
+    return ""
+
+
+def _port_in_use(port: int) -> bool:
+    """True when nothing on this host can still bind ``0.0.0.0:<port>``.
+
+    A plain bind (no SO_REUSEADDR) also fails when a listener is bound to a
+    single interface, which is exactly what ``docker compose up`` would hit.
+    """
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind(("0.0.0.0", port))
+        except OSError:
+            return True
+    return False
+
+
+def _host_ports_from_answers(answers: dict) -> dict[str, int]:
+    """Host ports docker compose will publish, from the gathered answers.
+
+    The public SSH port is only a NAT forward on the provider's router, so
+    it is not bound on this host and is not checked.
+    """
+    ports: dict[str, int] = {}
+    for label, key in (("service port", "external_port"), ("SSH port", "ssh_port")):
+        v = str(answers.get(key) or "").strip()
+        if v.isdigit():
+            ports[label] = int(v)
+    return ports
+
+
+def _check_ports_free(ports: dict[str, int]) -> None:
+    """Fail before ``docker compose up`` when a configured host port is taken.
+
+    ``ports`` maps a human label to the port number, e.g.
+    ``{"service port": 8080, "SSH port": 2200}``. Without this check the
+    executor container enters a restart loop and the caller only sees the
+    health check time out three minutes later.
+    """
+    for label, port in ports.items():
+        if not port or not _port_in_use(port):
+            continue
+        owner = _listening_process(port)
+        who = f" ({owner})" if owner else ""
+        raise Exception(
+            f"Port {port} ({label}) is already in use on this host{who}. "
+            f"Free it or pick another port (run `lium mine` without --auto to choose ports)."
+        )
+
+
+def _compose_diagnostics(executor_dir: Path, tail: int = 30) -> str:
+    """``docker compose ps`` + the last log lines of the executor services.
+
+    Used when the health check times out so the actual failure (port
+    conflict, image pull error, bad .env) is on screen instead of only
+    'timed out'.
+    """
+    parts = []
+    ps, _ = _run("docker compose ps", check=False, cwd=str(executor_dir))
+    if ps.strip():
+        parts.append("--- docker compose ps ---\n" + ps.strip())
+    logs, err = _run(
+        f"docker compose logs --no-color --tail {tail} executor executor-runner",
+        check=False,
+        cwd=str(executor_dir),
+    )
+    text = (logs or "") + (err or "")
+    if text.strip():
+        parts.append(f"--- last {tail} log lines (executor, executor-runner) ---\n" + text.strip()[-4000:])
+    return "\n".join(parts)
+
+
 def _start_executor(executor_dir: Path, wait_secs: int = 180):
     # Start using the default docker-compose.yml
     _run("docker compose up -d", capture=True, cwd=str(executor_dir))
@@ -246,7 +335,11 @@ def _start_executor(executor_dir: Path, wait_secs: int = 180):
             if health_status == "healthy":
                 return
         time.sleep(3)
-    raise Exception(f"Node health check timed out after {wait_secs}s")
+    diag = _compose_diagnostics(executor_dir)
+    raise Exception(
+        f"Node health check timed out after {wait_secs}s."
+        + (f"\n{diag}" if diag else "")
+    )
 
 def _apply_env_overrides(
     executor_dir: Path,
@@ -397,9 +490,18 @@ def mine_command(ctx, hotkey, dir_, branch, auto, verbose):
                 rng=answers["port_range"],
             )
 
+            # A taken host port makes `docker compose up` loop on
+            # "address already in use" and the health check below time out
+            # with no explanation. Catch it here, before the 3-minute wait.
+            _check_ports_free(_host_ports_from_answers(answers))
+
         with timed_step_status(5, TOTAL_STEPS, "Starting node"):
             _start_executor(executor_dir)
 
+        console.dim(
+            "Validation runs the validator's preflight image: GPU check, matrix "
+            "work-proof and VerifyX (RAM, disk throughput, network). Typically 2–4 minutes."
+        )
         with timed_step_status(6, TOTAL_STEPS, "Validating node"):
             # Pass any extra arguments to the validator
             _validate_executor(ctx.args if ctx.args else None)
@@ -444,5 +546,30 @@ def mine_command(ctx, hotkey, dir_, branch, auto, verbose):
     # Build full URL with proper encoding
     add_url = f"https://provider.lium.io/nodes?{urlencode(params)}"
     
-    console.print("\n[bold cyan]Add this node via web interface:[/bold cyan]")
+    console.print("\n[bold cyan]Register this node in the Provider Portal:[/bold cyan]")
     console.print(f"[yellow]{add_url}[/yellow]\n")
+    console.print("[bold cyan]…or from this terminal:[/bold cyan]")
+    console.print(f"[yellow]{_provider_add_command(gpu_info, public_ip, external_port)}[/yellow]")
+    console.dim(_registration_note())
+
+
+def _provider_add_command(gpu_info: dict, public_ip: str, external_port: str | int) -> str:
+    """The `lium provider node add` equivalent of the portal Add-Node modal."""
+    import shlex
+
+    gpu_type = gpu_info.get("gpu_type") or "Unknown"
+    return (
+        "lium provider node add "
+        f"--gpu-type {shlex.quote(gpu_type)} --gpu-count {gpu_info.get('gpu_count', 0)} "
+        f"--ip {public_ip} --port {external_port} --yes"
+    )
+
+
+def _registration_note() -> str:
+    return (
+        "Validators only reach nodes of providers with a running coordinator: opt in to the "
+        "Lium Central Provider Server (`lium provider config opt-in --yes`, or Profile Settings "
+        "in the portal) or run a self-hosted provider. Until then the node stays "
+        "VALIDATION_PENDING. The first validation takes roughly 15 minutes; add --price to "
+        "`node add` to override the default price."
+    )

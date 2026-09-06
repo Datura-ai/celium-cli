@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- `lium mine` fails immediately when a configured host port is already in use (naming the port and, where visible, the process) instead of timing out after 180 s; a health-check timeout now prints `docker compose ps` and the last executor log lines; the validation step says what the preflight checks are and how long they take; the success panel prints the equivalent `lium provider node add …` command and the Central-Provider opt-in prerequisite. (DAH-2937)
+
 ## [0.4.3] - 2025-10-23
 
 ### Added
