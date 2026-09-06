@@ -6,7 +6,6 @@ plenty: the two commands ran in different shells and resolved different keys
 key was used, so the caller had nothing to compare.
 """
 
-from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
