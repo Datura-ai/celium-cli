@@ -90,6 +90,18 @@ def infer(prompt: str) -> str:
 print(infer("Who discovered penicillin?"))
 ```
 
+`keep_warm=300` keeps the pod five minutes for the next call or the next run of the script; `infer.map(prompts)` runs every item on one pod; `infer.local(...)` runs the function here (`local=True` / `LIUM_MACHINE_LOCAL=1` does so for every call); `infer.close()` removes a warm pod. Progress goes to stderr (`quiet=True` to silence):
+
+```text
+[lium] infer: renting 1xA100 $1.20/h (swift-fox-c8, US), removal in 1.3h
+[lium] infer: pod ready in 48s
+[lium] infer: preparing environment (3 package(s): torch, transformers, accelerate)
+[lium] infer: environment ready in 21s
+[lium] infer: running
+[lium] infer: done in 96s (~$0.0320)
+[lium] infer: pod removed
+```
+
 Direct SDK usage follows the same pattern:
 
 ```python
