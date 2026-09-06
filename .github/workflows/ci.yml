@@ -2,6 +2,8 @@ name: CI - Build Verification
 
 on:
   pull_request:
+    # `labeled`: adding the build-binaries label starts the release-binary builds below
+    types: [opened, synchronize, reopened, labeled]
     paths:
     - 'lium/**'
     - 'pyproject.toml'
@@ -10,7 +12,7 @@ on:
     - 'lium_entry.py'
     - 'Dockerfile.build'
     - 'scripts/install.sh'
-    - 'test/test_release_binary_targets.py'
+    - 'test/**'
     - '.github/workflows/ci.yml'
     - '.github/workflows/release.yml'
   workflow_dispatch:
@@ -20,6 +22,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  test:
+    # the suite (39 files under test/) was never run by CI; only the binary-target
+    # matrix test was. Same install the macOS build already does, minus pyinstaller.
+    name: pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: astral-sh/setup-uv@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+        enable-cache: true
+
+    - name: Install
+      run: uv sync --frozen --extra dev --extra provider
+
+    # the runner has no ~/.lium and no LIUM_API_KEY, like a fresh laptop: a test that
+    # needs either fails here instead of passing on the author's machine only
+    - name: Run the test suite
+      run: uv run pytest test/ -q -p no:cacheprovider --durations=10
+
   build-python:
     name: Build Python distribution
     runs-on: ubuntu-latest
@@ -67,6 +97,11 @@ jobs:
     - name: Verify installer and workflow target coverage
       run: pytest test/test_release_binary_targets.py
 
+  # The amd64 bundle is what a developer downloads from a PR and the only exercise of
+  # Dockerfile.build, so it builds on every push. The arm64 and macOS bundles are release
+  # artefacts (release.yml builds them for a release): here they build on workflow_dispatch
+  # or when the PR carries the `build-binaries` label, not on every push of a text change
+  # (the two macOS runners were ~90 % of this workflow's cost).
   build-linux-binary:
     name: Build Linux binary (${{ matrix.asset_name }})
     strategy:
@@ -76,6 +111,44 @@ jobs:
         - runner: ubuntu-latest
           platform: linux/amd64
           asset_name: lium-linux-amd64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Build Linux bundle in Docker
+      run: |
+        mkdir -p dist
+        rm -rf dist/lium
+        docker rm -f lium-extract >/dev/null 2>&1 || true
+        docker build --platform ${{ matrix.platform }} -f Dockerfile.build -t lium-build:${GITHUB_SHA}-${{ matrix.asset_name }} .
+        docker create --name lium-extract lium-build:${GITHUB_SHA}-${{ matrix.asset_name }} true
+        docker cp lium-extract:/app/dist/lium dist/lium
+        docker rm -f lium-extract
+        tar -czf dist/${{ matrix.asset_name }}.tar.gz -C dist lium
+
+    - name: Smoke test Linux bundle
+      run: |
+        ./dist/lium/lium --version
+        ./dist/lium/lium --help >/dev/null
+
+    - name: Upload Linux artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.asset_name }}
+        path: |
+          dist/${{ matrix.asset_name }}.tar.gz
+          dist/${{ matrix.asset_name }}
+        retention-days: 7
+
+  build-linux-arm64-binary:
+    name: Build Linux binary (${{ matrix.asset_name }})
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'build-binaries')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
         - runner: ubuntu-24.04-arm
           platform: linux/arm64
           asset_name: lium-linux-arm64
@@ -112,6 +185,7 @@ jobs:
 
   build-macos-binary:
     name: Build macOS binary (${{ matrix.asset_name }})
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'build-binaries')
     strategy:
       fail-fast: false
       matrix:
@@ -161,3 +235,14 @@ jobs:
           dist/${{ matrix.asset_name }}.tar.gz
           dist/${{ matrix.asset_name }}
         retention-days: 7
+
+  ci-ok:
+    # the one context to require in the ruleset (lium requires none today). The binary
+    # builds stay informational: a Debian mirror outage must not block every merge.
+    name: ci-ok
+    needs: [test, build-python, validate-binary-targets]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+    - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      run: exit 1
