@@ -892,7 +892,8 @@ def wait_ready_no_timeout(lium_client, pod_id: str, timeout: Optional[int] = Non
     only when ``timeout`` is given and the pod is still starting when it runs out.
     ``on_poll`` is forwarded so the caller can show progress between polls.
     """
-    return lium_client.wait_ready(pod_id, timeout=timeout, poll_interval=10, on_poll=on_poll)
+    # poll_interval=None: 2 s for the first 90 s, then 10 s (DAH-3002, Lium.poll_delay).
+    return lium_client.wait_ready(pod_id, timeout=timeout, poll_interval=None, on_poll=on_poll)
 
 
 def get_pytorch_template_id() -> Optional[str]:
