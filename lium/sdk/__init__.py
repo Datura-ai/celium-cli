@@ -11,6 +11,7 @@ from .exceptions import (
     LiumRateLimitError,
     LiumServerError,
 )
+from .jobs import Job
 from .models import (
     BackupConfig,
     BackupLog,
@@ -31,6 +32,7 @@ __all__ = [
     "PodInfo",
     "Template",
     "GpuStats",
+    "Job",
     "VolumeInfo",
     "BackupConfig",
     "BackupLog",
