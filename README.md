@@ -73,7 +73,7 @@ lium rm <pod-name>
 
 The SDK mirrors the CLI's capabilities for programmatic use. Two entry points: the `@lium.machine` decorator for quickly offloading isolated functions, and the `Lium()` client for long-lived orchestration code.
 
-High-level decorator — annotate a function and offload work to a GPU pod:
+High-level decorator — annotate a function and offload work to a GPU pod. `machine` is `"<count>x<gpu>"` or `"<gpu>"` (`"1xH200"`, `"A100"`, `"2xRTX4090"`; count defaults to 1) and the cheapest matching node is rented; `timeout=` (default 1 h) bounds the run and the pod's lifetime:
 
 ```python
 import lium
