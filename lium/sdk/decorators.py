@@ -1,20 +1,23 @@
 """Higher-level decorators built on top of the Lium SDK."""
 
+import ast
+import base64
 import inspect
-import json
 import os
-import random
+import pickle
 import re
 import shlex
 import sys
 import tempfile
+import textwrap
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from functools import wraps
-from typing import List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from .client import Lium
-from .exceptions import LiumError
+from .exceptions import LiumError, RemoteExecutionError
 from .models import ExecutorInfo
 
 # How long the pod may outlive the call before the server removes it on its own.
@@ -65,6 +68,137 @@ def _say(quiet: bool, func_name: str, msg: str) -> None:
         print(f"[lium] {func_name}: {msg}", file=sys.stderr, flush=True)
 
 
+# --- what travels to the pod -------------------------------------------------------------------
+
+def _function_source(func) -> str:
+    """The function's ``def`` alone: decorators and annotations stripped, dedented.
+
+    Decorators would re-run ``@lium.machine`` on the pod; annotations are evaluated
+    at definition time and usually name things (``np.ndarray``) the pod does not have.
+    """
+    try:
+        source = textwrap.dedent(inspect.getsource(func))
+    except (OSError, TypeError) as exc:
+        raise LiumError(f"Cannot read the source of {func.__name__}: {exc}") from exc
+    node = _def_node(func, source)
+    node.decorator_list = []
+    node.returns = None
+    for arg in ast.walk(node.args):
+        if isinstance(arg, ast.arg):
+            arg.annotation = None
+    return ast.unparse(node)
+
+
+def _def_node(func, source: str):
+    tree = ast.parse(source)
+    node = next((n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))), None)
+    if node is None:
+        raise LiumError(f"{func.__name__} must be defined with `def` (lambdas cannot be sent to a pod)")
+    return node
+
+
+def _code_names(code) -> Set[str]:
+    """Names a code object (and its nested functions) looks up outside its locals."""
+    names = set(code.co_names) - set(code.co_varnames) - set(code.co_cellvars)
+    for const in code.co_consts:
+        if hasattr(const, "co_names"):
+            names |= _code_names(const)
+    return names
+
+
+def _imported_modules(node) -> Set[str]:
+    """Top-level module names the function imports itself (those exist on the pod)."""
+    found = set()
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Import):
+            found |= {alias.name.split(".")[0] for alias in sub.names}
+        elif isinstance(sub, ast.ImportFrom) and sub.module:
+            found.add(sub.module.split(".")[0])
+    return found
+
+
+def _check_portable(func) -> None:
+    """Refuse, before renting anything, a function the pod could only fail on.
+
+    Only the function's own source travels: a closure variable or a module-level
+    name (constant, import, helper) is a ``NameError`` on the pod, sixty seconds and
+    a few cents later.
+    """
+    code = func.__code__
+    free = set(code.co_freevars) - {func.__name__}  # a nested function recursing into itself is fine
+    if free:
+        raise LiumError(
+            f"{func.__name__} closes over {sorted(free)}; only the function's own source "
+            "runs on the pod, so pass them as arguments instead"
+        )
+    try:
+        node = _def_node(func, textwrap.dedent(inspect.getsource(func)))
+    except (OSError, TypeError):
+        return  # _function_source reports unreadable source
+    module_names = set(func.__globals__) - {"__builtins__", func.__name__} - _imported_modules(node)
+    used = _code_names(code) & module_names
+    if used:
+        raise LiumError(
+            f"{func.__name__} uses module-level names {sorted(used)}, which do not exist on the pod: "
+            "import inside the function or pass them as arguments"
+        )
+
+
+def _runner_script(source: str, func_name: str, is_async: bool, args, kwargs, result_path: str) -> str:
+    try:
+        blob = base64.b64encode(pickle.dumps((args, kwargs), protocol=4)).decode()
+    except Exception as exc:  # noqa: BLE001 — pickle raises many types
+        raise LiumError(f"Arguments of {func_name} cannot be pickled for the pod: {exc}") from exc
+    call = f"{func_name}(*args, **kwargs)"
+    if is_async:
+        call = f"asyncio.run({call})"
+    return f'''#!/usr/bin/env python3
+import asyncio, base64, pickle, sys, traceback
+
+{source}
+
+payload = {{'ok': False, 'type': 'RuntimeError', 'message': 'runner did not finish', 'traceback': ''}}
+try:
+    args, kwargs = pickle.loads(base64.b64decode({blob!r}))
+    payload = {{'ok': True, 'result': {call}}}
+except BaseException as e:
+    payload = {{'ok': False, 'exc': e, 'type': type(e).__name__, 'message': str(e), 'traceback': traceback.format_exc()}}
+finally:
+    try:
+        blob = pickle.dumps(payload, protocol=4)
+    except Exception as e:
+        what = 'result' if payload['ok'] else 'exception'
+        payload = {{'ok': False, 'exc': None, 'type': 'PicklingError',
+                   'message': f'the {{what}} of {func_name} cannot be pickled: {{e}}', 'traceback': payload.get('traceback', '')}}
+        blob = pickle.dumps(payload, protocol=4)
+    with open({result_path!r}, 'wb') as f:
+        f.write(blob)
+    if not payload['ok']:
+        sys.exit(1)
+'''
+
+
+def _raise_remote(payload: Optional[Dict[str, Any]], func_name: str, exec_result: Dict[str, Any], timeout) -> None:
+    """Turn what came back from the pod into the caller's exception."""
+    exit_code = exec_result.get("exit_code")
+    common = dict(exit_code=exit_code, stdout=exec_result.get("stdout", ""), stderr=exec_result.get("stderr", ""))
+    if payload is None:
+        if timeout and exit_code == 124:  # coreutils timeout
+            raise RemoteExecutionError(f"{func_name} exceeded timeout={timeout}s and was killed", **common)
+        detail = exec_result.get("stderr") or exec_result.get("stdout") or "no result file and no output"
+        if exit_code == -1:  # the ssh session got an exit-signal instead of an exit status
+            detail = f"the process was killed by a signal (out of memory?)\n{detail}"
+        raise RemoteExecutionError(f"{func_name} produced no result:\n{detail}", **common)
+    cause = RemoteExecutionError(
+        f"{payload['type']}: {payload['message']}\n\nRemote traceback:\n{payload.get('traceback', '')}",
+        exception_type=payload["type"], remote_traceback=payload.get("traceback", ""), **common,
+    )
+    exc = payload.get("exc")
+    if isinstance(exc, Exception):  # never re-raise a remote SystemExit/KeyboardInterrupt here
+        raise exc from cause
+    raise cause
+
+
 def machine(
     machine: str,
     template_id: Optional[str] = None,
@@ -78,6 +212,13 @@ def machine(
 
     Creates a new pod, sends function source code and executes it remotely,
     returns the result, and optionally cleans up the pod.
+
+    Arguments and the return value travel as pickles, so anything picklable that both
+    sides can import (numpy arrays, dataclasses from an installed package, ...) works.
+    Only the function's own ``def`` is sent: import what it needs inside the body and
+    pass everything else as arguments. An exception raised on the pod is re-raised
+    here with the same type; its ``__cause__`` is a :class:`RemoteExecutionError`
+    carrying the remote traceback, exit code and captured output.
 
     Args:
         machine: ``"<count>x<gpu>"`` or ``"<gpu>"`` — e.g. ``"1xH200"``, ``"RTX4090"``,
@@ -94,8 +235,17 @@ def machine(
     """
 
     def decorator(func):
+        _check_portable(func)
+        func_source = _function_source(func)
+        is_async = inspect.iscoroutinefunction(func)
+
         @wraps(func)
         def wrapper(*args, **kwargs):
+            call_id = uuid.uuid4().hex[:8]
+            remote_runner = f"/tmp/lium-{call_id}.py"
+            remote_result = f"/tmp/lium-{call_id}.pkl"
+            runner_script = _runner_script(func_source, func.__name__, is_async, args, kwargs, remote_result)
+
             # Initialize SDK
             sdk = Lium()
             pod_info = None
@@ -136,65 +286,23 @@ def machine(
                     raise LiumError(f"Pod {pod_name} failed to start within {_BOOT_TIMEOUT}s")
                 say(f"pod ready in {time.time() - started:.0f}s")
 
-                # Step 3: Extract function source code without decorators
-                func_source = inspect.getsource(func)
-                func_name = func.__name__
-
-                # Strip decorator lines - find the 'def' line and keep from there
-                lines = func_source.split('\n')
-                def_index = next(i for i, line in enumerate(lines) if 'def ' in line)
-                func_source = '\n'.join(lines[def_index:])
-
-                # Step 4: Create runner script with function source and arguments
-                runner_script = f'''#!/usr/bin/env python3
-import sys
-import traceback
-import json
-
-# Function source code
-{func_source}
-
-try:
-    # Arguments
-    args = {repr(args)}
-    kwargs = {repr(kwargs)}
-
-    # Execute function
-    result = {func_name}(*args, **kwargs)
-
-    # Save result as JSON
-    with open('/tmp/result.json', 'w') as f:
-        json.dump({{'success': True, 'result': result}}, f)
-
-except Exception as e:
-    # Save error
-    with open('/tmp/result.json', 'w') as f:
-        json.dump({{
-            'success': False,
-            'error': str(e),
-            'traceback': traceback.format_exc()
-        }}, f)
-    sys.exit(1)
-'''
-
-                # Write runner script to temp file
+                # Step 3: Upload the runner script (function source + pickled arguments)
                 with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
                     runner_file = f.name
                     f.write(runner_script)
 
                 try:
-                    # Step 5: Upload runner script
-                    sdk.upload(pod_info, local=runner_file, remote='/tmp/runner.py')
+                    sdk.upload(pod_info, local=runner_file, remote=remote_runner)
 
-                    # Step 6: Create isolated virtual environment
-                    venv_path = f"/tmp/lium_venv_{int(time.time())}_{random.randint(1000,9999)}"
+                    # Step 4: Create isolated virtual environment
+                    venv_path = f"/tmp/lium_venv_{call_id}"
                     venv_python = f"{venv_path}/bin/python"
                     venv_cmd = f"python3 -m venv {shlex.quote(venv_path)}"
                     venv_result = sdk.exec(pod_info, command=venv_cmd)
                     if not venv_result['success']:
                         raise LiumError(f"Failed to create virtual environment:\n{venv_result['stderr']}")
 
-                    # Step 7: Install requirements if requested
+                    # Step 5: Install requirements if requested
                     reqs = [req for req in (requirements or []) if req]
                     if reqs:
                         say(f"installing {len(reqs)} package(s): {', '.join(reqs)}")
@@ -207,48 +315,41 @@ except Exception as e:
                                 f"({', '.join(reqs)}):\n{install_result['stderr']}"
                             )
 
-                    # Step 8: Execute runner via virtual environment python, bounded by `timeout`
+                    # Step 6: Execute runner via virtual environment python, bounded by `timeout`
                     say("running")
-                    run_cmd = f"{shlex.quote(venv_python)} /tmp/runner.py"
+                    run_cmd = f"{shlex.quote(venv_python)} {remote_runner}"
                     if timeout:
                         # TERM first, KILL 5 s later. (`-s KILL` would kill the process group,
                         # `timeout` included, and the ssh session would report no exit status.)
                         run_cmd = f"timeout -k 5 {int(timeout)} {run_cmd}"
                     exec_result = sdk.exec(pod_info, command=run_cmd)
 
-                    # Step 9: Download result (even when execution failed to capture error details)
-                    result_data = None
-                    result_file = None
+                    # Step 7: Download the result (also when the run failed: it carries the exception)
+                    payload = None
+                    with tempfile.NamedTemporaryFile(delete=False) as f:
+                        result_file = f.name
                     try:
-                        with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
-                            result_file = f.name
-                        sdk.download(pod_info, remote='/tmp/result.json', local=result_file)
-                        with open(result_file, 'r') as f:
-                            result_data = json.load(f)
-                    except Exception:
-                        result_data = None
+                        sdk.download(pod_info, remote=remote_result, local=result_file)
+                        with open(result_file, 'rb') as f:
+                            payload = pickle.load(f)
+                    except (OSError, IOError):
+                        payload = None  # the runner never got to write it
+                    except Exception as exc:  # noqa: BLE001 — unpickling: e.g. numpy missing locally
+                        raise RemoteExecutionError(
+                            f"the result of {func.__name__} could not be unpickled locally: {exc}. "
+                            "Return plain Python types (str(), .tolist(), .cpu().numpy()) or install "
+                            "the missing package here",
+                            exit_code=exec_result.get("exit_code"),
+                        ) from exc
                     finally:
-                        if result_file and os.path.exists(result_file):
+                        if os.path.exists(result_file):
                             os.unlink(result_file)
 
-                    if result_data and result_data.get('success'):
+                    if payload and payload.get('ok'):
                         elapsed = time.time() - started
                         say(f"done in {elapsed:.0f}s (~${executor.price_per_hour * elapsed / 3600:.4f})")
-                        return result_data['result']
-
-                    # Construct detailed error message
-                    if result_data and not result_data.get('success', True):
-                        err_msg = result_data.get('error', 'Unknown remote error')
-                        tb = result_data.get('traceback')
-                        if tb:
-                            err_msg = f"{err_msg}\n\nTraceback:\n{tb}"
-                        raise LiumError(f"Remote execution failed:\n{err_msg}")
-
-                    if timeout and exec_result.get('exit_code') == 124:  # coreutils timeout
-                        raise LiumError(f"Remote execution of {func_name} exceeded timeout={timeout}s and was killed")
-
-                    stderr = exec_result.get('stderr') or exec_result.get('stdout') or 'Unknown remote error'
-                    raise LiumError(f"Remote execution failed:\n{stderr}")
+                        return payload['result']
+                    _raise_remote(payload, func.__name__, exec_result, timeout)
 
                 finally:
                     # Clean up local temp file
@@ -258,11 +359,11 @@ except Exception as e:
                 # Remove virtual environment directory best-effort when pod stays alive
                 if pod_info and 'venv_path' in locals() and not cleanup:
                     try:
-                        sdk.exec(pod_info, command=f"rm -rf {shlex.quote(venv_path)}")
+                        sdk.exec(pod_info, command=f"rm -rf {shlex.quote(venv_path)} {remote_runner} {remote_result}")
                     except Exception:
                         pass
 
-                # Step 10: Cleanup pod
+                # Step 8: Cleanup pod
                 if cleanup and pod_info:
                     try:
                         sdk.down(_pod_ref(pod_info))
