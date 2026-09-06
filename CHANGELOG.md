@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Security
-- SDK SSH connections (`exec`, `stream_exec`, `rsync`) now pin each pod's host key on first use under `~/.lium/known_hosts/<pod-id>` and raise `LiumHostKeyError` when a pod later presents a different key, instead of accepting any key (`AutoAddPolicy`, `StrictHostKeyChecking=no`). `LIUM_SSH_INSECURE=1` restores the previous behaviour.
+- SDK SSH connections (`exec`, `stream_exec`, `rsync`) now pin each pod's host key on first use under `~/.lium/known_hosts/<pod-id>` and raise `LiumHostKeyError` when a pod later presents a different key, instead of accepting any key (`AutoAddPolicy`, `StrictHostKeyChecking=no`). `LIUM_SSH_INSECURE=1` restores the previous behaviour, with a warning naming the host and fingerprint of every key accepted unverified.
 
 ## [0.4.3] - 2025-10-23
 

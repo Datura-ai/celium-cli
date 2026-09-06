@@ -351,7 +351,8 @@ export LIUM_API_KEY=your-api-key-here
 SSH host keys of pods are pinned on first use under `~/.lium/known_hosts/<pod-id>`
 (SDK `exec`, `stream_exec`, `rsync`). A pod that later presents a different key is
 rejected with `LiumHostKeyError`; delete that file if the pod was legitimately
-re-provisioned. `LIUM_SSH_INSECURE=1` restores the old accept-anything behaviour.
+re-provisioned. `LIUM_SSH_INSECURE=1` restores the old accept-anything behaviour (each
+accepted key is reported with its fingerprint).
 
 ## Requirements
 

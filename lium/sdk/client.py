@@ -80,9 +80,9 @@ def forget_host_key(pod: PodInfo) -> None:
     try:
         known_hosts_path(pod).unlink()
     except FileNotFoundError:
-        pass
+        pass  # nothing pinned yet: forgetting is idempotent
     except OSError:
-        pass
+        pass  # best effort; a pin we cannot delete surfaces as LiumHostKeyError on the next connection, which names the file
 
 
 def _ensure_known_hosts_file(path: Path) -> None:
@@ -90,7 +90,7 @@ def _ensure_known_hosts_file(path: Path) -> None:
     try:
         os.chmod(path.parent, 0o700)
     except OSError:
-        pass
+        pass  # best effort (read-only or foreign filesystem); the per-file 0600 mode below is what protects the pins
     if not path.exists():
         path.touch(mode=0o600)
 
@@ -111,6 +111,24 @@ class _PinOnFirstUsePolicy(paramiko.MissingHostKeyPolicy):
         warnings.warn(
             f"Pinning {key.get_name()} host key {fp} for {hostname} "
             f"(first connection to this pod; {_SSH_INSECURE_ENV}=1 disables pinning)",
+            stacklevel=2,
+        )
+
+
+class _InsecureAcceptPolicy(paramiko.MissingHostKeyPolicy):
+    """Accept whatever key the host presents. Installed only under ``LIUM_SSH_INSECURE=1``.
+
+    This is the pre-pinning behaviour (paramiko's ``AutoAddPolicy``) spelled out:
+    the key is kept for the life of this client so the connection proceeds, nothing
+    is written to disk, and every acceptance is reported so the opt-out is never
+    silent. The default path uses :class:`_PinOnFirstUsePolicy`.
+    """
+
+    def missing_host_key(self, client, hostname, key):  # noqa: D401 - paramiko interface
+        client.get_host_keys().add(hostname, key.get_name(), key)
+        warnings.warn(
+            f"Accepting unverified {key.get_name()} host key {key.get_fingerprint().hex(':')} for "
+            f"{hostname}: {_SSH_INSECURE_ENV}=1 disabled host key verification",
             stacklevel=2,
         )
 
@@ -1058,7 +1076,7 @@ class Lium:
         # on first use, reject on change) unless LIUM_SSH_INSECURE=1.
         client = paramiko.SSHClient()
         if ssh_insecure():
-            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            client.set_missing_host_key_policy(_InsecureAcceptPolicy())
         else:
             hosts_file = known_hosts_path(pod)
             _ensure_known_hosts_file(hosts_file)
