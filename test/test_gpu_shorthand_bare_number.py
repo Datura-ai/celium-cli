@@ -15,7 +15,7 @@ from lium.cli.cli import cli
 from lium.cli.ls import command as ls_command
 from lium.cli.up import actions as up_actions
 from lium.sdk import Config, Lium
-from lium.sdk.utils import extract_gpu_type, gpu_short_matches
+from lium.sdk.utils import gpu_short_matches
 
 MACHINES = [
     "NVIDIA GeForce RTX 4090", "NVIDIA GeForce RTX 5090", "NVIDIA RTX 6000 Ada Generation",

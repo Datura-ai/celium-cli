@@ -45,7 +45,7 @@ from .models import (
     VolumeInfo,
 )
 from .ssh_key_cache import fingerprint, load_cache, save_cache
-from .utils import extract_gpu_type, generate_huid, gpu_short_matches, normalize_gpu_short, with_retry
+from .utils import extract_gpu_type, generate_huid, gpu_short_matches, with_retry
 
 load_dotenv()
 
