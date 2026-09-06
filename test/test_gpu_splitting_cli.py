@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
@@ -289,10 +290,13 @@ def test_mine_does_not_route_gpu_splitting_as_subcommand(monkeypatch):
     monkeypatch.setattr(legacy_mine, "_get_public_ip", lambda: "1.2.3.4")
     forwarded = {}
 
-    def fake_validate(extra_args=None):
+    def fake_validate(extra_args=None, on_check=None):
         forwarded["args"] = extra_args
 
     monkeypatch.setattr(legacy_mine, "_validate_executor", fake_validate)
+    monkeypatch.setattr(
+        legacy_mine, "_start_preflight_pull", lambda: SimpleNamespace(poll=lambda: 0, wait=lambda: 0)
+    )
     monkeypatch.setattr(legacy_mine.Path, "absolute", lambda self: self)
     monkeypatch.setattr(legacy_mine.Path, "exists", lambda self: True)
 

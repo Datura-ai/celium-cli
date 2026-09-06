@@ -107,3 +107,107 @@ def test_provider_add_command_and_note() -> None:
     )
     note = mine._registration_note()
     assert "opt-in" in note and "VALIDATION_PENDING" in note
+
+
+class _FakePreflight:
+    """Stands in for the `docker run … lium-validator` process: debug log on stderr, verdict on stdout."""
+
+    last_cmd: str | None = None
+
+    def __init__(self, cmd, **kwargs):
+        _FakePreflight.last_cmd = cmd
+        self.stderr = iter(
+            [
+                "2026-09-06 08:00:29,011 - __main__ - DEBUG - Starting preflight validation checks...\n",
+                "2026-09-06 08:00:29,011 - __main__ - DEBUG - Running check: GPU Configuration\n",
+                "2026-09-06 08:00:29,046 - __main__ - DEBUG - Running check: GPU Matrix Multiplication\n",
+                "2026-09-06 08:00:45,216 - __main__ - DEBUG - Running check: VerifyX (RAM/Storage/Network)\n",
+            ]
+        )
+        self.stdout = _Out(self.verdict)
+        self.returncode = 0
+
+    verdict = '{\n  "passed": true\n}\n'
+
+    def wait(self):
+        return self.returncode
+
+
+class _Out:
+    def __init__(self, text):
+        self._text = text
+
+    def read(self):
+        return self._text
+
+
+def test_validate_executor_streams_check_names_and_reads_verdict(monkeypatch) -> None:
+    import subprocess
+
+    monkeypatch.setattr(subprocess, "Popen", _FakePreflight)
+    seen: list[str] = []
+
+    mine._validate_executor(["--gpu-max-count", "8"], on_check=seen.append)
+
+    assert seen == ["GPU Configuration", "GPU Matrix Multiplication", "VerifyX (RAM/Storage/Network)"]
+    assert _FakePreflight.last_cmd == (
+        f"docker run --rm --gpus all {mine.PREFLIGHT_IMAGE} --debug --gpu-max-count 8"
+    )
+
+
+def test_validate_executor_reads_the_verdict_behind_debug_noise(monkeypatch) -> None:
+    import subprocess
+
+    class Noisy(_FakePreflight):
+        # --debug echoes the matrix check's stdout, including raw cipher bytes, before the verdict
+        verdict = (
+            "processChallengeResult secret_message:17cac6d6\nRaw cipher text:\ufffd\ufffd{\ufffdJ\n"
+            "Compute Capability: 8.9\n{\n  \"passed\": true\n}\n"
+        )
+
+    monkeypatch.setattr(subprocess, "Popen", Noisy)
+    mine._validate_executor()  # no exception: the verdict was found
+
+
+def test_validate_executor_raises_the_image_message(monkeypatch) -> None:
+    import subprocess
+
+    class Failed(_FakePreflight):
+        verdict = '{"passed": false, "message": "GPU Configuration: no GPU found"}'
+
+    monkeypatch.setattr(subprocess, "Popen", Failed)
+    with pytest.raises(Exception, match="no GPU found"):
+        mine._validate_executor()
+
+
+def test_validate_executor_without_verdict_shows_stderr_tail(monkeypatch) -> None:
+    import subprocess
+
+    class NoVerdict(_FakePreflight):
+        verdict = ""
+
+        def __init__(self, cmd, **kwargs):
+            super().__init__(cmd, **kwargs)
+            self.stderr = iter(["docker: Error response from daemon: could not select device driver\n"])
+            self.returncode = 125
+
+    monkeypatch.setattr(subprocess, "Popen", NoVerdict)
+    with pytest.raises(Exception) as exc:
+        mine._validate_executor()
+    assert "no verdict (exit 125)" in str(exc.value)
+    assert "could not select device driver" in str(exc.value)
+
+
+def test_start_preflight_pull_pulls_the_validation_image(monkeypatch) -> None:
+    import subprocess
+
+    monkeypatch.setattr(subprocess, "Popen", _FakePreflight)
+    mine._start_preflight_pull()
+    assert _FakePreflight.last_cmd == f"docker pull {mine.PREFLIGHT_IMAGE}"
+
+
+def test_step_message_shows_the_live_detail() -> None:
+    msg = mine._StepMessage("Validating node")
+    assert str(msg) == "Validating node"
+    msg.detail = "GPU Matrix Multiplication"
+    assert str(msg) == "Validating node (GPU Matrix Multiplication)"
