@@ -36,7 +36,10 @@ def _country_matches(executor: ExecutorInfo, wanted: tuple) -> bool:
     code = (location.get("country_code") or location.get("iso_code") or "").strip().lower()
     name = (location.get("country") or "").strip().lower()
     for candidate in wanted:
-        if candidate == code or (name and (name == candidate or name.startswith(candidate))):
+        # A two-letter input is an ISO code: matched exactly, never as a name
+        # prefix (DE would otherwise take Denmark, CH China and Chile).
+        prefix_ok = len(candidate) > 2 and name.startswith(candidate)
+        if candidate == code or (name and (name == candidate or prefix_ok)):
             return True
     return False
 
@@ -56,7 +59,9 @@ def keep(executor: ExecutorInfo, filters: NodeFilters) -> bool:
         if vram is None or vram < filters.min_vram_gb:
             return False
     if filters.max_price_per_gpu_hour is not None:
-        if executor.price_per_gpu is None or executor.price_per_gpu > filters.max_price_per_gpu_hour:
+        # The SDK stores a missing price as 0, so "no price" is falsy, not None;
+        # a node with no price must not pass every --max-price as the cheapest.
+        if not executor.price_per_gpu or executor.price_per_gpu > filters.max_price_per_gpu_hour:
             return False
     if filters.tier is not None and (executor.tier or "").lower() != filters.tier.lower():
         return False

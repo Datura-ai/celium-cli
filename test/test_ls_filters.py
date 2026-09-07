@@ -69,6 +69,20 @@ def test_country_matches_code_or_name_prefix():
     assert not filters.keep(NL, filters.NodeFilters(countries=("us", "de")))
 
 
+def test_a_two_letter_input_is_a_code_not_a_name_prefix():
+    denmark = _executor("dk", country="Denmark", code="DK")
+    china = _executor("cn", country="China", code="CN")
+    chile = _executor("cl", country="Chile", code="CL")
+    switzerland = _executor("ch", country="Switzerland", code="CH")
+
+    assert not filters.keep(denmark, filters.NodeFilters(countries=("de",)))
+    assert filters.keep(DE_SMALL, filters.NodeFilters(countries=("de",)))
+    assert not filters.keep(china, filters.NodeFilters(countries=("ch",)))
+    assert not filters.keep(chile, filters.NodeFilters(countries=("ch",)))
+    assert filters.keep(switzerland, filters.NodeFilters(countries=("ch",)))
+    assert filters.keep(chile, filters.NodeFilters(countries=("chi",)))   # three letters: a name prefix again
+
+
 def test_vram_is_read_from_the_first_gpu_capacity_as_the_table_shows_it():
     assert filters.vram_gb(US_BIG) == 140
     assert filters.vram_gb(US_CHEAP) == 80          # 81559 MiB, what the table prints
@@ -103,6 +117,14 @@ def test_ls_min_vram(fake_ls):
 
 def test_ls_max_price_is_per_gpu_hour(fake_ls):
     assert _huids(CliRunner().invoke(cli, ["ls", "--max-price", "2", "--json"])) == ["de-small", "us-cheap"]
+
+
+def test_a_node_without_a_price_never_passes_max_price():
+    """The SDK stores a missing price_per_gpu as 0; that is unknown, not free."""
+    unpriced = _executor("free", price_per_gpu=0)
+
+    assert not filters.keep(unpriced, filters.NodeFilters(max_price_per_gpu_hour=100))
+    assert filters.keep(unpriced, filters.NodeFilters())
 
 
 def test_ls_tier(fake_ls):
