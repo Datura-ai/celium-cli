@@ -129,6 +129,7 @@ def init(command: Optional[str], version: str) -> bool:
         max_breadcrumbs=0,
         include_local_variables=False,
         send_default_pii=False,
+        max_request_body_size="never",   # the CLI makes requests but never serves them; nothing request-shaped may travel
         traces_sample_rate=0,
         before_send=_scrub_event,
     )
