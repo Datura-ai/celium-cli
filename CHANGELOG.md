@@ -5,15 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
-- `Lium.rent(gpu_type=..., gpu_count=1, min_vram_gb=, min_cpus=, min_ram_gb=, min_disk_gb=, min_download_mbps=, min_ports=, max_price_per_gpu_hour=, country=, docker_in_docker=, interconnect=, dry_run=)` rents the cheapest node that satisfies a spec in one call (`POST /executors/rent-by-spec`) when the backend advertises `rent_by_spec` on `GET /version` (`Lium.features()`, `Lium.supports()`), and makes today's client-side pick — list, filter, cheapest exact match, `up()` — otherwise. Returns a `RentResult` (node, `$/h`, pod, template, runners-up, attempts). (DAH-3047)
-- `lium up --gpu X` lets the backend pick when it can: one dry run names the node and price before the confirmation, the rent re-selects server-side capped at the confirmed `$/GPU·h` (a node taken meanwhile falls through to the next candidate and the output says so), and no fleet listing is made. Without `-c` the spec rents one GPU. `--count`, `--country`, `--ports` map to the spec; the CLI's 100 Mbps ingress floor is kept. Without `--gpu`, or against an older backend, the Pareto pick is unchanged. (DAH-3047)
-
-### Fixed
-- `lium up` with filters (`--gpu`, `--count`, `--country`, `--ports`) now rents the cheapest `$/GPU·h` node of the Pareto-optimal set instead of the first one the API returned, prints the selected node and its total `$/h` before renting, and the help text says so. Explicit `NODE_ID` picks are unchanged. (DAH-2980)
-
 ## [0.4.3] - 2025-10-23
 
 ### Added
