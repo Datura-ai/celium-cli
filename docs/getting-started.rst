@@ -58,6 +58,15 @@ Most pod-level SDK calls (`exec`, `down`, `backup_*`, etc.) expect a :class:`liu
 instance. Use `lium.ps()` or `lium.wait_ready()` to obtain the dataclass before passing the pod to
 other methods.
 
+vLLM Deployment
+~~~~~~~~~~~~~~~
+
+A more complete example showing how to deploy vLLM on the Lium platform:
+
+.. literalinclude:: ../examples/quick_vllm.py
+   :language: python
+   :linenos:
+
 First hour on a Lium pod
 ------------------------
 
@@ -71,17 +80,24 @@ every ``lium up`` so a forgotten pod terminates on its own:
 
    lium up --gpu H200 -c 8 --ttl 6h --yes
 
-**Put weights and data under /workspace.** With volume encryption enabled (the default), the
-pod's local volume — normally ``/root`` — is an encrypted FUSE mount. It is the right place for
-small, persistent files, but large sequential reads such as loading model weights are noticeably
-slower there. Keep checkpoints, datasets and the Hugging Face cache on ``/workspace`` (create it
-if the image does not have it) and point the cache there before the first download:
+**Know where the volume is.** A pod has one local volume, mounted where its template says —
+``/root`` on the standard templates (in the SDK it is ``pod.volume_path``). That path is the only
+one ``lium bk`` can back up (the backend rejects paths outside it) and the one volume encryption
+covers. A Volume you attach with ``--volume`` is mounted under ``/mnt``. Anything else on the pod —
+``/workspace``, ``/tmp`` — is plain container filesystem: not encrypted, and ``lium bk`` cannot
+back it up. Keep checkpoints, datasets and the Hugging Face cache on the volume, and point the cache
+there before the first download:
 
 .. code-block:: bash
 
-   mkdir -p /workspace/hf
-   export HF_HOME=/workspace/hf
+   mkdir -p /root/hf /root/logs
+   export HF_HOME=/root/hf
    export HF_HUB_ENABLE_HF_TRANSFER=1   # faster downloads; needs `pip install hf_transfer`
+
+With encryption on (the default) the volume is a FUSE mount, so very large sequential reads are
+slower there than from the container filesystem. A cache you can re-download is the one thing worth
+trading durability for speed on; anything you would want back stays on the volume or on an attached
+Volume under ``/mnt``.
 
 **Installing Python packages on Ubuntu 24.04 images.** System Python is externally managed
 (PEP 668), so a bare ``pip install`` fails. Either create a virtual environment or opt out
@@ -89,7 +105,7 @@ explicitly:
 
 .. code-block:: bash
 
-   python -m venv /workspace/venv && source /workspace/venv/bin/activate
+   python -m venv /root/venv && source /root/venv/bin/activate
    # or
    export PIP_BREAK_SYSTEM_PACKAGES=1
 
@@ -111,14 +127,12 @@ attention backend (``torch.nn.attention.sdpa_kernel``) instead.
    apt-get update && apt-get install -y ffmpeg rsync
 
 **Background jobs.** A plain ``nohup cmd &`` started through ``lium exec`` keeps the SSH session
-open and can die with it. Detach the process from the session and close its stdin:
+open and can die with it. Detach the process from the session and close its stdin (the log
+directory was created above):
 
 .. code-block:: bash
 
-   nohup setsid python train.py > /workspace/logs/train.log 2>&1 < /dev/null &
-
-``lium exec <pod> -d "python train.py"`` does the same thing for you and prints the PID and log
-path.
+   nohup setsid python train.py > /root/logs/train.log 2>&1 < /dev/null &
 
 **Check that the GPUs are being used.** Sample utilisation to a CSV while a job runs, then look at
 it with any tool:
@@ -126,16 +140,7 @@ it with any tool:
 .. code-block:: bash
 
    nvidia-smi --query-gpu=timestamp,index,utilization.gpu,memory.used \
-     --format=csv -l 5 > /workspace/logs/gpu.csv &
+     --format=csv -l 5 > /root/logs/gpu.csv &
 
-Use ``lium up --verify-gpus`` to have the CLI compare the GPU count ``nvidia-smi`` reports with
-the count the pod is billed for.
-
-vLLM Deployment
-~~~~~~~~~~~~~~~
-
-A more complete example showing how to deploy vLLM on the Lium platform:
-
-.. literalinclude:: ../examples/quick_vllm.py
-   :language: python
-   :linenos:
+``nvidia-smi -L`` lists the GPUs the pod actually has; compare the count with the one
+``lium ps`` shows for the pod.
