@@ -1,12 +1,10 @@
 name: CI - Build Verification
 
 on:
+  # No `paths:` filter: `ci-ok` is to be a required status check, and a check that never
+  # reports blocks the merge button (a docs-only PR would sit unmergeable). Which heavy
+  # build jobs run for a given change is decided per job, not here.
   pull_request:
-    # `labeled`: adding the build-binaries label starts the release-binary builds below.
-    # No `paths:` filter: `ci-ok` is to be a required status check, and a check that never
-    # reports blocks the merge button (a docs-only PR would sit unmergeable). The whole
-    # run costs about 4 Linux-minutes.
-    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
 
 concurrency:
@@ -89,11 +87,6 @@ jobs:
     - name: Verify installer and workflow target coverage
       run: pytest test/test_release_binary_targets.py
 
-  # The amd64 bundle is what a developer downloads from a PR and the only exercise of
-  # Dockerfile.build, so it builds on every push. The arm64 and macOS bundles are release
-  # artefacts (release.yml builds them for a release): here they build on workflow_dispatch
-  # or when the PR carries the `build-binaries` label, not on every push of a text change
-  # (the two macOS runners were ~90 % of this workflow's cost).
   build-linux-binary:
     name: Build Linux binary (${{ matrix.asset_name }})
     strategy:
@@ -103,6 +96,9 @@ jobs:
         - runner: ubuntu-latest
           platform: linux/amd64
           asset_name: lium-linux-amd64
+        - runner: ubuntu-24.04-arm
+          platform: linux/arm64
+          asset_name: lium-linux-arm64
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -134,46 +130,8 @@ jobs:
           dist/${{ matrix.asset_name }}
         retention-days: 7
 
-  build-linux-arm64-binary:
-    name: Build Linux binary (lium-linux-arm64)
-    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'build-binaries')
-    runs-on: ubuntu-24.04-arm
-    permissions:
-      contents: read
-    env:
-      ASSET_NAME: lium-linux-arm64
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Build Linux bundle in Docker
-      run: |
-        mkdir -p dist
-        rm -rf dist/lium
-        docker rm -f lium-extract >/dev/null 2>&1 || true
-        docker build --platform linux/arm64 -f Dockerfile.build -t lium-build:${GITHUB_SHA}-${ASSET_NAME} .
-        docker create --name lium-extract lium-build:${GITHUB_SHA}-${ASSET_NAME} true
-        docker cp lium-extract:/app/dist/lium dist/lium
-        docker rm -f lium-extract
-        tar -czf dist/${ASSET_NAME}.tar.gz -C dist lium
-
-    - name: Smoke test Linux bundle
-      run: |
-        ./dist/lium/lium --version
-        ./dist/lium/lium --help >/dev/null
-
-    - name: Upload Linux artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ env.ASSET_NAME }}
-        path: |
-          dist/${{ env.ASSET_NAME }}.tar.gz
-          dist/${{ env.ASSET_NAME }}
-        retention-days: 7
-
   build-macos-binary:
-    # no matrix value in the name: a skipped matrix job would show it unexpanded
-    name: Build macOS binary
-    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'build-binaries')
+    name: Build macOS binary (${{ matrix.asset_name }})
     strategy:
       fail-fast: false
       matrix:
