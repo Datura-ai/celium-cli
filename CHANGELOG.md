@@ -5,20 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
-- SDK: `Lium.up(..., wait=True, timeout=600)` returns the ready `PodInfo` (a timeout raises a `LiumError` that names the still-billing pod).
-- SDK: `Lium.pod_by_name(name)` (name, huid or id); `with lium.rent(executor_id=..., ...) as pod:` rents a pod for the block and always removes it — on return, on exception, and when it never became ready.
-- SDK: `Lium.exec(..., timeout=)` raises `TimeoutError` and closes the channel; `Lium.exec(..., detach=True, log_path=)` starts the command under `nohup setsid … < /dev/null &` and returns `{"pid", "log_path", "command"}` (`Lium.build_detached_command` is the reusable command line).
-- SDK: `Lium.gpu_stats(pod)` returns `GpuStats` per GPU from `nvidia-smi --query-gpu`; `Lium.parse_gpu_stats(text)` is the parser.
-- SDK: background jobs. `Lium.run_background(pod, command, name=)` starts a command under `nohup setsid` with a PID file, an exit-code file and a log under `/workspace/logs/<name>.*` and returns a `Job`; `job.wait_for_port(port, timeout)` polls the port inside the pod and fails at once (with the log tail) if the process dies first; `job.status()`, `poll()`, `wait()`, `logs(tail=)`, `kill()`; `Lium.job(pod, name)` re-attaches from another process or a later agent turn, `Lium.jobs(pod)` lists them. `Lium.wait_for_port(pod, port)` probes a port on its own and `Lium.wait_ready(..., ready_port=N)` waits for RUNNING *and* the port.
-- SDK: every model has `to_dict()` (nested models included, plus derived fields such as `PodInfo.host`/`ssh_port` and `ExecutorInfo.gpu_model`).
-
-### Fixed
-- `Lium.up()` no longer retries the rent POST blindly. On a timeout, connection error, 429 or 5xx it first looks in `ps` for a pod with the requested name on the chosen node and returns that; only when nothing appeared is the request sent once more, with the same client-generated `Idempotency-Key` header. One `lium up` could previously create two pods.
-- `Lium._request()` accepts `retry=False` for calls that must not be repeated automatically.
-
 ## [0.4.3] - 2025-10-23
 
 ### Added
