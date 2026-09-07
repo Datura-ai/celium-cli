@@ -26,11 +26,13 @@ SSH: the CLI and SDK use the first of `~/.ssh/id_ed25519`, `~/.ssh/id_rsa`, `~/.
 
 Success: the JSON result is on **stdout**, exit code 0.
 
-Failure (with `--json` / `--format json`): stdout is empty, **stderr** holds one JSON object, the exit code is non-zero:
+Failure on a command that takes `--json` (`exec`, `describe`, `balance`, `rm`, `up`): stdout is empty, **stderr** holds one JSON object, the exit code is non-zero:
 
 ```json
 {"ok": false, "error": {"code": "pod_not_found", "message": "No pods match targets: train-1"}}
 ```
+
+Failure on `ls --format json` / `ps --format json`: the exit code is the signal; stderr carries the error as plain text, not JSON (the envelope on `--format json` comes with lium#217, not released).
 
 Exit codes:
 
@@ -108,7 +110,7 @@ lium exec "$POD" --json "python -c 'import torch; print(torch.cuda.device_count(
 Background, so a long training run survives the end of the SSH session — `exec` blocks until the remote command exits and prints its output then, so start the job detached and poll its log:
 
 ```bash
-lium exec "$POD" "mkdir -p /workspace/logs && nohup setsid bash -lc 'cd /workspace && python train.py' > /workspace/logs/train.log 2>&1 < /dev/null & echo \$!"
+lium exec "$POD" "mkdir -p /root/logs && nohup setsid bash -lc 'cd /root/project && python train.py' > /root/logs/train.log 2>&1 < /dev/null & echo \$!"
 ```
 
 The `setsid`, the `< /dev/null` and the redirection all matter: without them the process is tied to the SSH session and dies when `exec` returns.
@@ -116,7 +118,7 @@ The `setsid`, the `< /dev/null` and the redirection all matter: without them the
 Poll it (`tail -f` would never return — `exec` reads the output after the command exits):
 
 ```bash
-lium exec "$POD" --json "kill -0 $PID && echo running || echo done; tail -n 20 /workspace/logs/train.log"
+lium exec "$POD" --json "kill -0 $PID && echo running || echo done; tail -n 20 /root/logs/train.log"
 ```
 
 ### Watch the GPUs
@@ -130,11 +132,11 @@ A pod that shows 0 % utilisation for several minutes after the job started is us
 ### Move data
 
 ```bash
-lium rsync "$POD" ./data /workspace/data                         # mirrors rsync -avz; needs rsync on the pod
-lium scp "$POD" /workspace/out/model.safetensors ./out -d        # single files; -d/--download pulls from the pod
+lium rsync "$POD" ./data /root/data                              # mirrors rsync -avz
+lium scp "$POD" /root/out/model.safetensors ./out -d             # single files; -d/--download pulls from the pod
 ```
 
-`rsync` needs `rsync` on the pod (`apt-get install -y rsync` on minimal images). A failed `rsync` is simply re-run.
+`lium rsync` installs `rsync` on the pod when it is missing (`apt-get install -y rsync`, so the first run on a minimal image takes longer). A failed `rsync` is simply re-run.
 
 ### Remove the pod
 
@@ -152,9 +154,9 @@ trap 'lium rm "$POD" --yes >/dev/null 2>&1 || true' EXIT
 
 ## 4. Pod gotchas
 
-- **Know which disk persists.** On the standard templates the pod's volume is mounted at `/root` — that is what `lium bk` backs up and what survives the pod; `/workspace` is plain container filesystem and is gone with the pod. Keep checkpoints and results you need on the volume; keep caches and scratch under `/workspace`.
-- **Point Hugging Face at the disk you chose before the first download:** `export HF_HOME=/workspace/hf` (and `HF_HUB_ENABLE_HF_TRANSFER=1` after `pip install hf_transfer`).
-- **PEP 668 on Ubuntu 24.04 images:** a bare `pip install` fails with "externally managed environment". Use `python -m venv /workspace/venv && . /workspace/venv/bin/activate`, or `export PIP_BREAK_SYSTEM_PACKAGES=1`.
+- **Know which disk persists.** On the standard templates the pod's volume is mounted at `/root` — that is what `lium bk` backs up, what encryption covers and what survives the pod; `/workspace` and `/tmp` are plain container filesystem and are gone with the pod. Keep the project, the venv, weights, datasets, checkpoints and the Hugging Face cache on the volume (the same rule as the README and "First hour" pages); use `/workspace` only for scratch you can re-download.
+- **Point Hugging Face at the volume before the first download:** `mkdir -p /root/hf && export HF_HOME=/root/hf` (and `HF_HUB_ENABLE_HF_TRANSFER=1` after `pip install hf_transfer`).
+- **PEP 668 on Ubuntu 24.04 images:** a bare `pip install` fails with "externally managed environment". Use `python -m venv /root/venv && . /root/venv/bin/activate`, or `export PIP_BREAK_SYSTEM_PACKAGES=1`.
 - **Blackwell needs a recent PyTorch build.** B200, B300, RTX PRO 6000 and RTX 5090 are not supported by wheels built for CUDA ≤ 12.4; install a cu128 or cu130 wheel (`pip install torch --index-url https://download.pytorch.org/whl/cu130`). A template built on cu126 on a Blackwell executor produces "no kernel image is available" at the first CUDA call.
 - **FlashAttention-3 is Hopper-only** (H100/H200). On Blackwell use FlashAttention-4 or PyTorch's SDPA (`torch.nn.attention.sdpa_kernel`).
 - **Background processes must be detached:** `nohup setsid <cmd> > log 2>&1 < /dev/null &`. A plain `nohup cmd &` through `lium exec` can die with the session.
@@ -178,10 +180,10 @@ lium up "$NODE" --name "$NAME" --ttl 4h --yes --no-ssh
 POD=$(lium ps --format json | jq -r --arg n "$NAME" '.[] | select(.name==$n) | .huid')
 trap 'lium rm "$POD" --yes >/dev/null 2>&1 || true' EXIT
 
-lium rsync "$POD" ./project /workspace/project
-lium exec "$POD" --json "cd /workspace/project && python -m venv .venv && . .venv/bin/activate && pip install -q -r requirements.txt" >/dev/null
-lium exec "$POD" --json "cd /workspace/project && . .venv/bin/activate && python train.py --epochs 1"
-lium scp "$POD" /workspace/project/out ./out -d
+lium rsync "$POD" ./project /root/project
+lium exec "$POD" --json "cd /root/project && python -m venv .venv && . .venv/bin/activate && pip install -q -r requirements.txt" >/dev/null
+lium exec "$POD" --json "cd /root/project && . .venv/bin/activate && python train.py --epochs 1"
+lium scp "$POD" /root/project/out ./out -d
 ```
 
 ## See also

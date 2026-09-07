@@ -60,24 +60,49 @@ def _resolve(tokens):
     return command, chain, flags
 
 
-INVOCATIONS = _lium_invocations(AGENTS_DOC.read_text())
+def _code_blocks(text: str, fence: str) -> str:
+    """The bodies of the page's shell code blocks only (prose lines such as "lium requires" are not commands)."""
+    if fence == "md":
+        return "\n".join(re.findall(r"```(?:bash|sh|shell|console)?\n(.*?)```", text, re.S))
+    # rst: `.. code-block:: bash` bodies are the indented lines that follow
+    blocks, out = re.split(r"^\.\. code-block:: (?:bash|sh|shell|console)\s*$", text, flags=re.M)[1:], []
+    for block in blocks:
+        body = []
+        for line in block.splitlines()[1:]:
+            if line.strip() == "" and not body:
+                continue
+            if line and not line.startswith((" ", "\t")):
+                break
+            body.append(line.strip())
+        out.append("\n".join(body))
+    return "\n".join(out)
 
 
-def test_the_page_has_commands_to_check():
-    assert len(INVOCATIONS) >= 20
+# every `lium …` line the three guides show a reader: agents.md whole, README and getting-started's shell blocks
+PAGES = {
+    "docs/agents.md": AGENTS_DOC.read_text(),
+    "README.md": _code_blocks((ROOT / "README.md").read_text(), "md"),
+    "docs/getting-started.rst": _code_blocks((ROOT / "docs" / "getting-started.rst").read_text(), "rst"),
+}
+INVOCATIONS = [(page, no, toks) for page, text in PAGES.items() for no, toks in _lium_invocations(text)]
 
 
-@pytest.mark.parametrize("line_no, tokens", INVOCATIONS, ids=[f"L{n}: lium {' '.join(t[:3])}" for n, t in INVOCATIONS])
-def test_every_documented_lium_line_resolves(line_no, tokens):
+def test_the_pages_have_commands_to_check():
+    per_page = {page: sum(1 for p, _, _ in INVOCATIONS if p == page) for page in PAGES}
+    assert per_page["docs/agents.md"] >= 20 and per_page["README.md"] >= 20 and per_page["docs/getting-started.rst"] >= 1, per_page
+
+
+@pytest.mark.parametrize("page, line_no, tokens", INVOCATIONS, ids=[f"{p.split('/')[-1]} L{n}: lium {' '.join(t[:3])}" for p, n, t in INVOCATIONS])
+def test_every_documented_lium_line_resolves(page, line_no, tokens):
     resolved = _resolve(tokens)
-    assert resolved is not None, f"docs/agents.md:{line_no}: `lium {tokens[0]}` is not a command"
+    assert resolved is not None, f"{page}:{line_no}: `lium {tokens[0]}` is not a command"
     command, chain, flags = resolved
     known = {opt for param in command.params for opt in param.opts} | {"--help"}
     passthrough = command.context_settings.get("ignore_unknown_options") or command.context_settings.get("allow_extra_args")
     for flag in flags:
         if flag in ("-", "--") or (flag.startswith("-") and not flag.startswith("--") and len(flag) != 2):
             continue
-        assert passthrough or flag in known, f"docs/agents.md:{line_no}: `lium {' '.join(chain)} {flag}` — no such option"
+        assert passthrough or flag in known, f"{page}:{line_no}: `lium {' '.join(chain)} {flag}` — no such option"
 
 
 def test_env_vars_named_as_ours_exist():
