@@ -488,8 +488,8 @@ def machine(
                         if keep or warm or not cleanup:
                             try:
                                 sdk.exec(pod_info, command=f"rm -f {remote_runner} {remote_result}")
-                            except Exception:
-                                pass
+                            except Exception as exc:  # noqa: BLE001 — best-effort cleanup; the call's result is already in hand
+                                say(f"could not remove this call's files on the pod ({exc}); they are under /tmp, the venv cache stays")
 
             finally:
 
