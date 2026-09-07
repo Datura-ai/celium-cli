@@ -37,6 +37,7 @@ from .models import (
     BackupLog,
     ExecutorInfo,
     PodInfo,
+    RentResult,
     RestoreLog,
     SSHKey,
     Template,
@@ -45,11 +46,55 @@ from .models import (
 from .ssh_key_cache import fingerprint, load_cache, save_cache
 from .utils import expand_gpu_shorthand, extract_gpu_type, generate_huid, with_retry
 
+# The backend feature `Lium.rent` looks for on GET /version before using POST /executors/rent-by-spec.
+RENT_BY_SPEC = "rent_by_spec"
+# Node specs report RAM and disk in KiB and GPU memory in MiB.
+_KIB_PER_GB = 1024 * 1024
+_MIB_PER_GB = 1024
+
 load_dotenv()
 
 # Public API key for the pay API (pay-tao-api-v2). Single source of truth so the
 # literal is not re-typed across every pay-API call site.
 _PAY_API_KEY = "6RhXQ788J9BdnqeLua8z7ZSkXBDahclxhwjMB17qW1M"
+
+
+def _satisfies_spec(executor: ExecutorInfo, spec: Dict[str, Any]) -> bool:
+    """The client-side reading of a rent spec, for backends without ``rent_by_spec``.
+
+    Mirrors the server's constraints on the fields ``GET /executors`` carries; a node that
+    does not report a figure fails the floor on it, as on the server.
+    """
+    specs = executor.specs or {}
+    gpu_details = (specs.get("gpu") or {}).get("details") or []
+    gpu_detail = gpu_details[0] if gpu_details and isinstance(gpu_details[0], dict) else {}
+    disk = specs.get("hard_disk") or {}
+    disk_kib = disk.get("free") if disk.get("free") is not None else disk.get("total")
+    floors = {
+        "min_vram_gb": (gpu_detail.get("capacity") or 0) / _MIB_PER_GB if gpu_detail.get("capacity") else None,
+        "min_cpus": (specs.get("cpu") or {}).get("count"),
+        "min_ram_gb": ((specs.get("ram") or {}).get("total") or 0) / _KIB_PER_GB if (specs.get("ram") or {}).get("total") else None,
+        "min_disk_gb": disk_kib / _KIB_PER_GB if disk_kib else None,
+        "min_download_mbps": executor.effective_download_speed_mbps,
+        "min_ports": executor.available_port_count,
+    }
+    if executor.gpu_count != spec.get("gpu_count", 1):
+        return False
+    for key, have in floors.items():
+        wanted = spec.get(key)
+        if wanted is not None and (have is None or have < wanted):
+            return False
+    if spec.get("max_price_per_gpu_hour") is not None and (
+        executor.price_per_gpu is None or executor.price_per_gpu > spec["max_price_per_gpu_hour"]
+    ):
+        return False
+    if spec.get("country") and ((executor.location or {}).get("country_code") or "").upper() != spec["country"].upper():
+        return False
+    if spec.get("docker_in_docker") and not executor.docker_in_docker:
+        return False
+    if spec.get("interconnect") == "nvlink" and (specs.get("interconnect") or {}).get("nvlink") is not True:
+        return False
+    return True
 
 
 def _response_error_message(response: requests.Response) -> str:
@@ -128,6 +173,26 @@ class Lium:
             "X-Source": source,
             "X-Lium-Client-Version": _get_client_version(),
         }
+        self._features: Optional[set] = None
+
+    def features(self) -> set:
+        """Optional API capabilities the backend advertises on ``GET /version``.
+
+        Read once per client. A backend that predates the list, or one that cannot be
+        reached, advertises nothing — callers then take their client-side path.
+        """
+        if self._features is None:
+            try:
+                data = self._request("GET", "/version").json()
+                names = data.get("features") if isinstance(data, dict) else None
+                self._features = {str(name) for name in names} if isinstance(names, list) else set()
+            except Exception:  # noqa: BLE001 — an unreachable /version is "no features", not an error
+                self._features = set()
+        return self._features
+
+    def supports(self, feature: str) -> bool:
+        """Whether the backend advertises ``feature`` (see :meth:`features`)."""
+        return feature in self.features()
 
     def _request(
         self,
@@ -602,6 +667,196 @@ class Lium:
             "ssh_cmd": pod.ssh_cmd,
             "executor_id": executor_id,
         }
+
+    def rent(
+        self,
+        *,
+        gpu_type: str,
+        gpu_count: int = 1,
+        name: str = "Your Pod",
+        template_id: Optional[str] = None,
+        dockerfile_content: Optional[str] = None,
+        min_vram_gb: Optional[float] = None,
+        min_cpus: Optional[int] = None,
+        min_ram_gb: Optional[float] = None,
+        min_disk_gb: Optional[float] = None,
+        min_download_mbps: Optional[float] = None,
+        min_ports: Optional[int] = None,
+        max_price_per_gpu_hour: Optional[float] = None,
+        country: Optional[str] = None,
+        docker_in_docker: Optional[bool] = None,
+        interconnect: Optional[str] = None,
+        volume_id: Optional[str] = None,
+        ports: Optional[int] = None,
+        ssh_keys: Optional[List[str]] = None,
+        ssh_name: Optional[str] = None,
+        enable_volume_encryption: bool | None = True,
+        backup_id: Optional[str] = None,
+        restore_path: Optional[str] = None,
+        dry_run: bool = False,
+    ) -> RentResult:
+        """Rent the cheapest available node that satisfies a spec, without listing the fleet.
+
+        When the backend advertises ``rent_by_spec`` (``GET /version``), one call to
+        ``POST /executors/rent-by-spec`` selects and rents: the server picks the cheapest
+        ``$/GPU·h`` node that meets every constraint (ties: faster ingress, then reliability,
+        then id), rents it under its own locks and, if that node is taken meanwhile, tries the
+        next candidate. Against an older backend the same arguments make today's client-side
+        pick — list, filter, cheapest exact match — and rent it with :meth:`up`.
+
+        Args:
+            gpu_type: Short or full GPU name — ``"H100"``, ``"RTX4090"``, ``"NVIDIA H200"``.
+            gpu_count: GPUs to rent (default 1). Server-side this also admits a split of a
+                larger node when its provider allows one; client-side it is the node's size.
+            name: Pod name.
+            template_id: Template to run. Omitted: the node's recommended image.
+                Mutually exclusive with ``dockerfile_content``.
+            dockerfile_content: Build the image from this Dockerfile instead (see :meth:`up`).
+            min_vram_gb, min_cpus, min_ram_gb, min_disk_gb, min_download_mbps, min_ports:
+                Floors on the host; a host that does not report the figure does not qualify.
+            max_price_per_gpu_hour: Ceiling on ``price_per_gpu``.
+            country: ISO country code.
+            docker_in_docker: Require a sysbox host.
+            interconnect: ``"nvlink"`` — every GPU pair on NVLink (unreported counts as no).
+            volume_id, ports, ssh_keys, ssh_name, enable_volume_encryption, backup_id,
+                restore_path: as in :meth:`up`.
+            dry_run: Choose and price only; nothing is rented and no SSH key is registered.
+
+        Returns:
+            :class:`RentResult` — the node, the hourly price, the pod (``None`` on a dry run),
+            the template used, how many nodes qualified and the runners-up.
+
+        Raises:
+            LiumError: No node satisfies the spec. The message names the constraint that
+                left no candidate and the best value on offer, e.g.
+                ``min_cpus=64: none of the 12 node(s) matching the earlier constraints
+                satisfies it; the best on offer is 48``.
+        """
+        if template_id is not None and dockerfile_content is not None:
+            raise ValueError("Provide either template_id or dockerfile_content, not both")
+        if bool(backup_id) != bool(restore_path):
+            raise ValueError("backup_id and restore_path must be provided together")
+
+        spec = {
+            "gpu_type": gpu_type,
+            "gpu_count": gpu_count,
+            "min_vram_gb": min_vram_gb,
+            "min_cpus": min_cpus,
+            "min_ram_gb": min_ram_gb,
+            "min_disk_gb": min_disk_gb,
+            "min_download_mbps": min_download_mbps,
+            "min_ports": min_ports,
+            "max_price_per_gpu_hour": max_price_per_gpu_hour,
+            "country": country,
+            "docker_in_docker": docker_in_docker,
+            "interconnect": interconnect,
+        }
+        spec = {key: value for key, value in spec.items() if value is not None}
+        rental = {
+            "name": name,
+            "template_id": template_id,
+            "dockerfile_content": dockerfile_content,
+            "volume_id": volume_id,
+            "ports": ports,
+            "ssh_keys": ssh_keys,
+            "ssh_name": ssh_name,
+            "enable_volume_encryption": enable_volume_encryption,
+            "backup_id": backup_id,
+            "restore_path": restore_path,
+        }
+        if self.supports(RENT_BY_SPEC):
+            return self._rent_on_server(spec, rental, dry_run)
+        return self._rent_client_side(spec, rental, dry_run)
+
+    def _rent_on_server(self, spec: Dict[str, Any], rental: Dict[str, Any], dry_run: bool) -> RentResult:
+        ssh_material = rental["ssh_keys"] or self.config.ssh_public_keys
+        if not ssh_material:
+            raise ValueError("No SSH keys found")
+        if not dry_run:
+            self._ensure_ssh_keys_registered(ssh_material, name=rental["ssh_name"])
+
+        payload = {
+            **spec,
+            "pod_name": rental["name"],
+            "template_id": rental["template_id"],
+            "dockerfile_content": rental["dockerfile_content"],
+            "volume_id": rental["volume_id"],
+            "user_public_key": ssh_material,
+            "initial_port_count": rental["ports"],
+            "enable_volume_encryption": rental["enable_volume_encryption"],
+            "backup_log_id": rental["backup_id"],
+            "restore_path": rental["restore_path"],
+            "dry_run": dry_run,
+        }
+        data = self._request("POST", "/executors/rent-by-spec", json=payload).json()
+        executor = self._dict_to_executor_info(data.get("selected_executor") or {})
+        if executor is None:
+            raise LiumError("rent-by-spec returned no node")
+        pod_id = data.get("pod_id")
+        return RentResult(
+            executor=executor,
+            price_per_hour=float(data.get("price_per_hour") or executor.price_per_hour),
+            pod=None
+            if pod_id is None
+            else {"id": pod_id, "name": rental["name"], "status": "PENDING", "executor_id": executor.id},
+            template_id=data.get("template_id"),
+            candidates=int(data.get("candidates") or 1),
+            alternatives=list(data.get("alternatives_considered") or []),
+            attempts=int(data.get("attempts") or 0),
+            dry_run=bool(data.get("dry_run", dry_run)),
+            server_side=True,
+        )
+
+    def _rent_client_side(self, spec: Dict[str, Any], rental: Dict[str, Any], dry_run: bool) -> RentResult:
+        # Today's pick, for a backend without rent-by-spec: cheapest $/GPU·h node with exactly
+        # gpu_count GPUs that meets the constraints; ties keep the faster ingress, then the id.
+        executors = self.ls(gpu_type=spec["gpu_type"])
+        matches = [e for e in executors if _satisfies_spec(e, spec)]
+        if not matches:
+            on_offer = sorted({f"{e.gpu_count}x{e.gpu_type} ${e.price_per_hour:.2f}/h" for e in executors})
+            hint = f" Available: {', '.join(on_offer)}." if on_offer else ""
+            wanted = ", ".join(f"{key}={value}" for key, value in spec.items())
+            raise LiumError(f"No node matches {wanted}.{hint}")
+        matches.sort(key=lambda e: (e.price_per_gpu or float("inf"), -e.download_speed, e.id))
+        executor = matches[0]
+        alternatives = [
+            {
+                "id": e.id,
+                "machine_name": e.machine_name,
+                "gpu_count": e.gpu_count,
+                "price_per_gpu": e.price_per_gpu,
+                "price_per_hour": e.price_per_hour,
+                "download_mbps": e.download_speed,
+                "country_code": (e.location or {}).get("country_code"),
+            }
+            for e in matches[1:6]
+        ]
+        pod = None
+        if not dry_run:
+            pod = self.up(
+                executor_id=executor.id,
+                name=rental["name"],
+                template_id=rental["template_id"],
+                dockerfile_content=rental["dockerfile_content"],
+                volume_id=rental["volume_id"],
+                ports=rental["ports"],
+                ssh_keys=rental["ssh_keys"],
+                ssh_name=rental["ssh_name"],
+                enable_volume_encryption=rental["enable_volume_encryption"],
+                backup_id=rental["backup_id"],
+                restore_path=rental["restore_path"],
+            )
+        return RentResult(
+            executor=executor,
+            price_per_hour=executor.price_per_hour,
+            pod=pod,
+            template_id=rental["template_id"],
+            candidates=len(matches),
+            alternatives=alternatives,
+            attempts=0 if dry_run else 1,
+            dry_run=dry_run,
+            server_side=False,
+        )
 
     def pod(
         self,
