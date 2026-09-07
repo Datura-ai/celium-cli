@@ -23,6 +23,7 @@ from dotenv import load_dotenv
 
 from lium.__about__ import __version__ as fallback_version
 
+from . import detach
 from .config import Config
 from .exceptions import (
     LiumAuthError,
@@ -637,8 +638,15 @@ class Lium:
             raise TypeError(f"rent() got unexpected keyword arguments: {sorted(unknown)}")
         rent_args.update(up_kwargs)
 
-        created = self._rent(executor_id=executor_id, **rent_args)
+        # The rent itself can raise after the server created the pod (a timed-out
+        # or failed second POST, a listing that failed while looking for it), so
+        # it runs inside the try; the ids snapshot lets the failure path remove
+        # only a pod that appeared during this call, never an older one that
+        # happens to carry the same name.
+        pods_before = self._pod_ids_or_none()
+        created: Optional[Dict[str, Any]] = None
         try:
+            created = self._rent(executor_id=executor_id, **rent_args)
             ready = self.wait_ready(created, timeout=timeout)
             if ready is None:
                 raise LiumError(
@@ -646,7 +654,30 @@ class Lium:
                 )
             yield ready
         finally:
-            self._remove_quietly(created)
+            if created is not None:
+                self._remove_quietly(created)
+            elif pods_before is not None:
+                self._remove_strays(rent_args["name"], executor_id, exclude=pods_before)
+
+    def _pod_ids_or_none(self) -> Optional[frozenset]:
+        """Ids of the pods that exist now, or ``None`` when the listing failed."""
+        try:
+            return frozenset(pod.id for pod in self.ps())
+        except Exception:  # noqa: BLE001 - a listing failure must not fail the rent
+            return None
+
+    def _remove_strays(self, name: str, executor_id: str, *, exclude: frozenset) -> None:
+        """Remove pods called ``name`` on ``executor_id`` that were not there before the rent."""
+        try:
+            pods = self.ps()
+        except Exception:  # noqa: BLE001 - cleanup must not mask the rent's error
+            return
+        for pod in pods:
+            if pod.id in exclude or pod.name != name:
+                continue
+            if pod.executor is not None and pod.executor.id and pod.executor.id != executor_id:
+                continue
+            self._remove_quietly(pod)
 
     def _remove_quietly(self, pod: Union[Dict[str, Any], PodInfo]) -> None:
         """Best-effort removal for cleanup paths; a failure here must not mask the real error."""
@@ -1209,23 +1240,13 @@ class Lium:
 
     @staticmethod
     def default_detach_log_path() -> str:
-        return time.strftime("/workspace/logs/exec-%Y%m%dT%H%M%SZ.log", time.gmtime())
+        """``/workspace/logs/exec-<UTC stamp>-<6 hex>.log``; the tail keeps two
+        jobs started in the same second from sharing (and truncating) one file."""
+        return detach.default_detach_log_path(detach.detach_token())
 
-    @staticmethod
-    def build_detached_command(command: str, log_path: str) -> str:
-        """The remote command line that starts ``command`` detached and prints its PID.
-
-        ``setsid`` gives the job its own session so the SSH channel's exit does
-        not signal it; ``< /dev/null`` closes stdin so nothing waits on the
-        channel; ``nohup`` covers the hangup that reaches it anyway. The log
-        directory is created first, or the redirect fails silently.
-        """
-        log_dir = os.path.dirname(log_path) or "."
-        return (
-            f"mkdir -p {shlex.quote(log_dir)} || exit 1; "
-            f"nohup setsid bash -lc {shlex.quote(command)} "
-            f"> {shlex.quote(log_path)} 2>&1 < /dev/null & echo $!"
-        )
+    # The launcher line has one home, lium.sdk.detach, shared with `lium exec
+    # --detach`; this is the SDK's public name for it.
+    build_detached_command = staticmethod(detach.build_detached_command)
 
     def _exec_detached(
         self,
