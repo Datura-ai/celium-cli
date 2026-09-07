@@ -770,6 +770,7 @@ def _read_metagraph(
             raise ProviderConfigError(
                 f"subnet registration needs the chain stack. Reason: "
                 f"{missing_chain_stack_message()}",
+                hint="",  # the reason names the fix; `lium init` (the CONFIG_MISSING default) is a renter step
                 cause=e,
             )
         factory = bittensor.metagraph

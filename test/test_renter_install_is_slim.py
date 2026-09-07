@@ -125,6 +125,8 @@ def test_the_missing_stack_message_names_the_right_fix(monkeypatch):
     from lium.provider import chain_stack
 
     monkeypatch.setattr(chain_stack.sys, "version_info", (3, 12, 0, "final", 0))
+    monkeypatch.setattr(chain_stack.sys, "frozen", False, raising=False)
+    monkeypatch.setattr(chain_stack.os.path, "exists", lambda _p: False)
     assert 'pip install "lium.io[provider]"' in chain_stack.missing_chain_stack_message()
 
     monkeypatch.setattr(chain_stack.sys, "version_info", (3, 14, 0, "final", 0))
@@ -132,6 +134,64 @@ def test_the_missing_stack_message_names_the_right_fix(monkeypatch):
     assert "3.14" in on_new_python
     assert "lium.io/install.sh" in on_new_python
     assert "pip install" not in on_new_python
+
+
+def test_the_install_command_matches_how_lium_was_installed(monkeypatch, tmp_path):
+    """DAH-2943: `lium provider portal login` on a `uv tool` / mine.sh install answered
+    CONFIG_MISSING with `pip install "lium.io[provider]"` — a command that installs the extra
+    into some other Python, not the one the CLI runs from. Name the installer that owns this
+    venv: uv tool (uv-receipt.toml at the venv root), pipx (pipx_metadata.json), the frozen
+    binary (reinstall it — it ships the stack), else pip."""
+    from lium.provider import chain_stack
+
+    monkeypatch.setattr(chain_stack.sys, "version_info", (3, 12, 0, "final", 0))
+    monkeypatch.setattr(chain_stack.sys, "frozen", False, raising=False)
+    monkeypatch.setattr(chain_stack.sys, "prefix", str(tmp_path))
+
+    assert chain_stack.install_command_for_this_interpreter() == 'pip install "lium.io[provider]"'
+
+    (tmp_path / "uv-receipt.toml").write_text("[tool]\n")
+    assert chain_stack.install_command_for_this_interpreter() == 'uv tool install --force "lium.io[provider]"'
+    assert "uv tool install" in chain_stack.missing_chain_stack_message()
+    assert "pip install" not in chain_stack.missing_chain_stack_message()
+
+    (tmp_path / "uv-receipt.toml").unlink()
+    (tmp_path / "pipx_metadata.json").write_text("{}")
+    assert chain_stack.install_command_for_this_interpreter() == 'pipx install --force "lium.io[provider]"'
+
+    monkeypatch.setattr(chain_stack.sys, "frozen", True, raising=False)
+    assert "lium.io/install.sh" in chain_stack.install_command_for_this_interpreter()
+
+
+def test_chain_stack_errors_do_not_tell_a_provider_to_run_lium_init(monkeypatch):
+    """The generic CONFIG_MISSING hint is 'Run lium init …' — a renter step that cannot
+    install the chain stack. The chain-stack raises carry the fix in their reason, so they must
+    not append it (DAH-2943, seen on `lium provider portal login`)."""
+    import builtins
+
+    from lium.provider.client import _read_metagraph
+    from lium.provider.errors import ProviderConfigError
+    from lium.provider.wallet import load_hotkey_keypair
+
+    real_import = builtins.__import__
+
+    def _no_bittensor(name, *args, **kwargs):
+        if name == "bittensor":
+            raise ImportError("No module named 'bittensor'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_bittensor)
+
+    with pytest.raises(ProviderConfigError) as registration:
+        _read_metagraph(hotkey_ss58="5FakeHotkey", netuid=51, factory=None)
+    with pytest.raises(ProviderConfigError) as wallet:
+        load_hotkey_keypair(coldkey="default", hotkey="default", wallet_factory=None)
+
+    for raised in (registration.value, wallet.value):
+        assert raised.code == "CONFIG_MISSING"
+        assert "lium.io[provider]" in raised.message
+        assert raised.hint == ""
+        assert "lium init" not in str(raised)
 
 
 def test_the_extra_is_gated_on_python_version():
