@@ -33,6 +33,16 @@ from .exceptions import (
     LiumRateLimitError,
     LiumServerError,
 )
+from .jobs import (
+    DEFAULT_JOB_DIR,
+    _NAME_RE,
+    Job,
+    build_job_launcher,
+    build_port_probe,
+    default_job_name,
+    job_paths,
+    validate_job_name,
+)
 from .models import (
     BackupConfig,
     BackupLog,
@@ -1347,6 +1357,118 @@ class Lium:
                 return int(line)
         return None
 
+    # -- background jobs -------------------------------------------------------------------------
+
+    def run_background(
+        self,
+        pod: PodInfo,
+        command: str,
+        *,
+        name: Optional[str] = None,
+        env: Optional[Dict[str, str]] = None,
+        workdir: Optional[str] = None,
+        job_dir: str = DEFAULT_JOB_DIR,
+        timeout: float = 60,
+    ) -> Job:
+        """Start ``command`` in the background on a pod and return a :class:`Job` to follow it.
+
+        The job survives this SSH session and this process: it runs under
+        ``nohup setsid`` with stdin closed, logs to ``<job_dir>/<name>.log``, records
+        its PID in ``<name>.pid`` and its exit code in ``<name>.exit`` when it ends.
+        :meth:`job` re-attaches later by name.
+
+        Args:
+            pod: Pod to run on.
+            command: Shell command (run through ``bash -lc``, so the login
+                environment — conda, PATH — applies).
+            name: Job name, also the stem of its files; default ``job-<UTC timestamp>``.
+                Refused when a job of that name is still running on the pod.
+            env: Environment variables exported before the command.
+            workdir: Directory to ``cd`` into first.
+            job_dir: Where the job files live (default ``/workspace/logs``, the
+                fast local volume rather than the encrypted ``/root``).
+            timeout: Seconds allowed for the launcher itself (not the job).
+
+        Raises:
+            LiumError: the launcher printed no PID, or the name is taken by a live job.
+        """
+        name = validate_job_name(name or default_job_name())
+        # The raw command goes to the launcher; env is exported inside the job
+        # shell there, so the .cmd file (what job() reads back) never carries it.
+        launcher = build_job_launcher(command, name=name, job_dir=job_dir, workdir=workdir, env=env)
+        result = self.exec(pod, command=launcher, timeout=timeout)
+        pid = self._parse_pid(result.get("stdout", "")) if result.get("success") else None
+        if pid is None:
+            detail = result.get("stderr", "").strip() or result.get("stdout", "").strip() or "launcher printed no PID"
+            raise LiumError(f"Could not start job {name} on pod {pod.name or pod.huid}: {detail}")
+        return Job(self, pod, name=name, pid=pid, command=command, job_dir=job_dir)
+
+    def job(self, pod: PodInfo, name: str, *, job_dir: str = DEFAULT_JOB_DIR) -> Job:
+        """Re-attach to a job started earlier with :meth:`run_background`, by name.
+
+        Raises:
+            LiumNotFoundError: no job of that name has files on the pod.
+        """
+        name = validate_job_name(name)
+        paths = job_paths(name, job_dir)
+        command = (
+            f"cat {shlex.quote(paths['pid_file'])} 2>/dev/null && echo && echo ---cmd--- && "
+            f"cat {shlex.quote(paths['cmd_file'])} 2>/dev/null"
+        )
+        stdout = self.exec(pod, command=command, timeout=30).get("stdout", "")
+        head, _, cmd = stdout.partition("---cmd---")
+        pid = self._parse_pid(head)
+        if pid is None:
+            raise LiumNotFoundError(f"No job named {name} under {job_dir} on pod {pod.name or pod.huid}")
+        return Job(self, pod, name=name, pid=pid, command=cmd.strip("\n"), job_dir=job_dir)
+
+    def jobs(self, pod: PodInfo, *, job_dir: str = DEFAULT_JOB_DIR) -> List[Job]:
+        """Every job that has a PID file under ``job_dir`` on the pod, running or finished."""
+        q = shlex.quote(job_dir.rstrip("/"))
+        command = f"for f in {q}/*.pid; do [ -f \"$f\" ] || continue; printf '%s %s\\n' \"$(basename \"$f\" .pid)\" \"$(cat \"$f\")\"; done"
+        stdout = self.exec(pod, command=command, timeout=30).get("stdout", "")
+        found: List[Job] = []
+        for line in stdout.splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[1].isdigit() and _NAME_RE.match(parts[0]):
+                found.append(Job(self, pod, name=parts[0], pid=int(parts[1]), command="", job_dir=job_dir))
+        return found
+
+    def wait_for_port(
+        self,
+        pod: PodInfo,
+        port: int,
+        *,
+        timeout: float = 600,
+        host: str = "127.0.0.1",
+        poll_interval: float = 3,
+    ) -> None:
+        """Block until TCP ``port`` accepts connections inside the pod (a server that is up).
+
+        The probe runs on the pod over SSH (bash ``/dev/tcp``, no ``nc`` needed),
+        so it sees the port as the pod does. For a job started with
+        :meth:`run_background` prefer :meth:`Job.wait_for_port`, which also
+        stops early when the job dies.
+
+        Raises:
+            TimeoutError: the port did not answer within ``timeout`` seconds.
+        """
+        probe = build_port_probe(port, host)
+        deadline = time.monotonic() + timeout
+        last_error: Optional[str] = None
+        while True:
+            try:
+                stdout = self.exec(pod, command=probe, timeout=30).get("stdout", "")
+                last_error = None
+            except (OSError, LiumError, paramiko.SSHException) as exc:  # not reachable yet: keep polling
+                stdout, last_error = "", str(exc)
+            if "port open" in stdout:
+                return
+            if time.monotonic() >= deadline:
+                why = f" (last SSH error: {last_error})" if last_error else ""
+                raise TimeoutError(f"Port {port} on pod {pod.name or pod.huid} did not answer within {timeout}s{why}")
+            time.sleep(poll_interval)
+
     GPU_QUERY_FIELDS = (
         "index", "name", "utilization.gpu", "memory.used", "memory.total",
         "temperature.gpu", "power.draw",
@@ -1482,6 +1604,7 @@ class Lium:
         *,
         timeout: int = 300,
         poll_interval: int = 10,
+        ready_port: Optional[int] = None,
     ) -> Optional[PodInfo]:
         """Poll until a pod reports RUNNING + SSH metadata.
 
@@ -1489,6 +1612,10 @@ class Lium:
             pod: Pod identifier, PodInfo, or dict with an ``id`` field.
             timeout: Maximum number of seconds to wait.
             poll_interval: Interval between successive ``ps`` calls.
+            ready_port: When given, also wait until this TCP port answers inside
+                the pod (a template that serves a model on start is not usable
+                when RUNNING, only when its port accepts). The same ``timeout``
+                bounds both phases together.
 
         Returns:
             PodInfo when the pod is ready, otherwise ``None`` if timeout expires.
@@ -1506,6 +1633,15 @@ class Lium:
             current = next((p for p in fresh_pods if p.id == pod_id), None)
 
             if current and current.status.upper() == "RUNNING" and current.ssh_cmd:
+                if ready_port is None:
+                    return current
+                remaining = timeout - (time.time() - start)
+                if remaining <= 0:
+                    return None
+                try:
+                    self.wait_for_port(current, ready_port, timeout=remaining)
+                except TimeoutError:
+                    return None
                 return current
 
             time.sleep(poll_interval)
