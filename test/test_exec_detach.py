@@ -22,11 +22,11 @@ from lium.cli.commands.exec import (
     build_detached_script_command,
     parse_detached_pid,
 )
+from lium.cli.utils import EXIT_CONFIGURATION_ERROR, EXIT_GENERAL_ERROR
 from lium.sdk.detach import build_detached_command, default_detach_log_path, detach_token
 
 TOKEN = "20260101T120000Z-abc123"
 LOG = f"/workspace/logs/exec-{TOKEN}.log"
-from lium.cli.utils import EXIT_CONFIGURATION_ERROR, EXIT_GENERAL_ERROR
 
 
 def _pod(huid: str = "eager-wolf-aa", name: str = "my-pod") -> SimpleNamespace:

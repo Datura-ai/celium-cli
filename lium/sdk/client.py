@@ -1546,7 +1546,8 @@ class Lium:
                 SSH session ending — the shape every user otherwise rediscovers
                 by hand.
             log_path: Log file for ``detach`` (default
-                ``/workspace/logs/exec-<UTC timestamp>.log``).
+                ``/workspace/logs/exec-<UTC timestamp>-<id>.log``, the ``<id>`` a
+                6-hex tail that keeps two launches in the same second apart).
 
         Returns:
             Dict containing stdout, stderr, exit_code, and success flag; with

@@ -112,7 +112,7 @@ def test_rental_removes_the_pod_when_the_block_raises():
     client = _Client(ps_sequence=[[_pod()]])
 
     with pytest.raises(RuntimeError, match="job failed"):
-        with client.rental(executor_id="exec-1") as pod:
+        with client.rental(executor_id="exec-1"):
             raise RuntimeError("job failed")
 
     assert client.calls[-1] == ("DELETE", "/pods/pod-1")

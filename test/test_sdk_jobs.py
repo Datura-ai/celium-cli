@@ -11,6 +11,8 @@ import time
 from contextlib import contextmanager
 from types import SimpleNamespace
 
+import shlex
+
 import pytest
 
 from lium.sdk import Config, ExecutorInfo, Job, Lium, LiumError, LiumNotFoundError, PodInfo
@@ -171,7 +173,7 @@ def test_run_background_exports_env_inside_the_job_shell(monkeypatch):
 
     job = client.run_background(_pod(), "run", name="j", env={"HF_HOME": "/workspace/hf"})
 
-    assert 'export HF_HOME="/workspace/hf" && run' in sent[0]
+    assert "export HF_HOME=/workspace/hf && run" in sent[0]
     # The .cmd file records the command as given; env values stay out of it, so
     # job() returns the same command and no secret is written to disk.
     assert "printf %s run > /workspace/logs/j.cmd" in sent[0]
@@ -181,9 +183,24 @@ def test_run_background_exports_env_inside_the_job_shell(monkeypatch):
 def test_launcher_env_precedes_workdir_and_stays_out_of_the_cmd_file():
     line = build_job_launcher("python train.py", name="t", workdir="/workspace/repo", env={"TOKEN": "s3cret"})
 
-    assert 'export TOKEN="s3cret" && cd /workspace/repo && python train.py' in line
+    assert "export TOKEN=s3cret && cd /workspace/repo && python train.py" in line
     assert "printf %s 'python train.py' > /workspace/logs/t.cmd" in line
     assert line.count("s3cret") == 1
+
+
+def test_launcher_env_values_are_quoted_and_keys_validated():
+    """A value with quotes or `$(` is a literal inside the job shell, never shell text."""
+    line = build_job_launcher("run", name="t", env={"MSG": 'say "hi" $(id)'})
+
+    # the job shell (bash -lc <inner>) sees `export MSG='say "hi" $(id)' && run`, the value one literal word
+    inner = "export MSG=" + shlex.quote('say "hi" $(id)') + " && run"
+    wrapper = f"bash -lc {shlex.quote(inner)}; echo $? > /workspace/logs/t.exit"
+    assert f"bash -c {shlex.quote(wrapper)}" in line
+
+    with pytest.raises(ValueError, match="Invalid environment variable name"):
+        build_job_launcher("run", name="t", env={"BAD-NAME": "x"})
+    with pytest.raises(ValueError, match="Invalid environment variable name"):
+        build_job_launcher("run", name="t", env={"X; rm -rf /": "x"})
 
 
 def test_run_background_refuses_a_name_whose_job_is_still_running(monkeypatch):

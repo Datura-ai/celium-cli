@@ -45,6 +45,16 @@ def validate_job_name(name: str) -> str:
     return name
 
 
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _validate_env_name(key: str) -> str:
+    """An ``env`` key must be a shell variable name; anything else would be shell text."""
+    if not _ENV_NAME_RE.match(key or ""):
+        raise ValueError(f"Invalid environment variable name {key!r}: use letters, digits and '_'")
+    return key
+
+
 def default_job_name() -> str:
     return time.strftime("job-%Y%m%dT%H%M%SZ", time.gmtime())
 
@@ -82,7 +92,9 @@ def build_job_launcher(
     pid_file = q(p["pid_file"])
     inner = command if workdir is None else f"cd {q(workdir)} && {command}"
     if env:
-        exports = " && ".join(f'export {key}="{value}"' for key, value in env.items())
+        # Quoted like every other interpolation here: a value with `"` or `$(` is a
+        # literal, not shell; a key that is not a variable name is refused up front.
+        exports = " && ".join(f"export {_validate_env_name(key)}={q(str(value))}" for key, value in env.items())
         inner = f"{exports} && {inner}"
     wrapper = f"bash -lc {q(inner)}; echo $? > {q(p['exit_file'])}"
     return (
