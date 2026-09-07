@@ -1,6 +1,6 @@
 """Datamodels used across the Lium SDK."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
 from typing import Dict, List, Optional
 
@@ -45,6 +45,29 @@ class ExecutorInfo:
     def upload_speed(self) -> float:
         """Effective upload speed in Mbps (backend-authoritative; 0.0 if unknown)."""
         return self.effective_upload_speed_mbps or 0.0
+
+
+@dataclass
+class RentResult:
+    """What :meth:`Lium.rent` chose and, unless it was a dry run, rented.
+
+    ``pod`` is the same dict :meth:`Lium.up` returns (``id``, ``name``, ``executor_id``, …) and
+    is ``None`` on a dry run. ``price_per_hour`` is what the rental bills (``price_per_gpu`` ×
+    the GPUs rented), which differs from ``executor.price_per_hour`` when a node is split.
+    ``alternatives`` are the runners-up in the order they would have been tried; ``attempts`` is
+    how many rents the server made before one succeeded (0 on a dry run, > 1 when the first pick
+    was taken meanwhile); ``server_side`` says whether the backend chose the node or this client did.
+    """
+
+    executor: ExecutorInfo
+    price_per_hour: float
+    pod: Optional[Dict] = None
+    template_id: Optional[str] = None
+    candidates: int = 1
+    alternatives: List[Dict] = field(default_factory=list)
+    attempts: int = 0
+    dry_run: bool = False
+    server_side: bool = False
 
 
 @dataclass
