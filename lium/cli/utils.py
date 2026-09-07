@@ -9,6 +9,7 @@ from lium.cli.settings import config
 from datetime import datetime
 from rich.status import Status
 from lium.sdk import LiumError, LiumPermissionError, ExecutorInfo, PodInfo,Lium
+from . import telemetry
 from .themed_console import ThemedConsole
 from dataclasses import dataclass
 from rich.markup import escape
@@ -362,9 +363,13 @@ def handle_errors(func):
             console.error(f"Error: {escape(str(e))}")
             raise SystemExit(EXIT_API_ERROR)
         except Exception as e:
+            # a bug, not a usage or API error: the only branch crash reporting sees (DAH-2057)
+            reported = telemetry.report(e)
             if json_output:
                 _emit_json_error("unexpected_error", str(e))
             console.error(f"Unexpected error: {escape(str(e))}")
+            if not reported and not json_output:
+                console.dim(telemetry.OPT_IN_HINT)
             raise SystemExit(EXIT_GENERAL_ERROR)
     return wrapper
 
