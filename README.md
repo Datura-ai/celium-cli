@@ -138,7 +138,7 @@ The `lium` CLI exposes the full pod lifecycle. Run `lium --help` to see everythi
 
 - `lium signup` - Create an account from the terminal and store its API key
 - `lium init` - Initialize configuration for an existing account (API key, SSH keys)
-- `lium balance` - Show the account balance
+- `lium balance` - Show the account balance (add `--format json` for machine-readable output)
 - `lium ls [--gpu TYPE]` - List available nodes
 - `lium up [NODE_ID]` - Create a pod (use node ID or filters like `--gpu`, `--count`, `--country`)
 - `lium ps` - List active pods; the `#` column is the row number `rm`/`ssh`/`exec`/`scp` accept in the same shell, for 10 minutes, and only while the pod shown on that row is still listed. Use the huid in scripts.
@@ -154,7 +154,6 @@ The `lium` CLI exposes the full pod lifecycle. Run `lium --help` to see everythi
 - `lium audit [--pod POD] [--since 24h] [--key ID]` - Who did what to the account's pods, and when: every rent, reboot, edit and delete with the session or API key that requested it (add `--json` for machine-readable output)
 - `lium update <POD>` - Install Jupyter on a pod
 - `lium templates [SEARCH]` - List available Docker templates (add `--format json` for ids and image details)
-- `lium balance` - Show the account balance (add `--format json` for machine-readable output)
 - `lium fund` - Fund account with TAO from Bittensor wallet
 - `lium topup create -a <USD> -c <COIN> -n <NETWORK>` - Top up with a stablecoin (`lium topup currencies` lists them)
 - `lium ssh-keys list|sync` - SSH public keys registered on the account

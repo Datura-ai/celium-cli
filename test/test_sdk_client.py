@@ -13,6 +13,9 @@ class _Forbidden:
     status_code = 403
     text = "User is not verified"
 
+    def json(self):
+        raise ValueError("not a JSON body")
+
     def __enter__(self):
         return self
 
