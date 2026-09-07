@@ -270,12 +270,21 @@ class Lium:
     ) -> requests.Response:
         url = f"{base_url or self.config.base_url}/{endpoint.lstrip('/')}"
         request_headers = headers or self.headers
-        resp = requests.request(method, url, headers=request_headers, timeout=30, **kwargs)
+        timeout = kwargs.pop("timeout", 30)
+        resp = requests.request(method, url, headers=request_headers, timeout=timeout, **kwargs)
+        self._raise_for_status(resp)
+        return resp
 
+    @staticmethod
+    def _raise_for_status(resp: requests.Response) -> None:
+        """Map a non-2xx response to the SDK exception for its status.
+
+        The single place this mapping lives; every HTTP path (``_request`` and
+        the streaming ``logs``) goes through it so a 403 reads the same
+        everywhere.
+        """
         if resp.ok:
-            return resp
-
-        # Map errors
+            return
         if resp.status_code == 401:
             raise LiumAuthError("Invalid API key")
         if resp.status_code == 403:
@@ -743,22 +752,19 @@ class Lium:
             Log lines as bytes.
         """
         params = {"tail": tail, "follow": str(follow).lower()}
-        url = f"{self.config.base_url}/pods/{pod_id}/logs"
 
-        with requests.get(url, headers=self.headers, params=params, stream=True, timeout=None if follow else 30) as response:
-            if not response.ok:
-                if response.status_code == 401:
-                    raise LiumAuthError("Invalid API key")
-                if response.status_code == 403:
-                    raise LiumPermissionError(f"Permission denied: {response.text}")
-                if response.status_code == 404:
-                    raise LiumNotFoundError(f"Pod not found: {pod_id}")
-                if response.status_code == 429:
-                    raise LiumRateLimitError("Rate limit exceeded")
-                if 500 <= response.status_code < 600:
-                    raise LiumServerError(f"Server error: {response.status_code}")
-                raise LiumError(f"API error {response.status_code}: {response.text}")
+        try:
+            response = self._request(
+                "GET",
+                f"/pods/{pod_id}/logs",
+                params=params,
+                stream=True,
+                timeout=None if follow else 30,
+            )
+        except LiumNotFoundError:
+            raise LiumNotFoundError(f"Pod not found: {pod_id}") from None
 
+        with response:
             for line in response.iter_lines():
                 if line:
                     yield line
