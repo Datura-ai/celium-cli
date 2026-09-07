@@ -129,7 +129,8 @@ SORT_KEY_ALIASES = {
     "price_per_hour": "price_total",
 }
 
-DEFAULT_SORT_KEY = "download"
+# Cheapest $/GPU·h first: what a renter or an agent scans for (owner, 7 Sep 2026; DAH-3079).
+DEFAULT_SORT_KEY = "price_gpu"
 SORT_KEYS = list(_SORT_KEY_FUNCS)
 
 
@@ -201,24 +202,18 @@ def sort_executors(
     limit: Optional[int] = None,
     show_pareto: bool = True,
 ) -> tuple[List[ExecutorInfo], List[bool]]:
-    """Apply Pareto-aware sort and limit. Returns (sorted_executors, pareto_flags).
+    """Sort and limit. Returns (sorted_executors, pareto_flags).
 
-    ``sort_by=None`` is the default view a human skims, where starred nodes float
-    to the top. An explicit key is an instruction and outranks the star —
-    otherwise "cheapest first" returns the most expensive node.
+    The default is cheapest $/GPU·h first; the ★ marks the Pareto-optimal nodes
+    wherever they land instead of pulling them above cheaper ones (DAH-3079).
     """
     if not executors:
         return [], []
 
-    pareto_first = sort_by is None
     pareto_flags = calculate_pareto_frontier(executors) if show_pareto else [False] * len(executors)
     pairs = list(zip(executors, pareto_flags))
     sort_key = _sort_key_factory(sort_by or DEFAULT_SORT_KEY)
-
-    if pareto_first:
-        pairs.sort(key=lambda x: (not x[1], sort_key(x[0])))
-    else:
-        pairs.sort(key=lambda x: sort_key(x[0]))
+    pairs.sort(key=lambda x: sort_key(x[0]))
 
     if isinstance(limit, int) and limit > 0:
         pairs = pairs[:limit]

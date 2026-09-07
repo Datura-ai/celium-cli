@@ -9,7 +9,6 @@ from lium.cli import ui
 from lium.cli.utils import (
     CliFailure,
     EXIT_CONFIGURATION_ERROR,
-    calculate_pareto_frontier,
     handle_errors,
     store_executor_selection,
 )
@@ -18,25 +17,10 @@ from . import validation, display
 from .actions import GetExecutorsAction
 
 
-def ls_store_executor(gpu_type: Optional[str] = None, sort_by: str = "download") -> List[ExecutorInfo]:
-    """Load and store nodes without displaying them."""
-    lium = Lium()
-    executors = lium.ls(gpu_type=gpu_type)
-
-    if not executors:
-        return []
-
-    pareto_flags = calculate_pareto_frontier(executors)
-    executors_with_pareto = list(zip(executors, pareto_flags))
-
-    executors_with_pareto = sorted(
-        executors_with_pareto,
-        key=lambda x: (not x[1], -x[0].download_speed)
-    )
-
-    sorted_executors = [e for e, _ in executors_with_pareto]
+def ls_store_executor(gpu_type: Optional[str] = None) -> List[ExecutorInfo]:
+    """Load and store nodes without displaying them, in the order `lium ls` prints them."""
+    sorted_executors, _ = display.sort_executors(Lium().ls(gpu_type=gpu_type))
     store_executor_selection(sorted_executors)
-
     return sorted_executors
 
 
@@ -52,7 +36,7 @@ def ls_store_executor(gpu_type: Optional[str] = None, sort_by: str = "download")
     "sort_by",
     type=click.Choice(display.SORT_KEYS + list(display.SORT_KEY_ALIASES)),
     default=None,
-    help="Sort result by the chosen field. An explicit --sort wins over the ★ optimal ordering.",
+    help="Sort result by the chosen field (default: cheapest $/GPU·h first).",
 )
 @click.option("--limit", type=int, default=None, help="Limit number of rows shown.")
 @click.option(

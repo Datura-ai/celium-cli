@@ -207,8 +207,8 @@ def test_cheapest_sort_survives_the_whole_ls_command(monkeypatch, sort_by):
     assert [row["huid"] for row in json.loads(result.output)][0] == "cheap-node"
 
 
-def test_default_ls_ordering_still_puts_the_starred_node_first(monkeypatch):
-    """Without --sort the ★ ordering a human reads is unchanged."""
+def test_default_ls_ordering_puts_the_cheapest_node_first(monkeypatch):
+    """Without --sort the cheapest $/GPU·h leads; the ★ marks, it does not rank (DAH-3079)."""
     cheap = _executor("cheap-node", price_per_hour=0.30, download=10)
     expensive_but_starred = _executor("starred-node", price_per_hour=64.00, download=9999)
 
@@ -225,7 +225,9 @@ def test_default_ls_ordering_still_puts_the_starred_node_first(monkeypatch):
     result = CliRunner().invoke(cli, ["ls", "--format", "json"])
 
     assert result.exit_code == 0, result.output
-    assert json.loads(result.output)[0]["huid"] == "starred-node"
+    rows = json.loads(result.output)
+    assert [row["huid"] for row in rows] == ["cheap-node", "starred-node"]
+    assert [row["is_pareto"] for row in rows] == [False, True]
 
 
 def test_exec_script_flag_reads_the_file(monkeypatch, tmp_path):
