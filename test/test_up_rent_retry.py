@@ -202,6 +202,39 @@ def test_a_failed_snapshot_does_not_fail_the_rent(client, monkeypatch):
     assert len(_rent.calls) == 1
 
 
+def test_a_listing_that_fails_too_still_leads_to_the_second_post(client, monkeypatch):
+    """The network that failed the POST fails ps() the same way; "could not look" is
+    not "no pod", and the second POST the design promises must still go out."""
+    _rent.outcomes = [requests.Timeout("read timed out"), _Resp({"id": "pod-uuid-2", "name": POD_NAME})]
+    monkeypatch.setattr(client_module.requests, "request", _rent(client, pods_after_failure=[]))
+
+    def failing_ps():
+        raise requests.ConnectionError("network down")
+
+    client.ps = failing_ps
+
+    result = client.up(executor_id=EXECUTOR_ID, name=POD_NAME, template_id="tpl-1", ssh_keys=["k"])
+
+    assert result["id"] == "pod-uuid-2"
+    assert len(_rent.calls) == 2
+
+
+def test_a_pod_id_from_the_api_is_returned_even_when_the_listing_is_down(client, monkeypatch):
+    """After a successful POST the id is the truth; a failing ps() must not turn it into an error."""
+    _rent.outcomes = [_Resp({"success": True, "pod_id": "pod-uuid-9"})]
+    monkeypatch.setattr(client_module.requests, "request", _rent(client, pods_after_failure=[]))
+
+    def failing_ps():
+        raise LiumServerError("Server error: 503")
+
+    client.ps = failing_ps
+
+    result = client.up(executor_id=EXECUTOR_ID, name=POD_NAME, template_id="tpl-1", ssh_keys=["k"])
+
+    assert result["id"] == "pod-uuid-9" and result["executor_id"] == EXECUTOR_ID
+    assert len(_rent.calls) == 1
+
+
 def test_a_second_failure_is_raised_not_retried_again(client, monkeypatch):
     _rent.outcomes = [requests.Timeout("first"), requests.Timeout("second")]
     monkeypatch.setattr(client_module.requests, "request", _rent(client, pods_after_failure=[]))

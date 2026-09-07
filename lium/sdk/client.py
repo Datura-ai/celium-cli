@@ -490,6 +490,8 @@ class Lium:
                 "POST", rent_endpoint, json=payload, headers=rent_headers, retry=False
             ).json()
         except (requests.RequestException, LiumServerError, LiumRateLimitError):
+            # "Could not look" (the network that failed the POST fails ps() the
+            # same way) must fall through to the second POST, not escape here.
             existing = self._find_pod_by_name(
                 name, executor_info.id, attempts=3, interval=3, exclude=known_pod_ids
             )
@@ -505,12 +507,20 @@ class Lium:
             return response
 
         # The rent route answers {"success": true, "pod_id": ...}: the id is
-        # exact, so the pod is read back by it rather than guessed by name.
+        # exact, so the pod is read back by it rather than guessed by name. If
+        # the listing cannot be read, the id alone is still the truth: the pod
+        # exists, and the caller gets its id rather than an error.
         pod_id = (response or {}).get("pod_id")
         if pod_id:
             existing = self._find_pod_by_id(str(pod_id), executor_info.id, attempts=3, interval=2)
-            if existing:
-                return existing
+            return existing or {
+                "id": str(pod_id),
+                "name": name,
+                "status": "PENDING",
+                "huid": generate_huid(str(pod_id)),
+                "ssh_cmd": None,
+                "executor_id": executor_info.id,
+            }
 
         # Fallback: find pod by name after creation
         existing = self._find_pod_by_name(
@@ -521,6 +531,14 @@ class Lium:
 
         raise LiumError(f"Failed to create pod{' ' + name if name else ''}")
 
+    def _list_pods_or_none(self) -> Optional[List[PodInfo]]:
+        """``ps()`` for the rent lookups: ``None`` when the listing itself failed,
+        so a network that is down for the POST is not mistaken for "no pod"."""
+        try:
+            return self.ps()
+        except (requests.RequestException, LiumError):
+            return None
+
     def _find_pod_by_id(
         self, pod_id: str, executor_id: str, *, attempts: int, interval: float
     ) -> Optional[Dict[str, Any]]:
@@ -529,7 +547,7 @@ class Lium:
         for attempt in range(attempts):
             if attempt:
                 time.sleep(interval)
-            for pod in self.ps():
+            for pod in self._list_pods_or_none() or []:
                 if pod.id == pod_id:
                     return self._created_pod_record(pod, executor_id)
         return None
@@ -565,7 +583,7 @@ class Lium:
             return None
         for _ in range(attempts):
             time.sleep(interval)
-            for pod in self.ps():
+            for pod in self._list_pods_or_none() or []:
                 if pod.id in exclude or pod.name != name:
                     continue
                 if pod.executor is not None and pod.executor.id and pod.executor.id != executor_id:
