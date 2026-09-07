@@ -17,13 +17,6 @@ from lium.cli.utils import (
 from lium.cli.settings import config
 from lium.provider.chain_stack import missing_chain_stack_message
 from . import validation
-
-# A signed transfer may have reached the chain even though the command failed;
-# the generic "re-run" hint would send the TAO twice.
-TRANSFER_FAILED_HINT = (
-    "Do not re-send yet: the transfer was signed and submitted. Check the wallet and "
-    "'lium balance' (credits can take a few minutes) before funding again"
-)
 from .actions import (
     LoadWalletAction,
     UnlockColdkeyAction,
@@ -31,6 +24,13 @@ from .actions import (
     ExecuteTransferAction,
     CheckFreeAlphaAction,
     ExecuteAlphaTransferAction,
+)
+
+# A signed transfer may have reached the chain even though the command failed;
+# the generic "re-run" hint would send the TAO twice.
+TRANSFER_FAILED_HINT = (
+    "Do not re-send yet: the transfer was signed and submitted. Check the wallet and "
+    "'lium balance' (credits can take a few minutes) before funding again"
 )
 
 # 1 alpha = 1e9 rao (same scale as TAO). Used to floor the API's Decimal alpha

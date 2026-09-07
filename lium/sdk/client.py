@@ -246,12 +246,37 @@ _REQUIRED_RE = re.compile(r"requires at least " + _USD, re.I)
 _AVAILABLE_RE = re.compile(r"balance is " + _USD, re.I)
 
 
-def permission_error(detail: str) -> LiumPermissionError:
+def _response_error_code(response: requests.Response) -> Optional[str]:
+    """The stable ``error.code`` of the platform's error body, when it sends one.
+
+    lium-platform#210 (DAH-3056) answers every 4xx/5xx with
+    ``{"error": {"code", "message", "hint", "request_id"}, ...}``; older servers
+    send ``error`` as a string or not at all, and then this is ``None``.
+    """
+    try:
+        payload = response.json()
+    except ValueError:  # not a JSON body: older servers answer plain text, and then there is no code
+        return None
+    error = payload.get("error") if isinstance(payload, dict) else None
+    code = error.get("code") if isinstance(error, dict) else None
+    return code if isinstance(code, str) and code else None
+
+
+def permission_error(detail: str, code: Optional[str] = None) -> LiumPermissionError:
     """The exception for a 403: :class:`LiumInsufficientBalanceError` when the server
     refused for lack of funds (with ``required``/``available`` when it said them),
-    else a plain :class:`LiumPermissionError`."""
+    else a plain :class:`LiumPermissionError`.
+
+    ``code`` is the platform's structured ``error.code`` when the response carried
+    one (:func:`_response_error_code`); it decides. Without it the message text
+    decides, which is what every server before lium-platform#210 sends.
+    """
     message = f"Permission denied: {detail}"
-    if "insufficient balance" not in (detail or "").lower():
+    if code is not None:
+        insufficient = code == "insufficient_balance"
+    else:
+        insufficient = "insufficient balance" in (detail or "").lower()
+    if not insufficient:
         return LiumPermissionError(message)
 
     def usd(match: Optional[re.Match]) -> Optional[float]:
@@ -426,7 +451,7 @@ class Lium:
         if resp.status_code == 401:
             raise LiumAuthError("Invalid API key")
         if resp.status_code == 403:
-            raise permission_error(_response_error_message(resp))
+            raise permission_error(_response_error_message(resp), _response_error_code(resp))
         if resp.status_code == 404:
             raise LiumNotFoundError(f"Resource not found: {_response_error_message(resp)}")
         if resp.status_code == 429:

@@ -66,13 +66,13 @@ Codes raised by the shared error handler (any command can produce them):
 | `code` | Exit | When | Hint |
 |--------|------|------|------|
 | `no_api_key` | 2 | No API key in `LIUM_API_KEY` or `~/.lium/config.ini`. | Set `LIUM_API_KEY`, or run `lium init` (headless: `lium init --no-browser`, then `lium init --session <ID>`). |
-| `invalid_api_key` | 2 | The API answered 401. | `lium config get api.api_key` shows which key is in use; new keys at https://lium.io/api-keys. |
+| `invalid_api_key` | 3 | The API answered 401. | `lium config get api.api_key` shows which key is in use; new keys at https://lium.io/api-keys. |
 | `value_error` | 2 | A value the command received was invalid (SDK `ValueError`). | Check the options. |
 | `invalid_arguments` | 2 | Options that contradict each other or a malformed value. | `lium <command> --help`. |
 | `confirmation_required` | 2 | *Reserved — not emitted yet.* A yes/no question could not be asked because stdin is not a terminal; arrives with the non-interactive guard (DAH-2893). | Re-run with `--yes`. |
 | `input_required` | 2 | *Reserved — not emitted yet.* A value would have been prompted for (same change). | Pass it as an option. |
 | `permission_denied` | 6 | The API answered 403. | `lium balance`; verification on https://lium.io. |
-| `insufficient_balance` | 6 | 403 whose reason is "Insufficient balance" (the API's own wording); the SDK raises `LiumInsufficientBalanceError` with `required`/`available` parsed from the message when the server stated them. | `lium topup` or `lium fund`, or a cheaper node (`lium ls --sort price_total`). |
+| `insufficient_balance` | 6 | 403 whose `error.code` is `insufficient_balance` (the platform's structured error body, lium-platform#210), or, from an older server, whose message says "Insufficient balance"; the SDK raises `LiumInsufficientBalanceError` with `required`/`available` parsed from the message when the server stated them. | `lium topup` or `lium fund`, or a cheaper node (`lium ls --sort price_total`). |
 | `pod_not_found` | 5 | The pod named on the command line matched nothing. | `lium ps`. |
 | `not_found` | 3 | The API returned 404 for a resource other than the target pod. | List it again and retry. |
 | `rate_limited` | 3 | The API returned 429. | Wait and retry with back-off. |
@@ -110,7 +110,7 @@ echo "$out" | jq '.[0].huid'
 ```
 
 ```python
-import json, subprocess
+import json, os, subprocess
 
 proc = subprocess.run(
     ["lium", "ps", "--format", "json"],
