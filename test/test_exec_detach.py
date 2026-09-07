@@ -9,7 +9,7 @@ command by hand; the CLI can do it once, correctly.
 import base64
 import json
 import shlex
-from datetime import datetime, timezone
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -19,12 +19,13 @@ from lium.cli.cli import cli
 from lium.cli.commands import exec as exec_module
 from lium.cli.commands.exec import (
     DetachedExecution,
-    build_detached_command,
     build_detached_script_command,
-    default_detach_log_path,
-    detach_timestamp,
     parse_detached_pid,
 )
+from lium.sdk.detach import build_detached_command, default_detach_log_path, detach_token
+
+TOKEN = "20260101T120000Z-abc123"
+LOG = f"/workspace/logs/exec-{TOKEN}.log"
 from lium.cli.utils import EXIT_CONFIGURATION_ERROR, EXIT_GENERAL_ERROR
 
 
@@ -68,7 +69,7 @@ def fake_lium(monkeypatch):
     _FakeLium.exit_code = 0
     _FakeLium.sent = []
     monkeypatch.setattr(exec_module, "Lium", _FakeLium)
-    monkeypatch.setattr(exec_module, "detach_timestamp", lambda now=None: "20260101-120000")
+    monkeypatch.setattr(exec_module, "detach_token", lambda now=None: TOKEN)
     return _FakeLium
 
 
@@ -79,9 +80,31 @@ def _run(args):
 def test_detached_command_uses_nohup_setsid_and_closes_stdin():
     remote = build_detached_command("python train.py --epochs 3", "/workspace/logs/run.log")
 
-    assert remote.startswith("mkdir -p /workspace/logs || exit 1; ")
+    assert "mkdir -p /workspace/logs || exit 1; " in remote
     assert "nohup setsid bash -lc 'python train.py --epochs 3'" in remote
-    assert "> /workspace/logs/run.log 2>&1 < /dev/null & echo $!" in remote
+    assert remote.endswith("> /workspace/logs/run.log 2>&1 < /dev/null & echo $!")
+
+
+def test_detached_command_checks_for_setsid_and_bash_before_forking():
+    """`echo $!` prints a PID as soon as the shell forks, so a missing setsid would
+    otherwise report "Started" with the failure buried in the log."""
+    remote = build_detached_command("true", "/workspace/logs/run.log")
+
+    assert remote.index("command -v") < remote.index("mkdir -p") < remote.index("nohup")
+    assert "setsid" in remote[: remote.index("mkdir -p")]
+    assert "bash" in remote[: remote.index("mkdir -p")]
+
+
+def test_a_missing_setsid_prints_no_pid_and_says_why(tmp_path):
+    """Run the launcher for real with nothing on PATH: stdout must stay empty."""
+    remote = build_detached_command("true", str(tmp_path / "run.log"))
+
+    result = subprocess.run(["/bin/sh", "-c", remote], capture_output=True, text=True, env={"PATH": str(tmp_path)})
+
+    assert result.stdout == ""
+    assert parse_detached_pid(result.stdout) is None
+    assert "setsid not found on the pod" in result.stderr
+    assert result.returncode == 127
 
 
 def test_detached_command_quotes_the_users_command_as_one_argument():
@@ -101,22 +124,30 @@ def test_detached_command_quotes_the_log_path():
 
 
 def test_default_log_path_is_under_workspace_logs():
-    stamp = detach_timestamp(datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc))
+    token = detach_token(now=1767268800)  # 2026-01-01T12:00:00Z
 
-    assert default_detach_log_path(stamp) == "/workspace/logs/exec-20260101-120000.log"
+    assert token.startswith("20260101T120000Z-")
+    assert len(token) == len(TOKEN)
+    assert default_detach_log_path(token) == f"/workspace/logs/exec-{token}.log"
+
+
+def test_two_launches_in_the_same_second_get_different_logs():
+    a, b = detach_token(now=1767268800), detach_token(now=1767268800)
+
+    assert a != b
 
 
 def test_detached_script_is_copied_before_it_is_started():
     """The script must exist on the pod as a file before anything runs from it."""
     script = "#!/bin/bash\necho 'hello' \"world\" $1\n"
 
-    remote = build_detached_script_command(script, "/workspace/logs/run.log", "20260101-120000")
+    remote = build_detached_script_command(script, "/workspace/logs/run.log", TOKEN)
 
     encoded = base64.b64encode(script.encode()).decode()
-    upload = f"printf %s {encoded} | base64 -d > /tmp/lium-exec-20260101-120000.sh"
+    upload = f"printf %s {encoded} | base64 -d > /tmp/lium-exec-{TOKEN}.sh"
     assert remote.startswith(upload)
-    assert remote.index("chmod +x /tmp/lium-exec-20260101-120000.sh") < remote.index("nohup")
-    assert "bash -lc /tmp/lium-exec-20260101-120000.sh" in remote
+    assert remote.index(f"chmod +x /tmp/lium-exec-{TOKEN}.sh") < remote.index("nohup")
+    assert f"bash -lc /tmp/lium-exec-{TOKEN}.sh" in remote
 
 
 @pytest.mark.parametrize(
@@ -132,10 +163,12 @@ def test_detach_prints_pid_and_log_and_exits_zero(fake_lium):
 
     assert result.exit_code == 0, result.output
     assert "PID 4242" in result.output
-    assert "/workspace/logs/exec-20260101-120000.log" in result.output
+    assert LOG in result.output
+    # Rich wraps long lines at 80 columns under CliRunner; compare on one line.
+    assert f'follow with: lium exec eager-wolf-aa "tail -n 200 {LOG}"' in " ".join(result.output.split())
     [(huid, remote)] = fake_lium.sent
     assert huid == "eager-wolf-aa"
-    assert remote == build_detached_command("python train.py", "/workspace/logs/exec-20260101-120000.log")
+    assert remote == build_detached_command("python train.py", LOG)
 
 
 def test_detach_honours_an_explicit_log_path(fake_lium):
@@ -158,7 +191,7 @@ def test_detach_json_carries_pid_and_log(fake_lium):
         "results": [{
             "pod": "eager-wolf-aa",
             "pid": 4242,
-            "log": "/workspace/logs/exec-20260101-120000.log",
+            "log": LOG,
             "error": None,
         }],
     }
@@ -172,9 +205,7 @@ def test_detach_with_script_uploads_then_starts_it(fake_lium, tmp_path):
 
     assert result.exit_code == 0, result.output
     [(_, remote)] = fake_lium.sent
-    assert remote == build_detached_script_command(
-        "#!/bin/bash\necho from-script\n", "/workspace/logs/exec-20260101-120000.log", "20260101-120000"
-    )
+    assert remote == build_detached_script_command("#!/bin/bash\necho from-script\n", LOG, TOKEN)
 
 
 def test_detach_fails_when_no_pid_came_back(fake_lium):

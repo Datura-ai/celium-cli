@@ -254,9 +254,9 @@ lium exec my-pod "nvidia-smi"
 lium exec my-pod "python train.py"
 
 # Start a long job in the background and return immediately (prints PID and log path)
-lium exec my-pod -d "python train.py"                      # log: /workspace/logs/exec-<timestamp>.log
+lium exec my-pod -d "python train.py"                      # log: /workspace/logs/exec-<timestamp>-<id>.log
 lium exec my-pod -d --log /workspace/train.log --script train.sh
-lium exec my-pod "tail -f /workspace/train.log"
+lium exec my-pod "tail -n 200 /workspace/train.log"        # exec returns output when the command exits, so read a bounded slice
 
 # Copy files to and from pods
 lium scp my-pod ./script.py                    # Copy to /root/script.py

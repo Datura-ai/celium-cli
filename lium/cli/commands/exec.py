@@ -5,11 +5,9 @@ import base64
 import contextlib
 import json
 import os
-import posixpath
 import shlex
 import sys
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping, Optional, Tuple
 
@@ -17,6 +15,12 @@ import click
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from lium.sdk import Lium, PodInfo
+from lium.sdk.detach import (
+    DEFAULT_DETACH_LOG_DIR,
+    build_detached_command,
+    default_detach_log_path,
+    detach_token,
+)
 from ..utils import (
     EXIT_CONFIGURATION_ERROR,
     EXIT_GENERAL_ERROR,
@@ -84,34 +88,7 @@ def print_execution_for_a_human(execution: PodExecution, show_pod_header: bool) 
             console.error(f"Command failed (exit code: {execution.exit_code})")
 
 
-DEFAULT_DETACH_LOG_DIR = "/workspace/logs"
 DETACH_SCRIPT_DIR = "/tmp"
-
-
-def detach_timestamp(now: Optional[datetime] = None) -> str:
-    return (now or datetime.now(timezone.utc)).strftime("%Y%m%d-%H%M%S")
-
-
-def default_detach_log_path(timestamp: str) -> str:
-    return f"{DEFAULT_DETACH_LOG_DIR}/exec-{timestamp}.log"
-
-
-def build_detached_command(command: str, log_path: str) -> str:
-    """The remote command line that starts ``command`` in the background.
-
-    ``nohup`` alone is not enough over a non-interactive SSH session: the child
-    keeps the session's stdin and its process group, so ``exec`` blocks until
-    the child exits, and a closed session can still take the child down.
-    ``setsid`` gives it its own session, ``< /dev/null`` detaches stdin, and both
-    output streams go to the log file. ``echo $!`` is the only thing the caller
-    reads back.
-    """
-    log_dir = posixpath.dirname(log_path) or "."
-    return (
-        f"mkdir -p {shlex.quote(log_dir)} || exit 1; "
-        f"nohup setsid bash -lc {shlex.quote(command)} "
-        f"> {shlex.quote(log_path)} 2>&1 < /dev/null & echo $!"
-    )
 
 
 def build_script_upload_command(script_text: str, remote_path: str) -> str:
@@ -127,9 +104,9 @@ def build_script_upload_command(script_text: str, remote_path: str) -> str:
     )
 
 
-def build_detached_script_command(script_text: str, log_path: str, timestamp: str) -> str:
+def build_detached_script_command(script_text: str, log_path: str, token: str) -> str:
     """Copy the script to the pod, then start it detached and print its PID."""
-    remote_script = f"{DETACH_SCRIPT_DIR}/lium-exec-{timestamp}.sh"
+    remote_script = f"{DETACH_SCRIPT_DIR}/lium-exec-{token}.sh"
     return (
         f"{build_script_upload_command(script_text, remote_script)} && "
         f"{build_detached_command(remote_script, log_path)}"
@@ -182,7 +159,9 @@ def report_detached_executions(executions: list[DetachedExecution], json_output:
                 f"Started on {console.get_styled(execution.pod, 'pod_id')}: "
                 f"PID {execution.pid}, log {execution.log}"
             )
-            console.dim(f"  follow with: lium exec {execution.pod} \"tail -f {execution.log}\"")
+            # `lium exec` returns the command's output once it exits, so the
+            # hint is a bounded read; a `tail -f` there would never come back.
+            console.dim(f"  follow with: lium exec {execution.pod} \"tail -n 200 {execution.log}\"")
         else:
             console.error(f"Failed to start on {execution.pod}: {execution.error}")
 
@@ -274,7 +253,7 @@ def report_executions(executions: list[PodExecution], json_output: bool) -> None
 )
 @click.option(
     "--log", "log_path",
-    help=f"Log file for --detach on the pod (default: {DEFAULT_DETACH_LOG_DIR}/exec-<timestamp>.log)",
+    help=f"Log file for --detach on the pod (default: {DEFAULT_DETACH_LOG_DIR}/exec-<timestamp>-<id>.log)",
 )
 @click.option(
     "--json", "json_output", is_flag=True,
@@ -338,12 +317,12 @@ def exec_command(
             console.dim(f"Environment: {', '.join(f'{k}={v}' for k, v in env_dict.items())}")
 
     if detach:
-        timestamp = detach_timestamp()
-        log_path = log_path or default_detach_log_path(timestamp)
+        token = detach_token()
+        log_path = log_path or default_detach_log_path(token)
         # A script is copied to the pod first so the detached process runs it
         # from a file rather than from a command line that ends with this session.
         if script:
-            command_to_run = build_detached_script_command(command_to_run, log_path, timestamp)
+            command_to_run = build_detached_script_command(command_to_run, log_path, token)
         else:
             command_to_run = build_detached_command(command_to_run, log_path)
 
