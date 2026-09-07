@@ -86,6 +86,14 @@ def test_logs_streams_the_pod_endpoint(client, monkeypatch):
     assert call["headers"]["X-API-KEY"] == "test"
 
 
+def test_the_pod_id_is_quoted_in_the_path(client, monkeypatch):
+    calls = _script(monkeypatch, _Response())
+
+    list(client.logs("../users/me?x", tail=1))
+
+    assert calls[0]["url"].endswith("/pods/..%2Fusers%2Fme%3Fx/logs")
+
+
 def test_follow_has_no_timeout(client, monkeypatch):
     calls = _script(monkeypatch, _Response())
 

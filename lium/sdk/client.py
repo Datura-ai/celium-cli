@@ -764,7 +764,8 @@ class Lium:
         try:
             response = self._request(
                 "GET",
-                f"/pods/{pod_id}/logs",
+                # the id comes from the caller: quoted so a stray "/" or "?" cannot point the request at another route
+                f"/pods/{quote(str(pod_id), safe='')}/logs",
                 params=params,
                 stream=True,
                 timeout=None if follow else 30,
