@@ -54,7 +54,14 @@ def job_paths(name: str, job_dir: str = DEFAULT_JOB_DIR) -> Dict[str, str]:
     return {"log_path": f"{stem}.log", "pid_file": f"{stem}.pid", "exit_file": f"{stem}.exit", "cmd_file": f"{stem}.cmd"}
 
 
-def build_job_launcher(command: str, *, name: str, job_dir: str = DEFAULT_JOB_DIR, workdir: Optional[str] = None) -> str:
+def build_job_launcher(
+    command: str,
+    *,
+    name: str,
+    job_dir: str = DEFAULT_JOB_DIR,
+    workdir: Optional[str] = None,
+    env: Optional[Dict[str, str]] = None,
+) -> str:
     """The remote command line that starts ``command`` as job ``name`` and prints its PID.
 
     The job runs under ``nohup setsid`` with stdin closed so the SSH channel's end
@@ -63,12 +70,20 @@ def build_job_launcher(command: str, *, name: str, job_dir: str = DEFAULT_JOB_DI
     "finished" from "vanished" without guessing. Starting a second job under a
     name whose process is still alive is refused (exit 3) rather than silently
     running two servers.
+
+    ``env`` is exported inside the job shell, ahead of ``workdir`` and the
+    command; the ``.cmd`` file records the raw ``command`` only, so
+    :meth:`Lium.job` hands back the same ``command`` :meth:`Lium.run_background`
+    was given and no environment value is written to disk.
     """
     q = shlex.quote
     name = validate_job_name(name)  # safe to interpolate: [A-Za-z0-9_.-] only
     p = job_paths(name, job_dir)
     pid_file = q(p["pid_file"])
     inner = command if workdir is None else f"cd {q(workdir)} && {command}"
+    if env:
+        exports = " && ".join(f'export {key}="{value}"' for key, value in env.items())
+        inner = f"{exports} && {inner}"
     wrapper = f"bash -lc {q(inner)}; echo $? > {q(p['exit_file'])}"
     return (
         f"mkdir -p {q(job_dir)} || exit 1; "
@@ -217,9 +232,12 @@ class Job:
     ) -> None:
         """Block until TCP ``port`` accepts connections inside the pod.
 
-        The probe and the job's liveness are read in the same SSH round trip, so a
-        server that crashed while loading fails this call at once, with its exit
-        code and the last log lines, instead of burning the whole timeout.
+        The probe and the job's liveness are read in the same SSH round trip, and
+        the job's state is judged first: a server that crashed while loading fails
+        this call at once, with its exit code and the last log lines, instead of
+        burning the whole timeout — even when another process holds the port. A
+        job that exited 0 with the port open counts as ready (it forked its
+        server and left).
 
         Raises:
             LiumError: the job ended (or vanished) before the port answered.
@@ -234,19 +252,30 @@ class Job:
                 last_error = None
             except (OSError, LiumError, paramiko.SSHException) as exc:  # SSH not reachable right now: keep polling
                 stdout, last_error = "", str(exc)
-            if "port open" in stdout:
-                return
+            port_open = "port open" in stdout
             status = parse_status(stdout)
+            # The job's state is read before the port: an open port is only this
+            # job's if the job is alive (or exited 0 — a launcher that forked its
+            # server and left). A dead job with the port held by something else
+            # is a failure, not a ready server.
             if status["state"] == "exited":
+                if status["exit_code"] == 0 and port_open:
+                    return
                 raise LiumError(
                     f"Job {self.name} exited with code {status['exit_code']} before port {port} answered "
-                    f"on pod {self._pod_label()}.\nLast log lines ({self.log_path}):\n{self.logs(tail=40)}"
+                    f"on pod {self._pod_label()}"
+                    + (" (the port is open, but not by this job)" if port_open else "")
+                    + f".\nLast log lines ({self.log_path}):\n{self.logs(tail=40)}"
                 )
             if status["state"] == "gone":
                 raise LiumError(
                     f"Job {self.name} (pid {self.pid}) is gone before port {port} answered on pod "
-                    f"{self._pod_label()}.\nLast log lines ({self.log_path}):\n{self.logs(tail=40)}"
+                    f"{self._pod_label()}"
+                    + (" (the port is open, but not by this job)" if port_open else "")
+                    + f".\nLast log lines ({self.log_path}):\n{self.logs(tail=40)}"
                 )
+            if port_open:
+                return
             if time.monotonic() >= deadline:
                 why = f" (last SSH error: {last_error})" if last_error else ""
                 raise TimeoutError(

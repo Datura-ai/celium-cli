@@ -169,9 +169,21 @@ def test_run_background_exports_env_inside_the_job_shell(monkeypatch):
     client = _Client()
     sent = _ssh_answering(monkeypatch, client, ["7\n"])
 
-    client.run_background(_pod(), "run", name="j", env={"HF_HOME": "/workspace/hf"})
+    job = client.run_background(_pod(), "run", name="j", env={"HF_HOME": "/workspace/hf"})
 
     assert 'export HF_HOME="/workspace/hf" && run' in sent[0]
+    # The .cmd file records the command as given; env values stay out of it, so
+    # job() returns the same command and no secret is written to disk.
+    assert "printf %s run > /workspace/logs/j.cmd" in sent[0]
+    assert job.command == "run"
+
+
+def test_launcher_env_precedes_workdir_and_stays_out_of_the_cmd_file():
+    line = build_job_launcher("python train.py", name="t", workdir="/workspace/repo", env={"TOKEN": "s3cret"})
+
+    assert 'export TOKEN="s3cret" && cd /workspace/repo && python train.py' in line
+    assert "printf %s 'python train.py' > /workspace/logs/t.cmd" in line
+    assert line.count("s3cret") == 1
 
 
 def test_run_background_refuses_a_name_whose_job_is_still_running(monkeypatch):
@@ -294,6 +306,22 @@ def test_wait_for_port_fails_at_once_when_the_job_died_and_shows_the_log(monkeyp
         Job(client, _pod(), name="vllm", pid=1, command="x").wait_for_port(8000, timeout=600)
 
     assert "CUDA out of memory" in str(info.value)
+
+
+def test_wait_for_port_does_not_take_a_port_held_by_someone_else_for_a_dead_job(monkeypatch):
+    """The job died; another process answers on the port. That is not a ready server."""
+    client = _Client()
+    _ssh_answering(monkeypatch, client, ["exited 1\nport open\n", "boom\n"])
+
+    with pytest.raises(LiumError, match="exited with code 1 before port 8000.*not by this job"):
+        Job(client, _pod(), name="vllm", pid=1, command="x").wait_for_port(8000)
+
+
+def test_wait_for_port_accepts_a_launcher_that_forked_its_server_and_exited_cleanly(monkeypatch):
+    client = _Client()
+    _ssh_answering(monkeypatch, client, ["exited 0\nport open\n"])
+
+    Job(client, _pod(), name="vllm", pid=1, command="x").wait_for_port(8000)
 
 
 def test_wait_for_port_fails_when_the_process_vanished(monkeypatch):

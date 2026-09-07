@@ -1301,7 +1301,9 @@ class Lium:
             LiumError: the launcher printed no PID, or the name is taken by a live job.
         """
         name = validate_job_name(name or default_job_name())
-        launcher = build_job_launcher(self._prep_command(command, env), name=name, job_dir=job_dir, workdir=workdir)
+        # The raw command goes to the launcher; env is exported inside the job
+        # shell there, so the .cmd file (what job() reads back) never carries it.
+        launcher = build_job_launcher(command, name=name, job_dir=job_dir, workdir=workdir, env=env)
         result = self.exec(pod, command=launcher, timeout=timeout)
         pid = self._parse_pid(result.get("stdout", "")) if result.get("success") else None
         if pid is None:
