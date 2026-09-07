@@ -147,6 +147,13 @@ def test_pod_failure_cause_survives_an_api_error_on_the_failure_path():
     assert client.pod_failure_cause("pod-1") is None
 
 
+def test_pod_failure_cause_survives_a_network_error_on_the_failure_path():
+    # with_retry re-raises requests.RequestException (not a LiumError) after its last attempt
+    client = _Client([[]], events_error=requests.ConnectionError("connection reset"))
+
+    assert client.pod_failure_cause("pod-1") is None
+
+
 def test_pod_failure_cause_prefers_the_latest_readable_event():
     client = _Client([[]], events=[LIFECYCLE_EVENT, {"sub_event_type": "pod-add-ssh-key.success"}, CREATE_FAILED_EVENT])
 
