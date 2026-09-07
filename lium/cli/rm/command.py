@@ -150,6 +150,10 @@ def rm_command(
         if plan.termination_time:
             payload["termination_time"] = context["termination_time"]
         click.echo(json.dumps(payload, indent=2, ensure_ascii=False))
+        if failed_huids:
+            # The payload already names the failures; a second message on stdout
+            # would break json.loads for the caller. The exit code says it failed.
+            raise SystemExit(EXIT_GENERAL_ERROR)
     elif removed_huids:
         # Say what happened: silence is indistinguishable from having done nothing.
         ui.success(f"{done_verb} {len(removed_huids)} pod(s): {', '.join(removed_huids)}")

@@ -4,17 +4,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from lium.sdk import PodInfo
-
-
-def _created_at(pod: PodInfo) -> Optional[datetime]:
-    """Parse ``pod.created_at`` as an aware UTC datetime; None when missing or malformed."""
-    if not pod.created_at:
-        return None
-    try:
-        dt_created = datetime.fromisoformat(pod.created_at.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return dt_created if dt_created.tzinfo else dt_created.replace(tzinfo=timezone.utc)
+from lium.cli.ps.display import _parse_timestamp, format_duration
 
 
 def pod_spend(pod: PodInfo, now: Optional[datetime] = None) -> Dict[str, Any]:
@@ -22,16 +12,17 @@ def pod_spend(pod: PodInfo, now: Optional[datetime] = None) -> Dict[str, Any]:
 
     The API does not return a billed figure, so ``spent_is_estimate`` is always
     true; ``None`` marks the fields that cannot be computed (no timestamp, no
-    price).
+    price). ``uptime`` is spelled the way ``ps --format json`` spells it
+    (``1.5h``), parsed with the same helper, so the key means one thing.
     """
-    dt_created = _created_at(pod)
+    dt_created = _parse_timestamp(pod.created_at) if pod.created_at else None
     price = pod.executor.price_per_hour if pod.executor and pod.executor.price_per_hour else None
     hours = None
     if dt_created:
         hours = max(0.0, ((now or datetime.now(timezone.utc)) - dt_created).total_seconds() / 3600)
 
     return {
-        "uptime": f"{int(hours)}:{int(hours * 60) % 60:02d}" if hours is not None else None,
+        "uptime": format_duration(hours * 3600) if hours is not None else None,
         "uptime_hours": round(hours, 2) if hours is not None else None,
         "price_per_hour": price,
         "spent_usd": round(hours * price, 2) if hours is not None and price is not None else None,
@@ -40,7 +31,7 @@ def pod_spend(pod: PodInfo, now: Optional[datetime] = None) -> Dict[str, Any]:
 
 
 def format_removed_line(pod: PodInfo, spend: Dict[str, Any]) -> str:
-    """``removed <name> — <h:mm> at $X/h ≈ $Y``; ``≈`` because it is not a billed figure."""
+    """``removed <name> — <uptime> at $X/h ≈ $Y``; ``≈`` because it is not a billed figure."""
     name = pod.name or pod.huid
     uptime = spend["uptime"] or "?"
     if spend["spent_usd"] is None:

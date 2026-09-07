@@ -30,17 +30,17 @@ def _format_uptime(created_at: str) -> str:
     if not dt_created:
         return "—"
 
-    duration = datetime.now(timezone.utc) - dt_created
-    hours = duration.total_seconds() / 3600
+    return format_duration((datetime.now(timezone.utc) - dt_created).total_seconds())
 
+
+def format_duration(seconds: float) -> str:
+    """``32m`` / ``1.5h`` / ``1.2d`` — the uptime spelling every command shares (ps, describe, rm)."""
+    hours = seconds / 3600
     if hours < 1:
-        mins = duration.total_seconds() / 60
-        return f"{mins:.0f}m"
-    elif hours < 24:
+        return f"{seconds / 60:.0f}m"
+    if hours < 24:
         return f"{hours:.1f}h"
-    else:
-        days = hours / 24
-        return f"{days:.1f}d"
+    return f"{hours / 24:.1f}d"
 
 
 def _format_cost(created_at: str, price_per_hour: Optional[float]) -> str:
