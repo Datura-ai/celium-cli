@@ -95,7 +95,7 @@ def _specs_row(executor: ExecutorInfo) -> Dict[str, str]:
     """Extract display fields from an executor."""
     specs = executor.specs
     if not specs:
-        return {k: "—" for k in ["VRAM", "RAM", "Disk", "PCIe", "Mem", "TFLOPs", "Upload", "Download", "Ports"]}
+        return {k: "—" for k in ["VRAM", "RAM", "Disk", "DiskTotal", "PCIe", "Mem", "TFLOPs", "Upload", "Download", "Ports"]}
 
     d = _first_gpu_detail(specs)
     ram = specs.get("ram", {})
@@ -104,7 +104,10 @@ def _specs_row(executor: ExecutorInfo) -> Dict[str, str]:
     return {
         "VRAM": _maybe_gi_from_capacity(d.get("capacity")),
         "RAM": _maybe_gi_from_big_number(ram.get("total")),
-        "Disk": _maybe_gi_from_big_number(disk.get("total")),
+        # free, not total: a pod gets a share of the host's FREE disk (≈ (free − 20 GB) × its GPU share,
+        # 2/3 as the /root volume + 1/3 as /workspace), so the total is the one number a renter never sees
+        "Disk": _maybe_gi_from_big_number(disk.get("free")),
+        "DiskTotal": _maybe_gi_from_big_number(disk.get("total")),
         "Country": _country_name(specs.get("location")),
         "PCIe": _maybe_int(d.get("pcie_speed")),
         "Upload": _maybe_int(executor.upload_speed or None),
@@ -150,7 +153,7 @@ def _add_table_columns(t: Table) -> None:
     t.add_column("Location", justify="left", ratio=4, min_width=10, overflow="fold")
     t.add_column("VRAM (Gb)", justify="right", width=11, no_wrap=True)
     t.add_column("RAM (Gb)", justify="right", width=10, no_wrap=True)
-    t.add_column("Disk (Gb)", justify="right", width=11, no_wrap=True)
+    t.add_column("Disk free (Gb)", justify="right", width=14, no_wrap=True)
     t.add_column("Upload (Mbps)", justify="right", width=14, no_wrap=True)
     t.add_column("Download (Mbps)", justify="right", width=16, no_wrap=True)
     t.add_column("Ports", justify="left", ratio=3, min_width=5, overflow="fold")
@@ -185,6 +188,7 @@ def compact_executor(exe: ExecutorInfo, is_pareto: bool, index: int) -> Dict[str
         "vram_gb": _intish(s["VRAM"]),
         "ram_gb": _intish(s["RAM"]),
         "disk_gb": _intish(s["Disk"]),
+        "disk_total_gb": _intish(s["DiskTotal"]),
         "upload_mbps": _intish(s["Upload"]),
         "download_mbps": _intish(s["Download"]),
         "available_ports": _intish(s["Ports"]),
