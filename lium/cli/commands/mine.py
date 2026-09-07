@@ -262,17 +262,22 @@ def _listening_process(port: int) -> str:
     return ""
 
 
-def _port_in_use(port: int) -> bool:
-    """True when nothing on this host can still bind ``0.0.0.0:<port>``.
+def _port_in_use(port: int, host: str = "0.0.0.0") -> bool:
+    """True when nothing on this host can still bind ``<host>:<port>``.
 
-    A plain bind (no SO_REUSEADDR) also fails when a listener is bound to a
-    single interface, which is exactly what ``docker compose up`` would hit.
+    This is a probe, not a listener: the socket is bound for an instant,
+    never ``listen()``-ed, and closed on return. ``host`` defaults to the
+    wildcard address because the executor's ``docker-compose.app.yml``
+    publishes ``EXTERNAL_PORT`` and ``SSH_PORT`` on every interface, so the
+    probe must fail exactly where ``docker compose up`` would. A plain bind
+    (no SO_REUSEADDR) to the wildcard also fails when a listener is bound to
+    a single interface, which a ``127.0.0.1`` probe would miss.
     """
     import socket
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         try:
-            s.bind(("0.0.0.0", port))
+            s.bind((host, port))
         except OSError:
             return True
     return False
