@@ -5,6 +5,7 @@ import atexit
 import base64
 import hashlib
 import inspect
+import math
 import os
 import pickle
 import re
@@ -171,7 +172,10 @@ try:
     args, kwargs = pickle.loads(base64.b64decode({blob!r}))
     payload = {{'ok': True, 'result': {call}}}
 except BaseException as e:
-    payload = {{'ok': False, 'exc': e, 'type': type(e).__name__, 'message': str(e), 'traceback': traceback.format_exc()}}
+    # the exception object itself travels only when its class is a builtin: the caller's restricted
+    # unpickler reconstructs nothing else, and the type/message/traceback below must still arrive
+    payload = {{'ok': False, 'exc': e if type(e).__module__ == 'builtins' else None,
+               'type': type(e).__name__, 'message': str(e), 'traceback': traceback.format_exc()}}
 finally:
     try:
         blob = pickle.dumps(payload, protocol=4)
@@ -185,6 +189,52 @@ finally:
     if not payload['ok']:
         sys.exit(1)
 '''
+
+
+# What a result pickle from the pod may reconstruct. The pod runs on provider hardware, so whoever
+# controls the node controls the bytes: an unrestricted pickle.load would let them run code here.
+# Allowed are plain data types, the stdlib value types a result commonly carries, numpy, and the
+# decorated function's own module (its dataclasses); everything else names its class and stops.
+_SAFE_BUILTINS = frozenset({
+    "set", "frozenset", "bytes", "bytearray", "complex", "range", "slice", "object", "NoneType",
+    "int", "float", "str", "bool", "list", "tuple", "dict",
+})
+_SAFE_MODULES = frozenset({
+    "collections", "datetime", "decimal", "fractions", "pathlib", "uuid", "enum", "ipaddress",
+    "numpy", "numpy.core.multiarray", "numpy._core.multiarray", "numpy.core.numeric", "numpy._core.numeric",
+    "numpy.dtypes", "numpy.core", "numpy._core",
+})
+
+
+class _ResultUnpickler(pickle.Unpickler):
+    """``pickle.Unpickler`` whose ``find_class`` only resolves the allow-list above.
+
+    ``pickle`` resolves every class or callable a stream names through ``find_class``; refusing
+    anything outside the list is what stops ``os.system`` / ``builtins.eval`` gadgets, the way the
+    stdlib's own "Restricting Globals" recipe does.
+    """
+
+    def __init__(self, file, *, extra_modules: Sequence[str] = ()):
+        super().__init__(file)
+        self._extra = frozenset(extra_modules)
+
+    def find_class(self, module: str, name: str):
+        if module == "builtins":
+            if name in _SAFE_BUILTINS or (name.endswith(("Error", "Exception", "Exit", "Interrupt", "Warning"))
+                                          and isinstance(getattr(__import__("builtins"), name, None), type)):
+                return super().find_class(module, name)
+        elif module in _SAFE_MODULES or module in self._extra or module.split(".")[0] in self._extra:
+            return super().find_class(module, name)
+        raise pickle.UnpicklingError(
+            f"result pickle names {module}.{name}, which is not allowed here (plain data, numpy and "
+            f"the function's own module are); return plain Python types instead"
+        )
+
+
+def _load_result(path: str, *, extra_modules: Sequence[str] = ()) -> Dict[str, Any]:
+    """The pod's result payload, unpickled through :class:`_ResultUnpickler`."""
+    with open(path, "rb") as f:
+        return _ResultUnpickler(f, extra_modules=extra_modules).load()
 
 
 def _venv_path(reqs: Sequence[str]) -> str:
@@ -256,8 +306,15 @@ def _raise_remote(payload: Optional[Dict[str, Any]], func_name: str, exec_result
 
 
 class _Warm:
-    def __init__(self, sdk: Lium, pod, executor: ExecutorInfo, keep_warm: float, quiet: bool = False):
+    """A pod held for the next call. ``owned`` says this process rented it; a pod found by name
+    from an earlier run is not ours to remove at exit, and its removal window is left alone
+    unless a call asks for warmth again."""
+
+    def __init__(self, sdk: Lium, pod, executor: ExecutorInfo, keep_warm: float, quiet: bool = False,
+                 owned: bool = True, previous_removal: Optional[str] = None):
         self.sdk, self.pod, self.executor, self.keep_warm, self.quiet = sdk, pod, executor, keep_warm, quiet
+        self.owned = owned
+        self.previous_removal = previous_removal   # the found pod's removal time before this call re-armed it
 
 
 def _warm_key(spec: str, template_id: Optional[str]) -> str:
@@ -273,6 +330,19 @@ def _schedule_removal(sdk: Lium, pod, delay: timedelta, say) -> None:
         say(f"warning: could not schedule pod removal ({exc}); remove it yourself if this process dies")
 
 
+def _future_time(iso: Optional[str]) -> Optional[str]:
+    """``iso`` when it parses and lies ahead of now, else None."""
+    if not iso:
+        return None
+    try:
+        when = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return iso if when > datetime.now(timezone.utc) else None
+
+
 def _find_warm(sdk: Lium, key: str, say):
     """A pod this process (or an earlier one, by name) left warm for this machine spec."""
     warm = _WARM.get(key)
@@ -283,16 +353,19 @@ def _find_warm(sdk: Lium, key: str, say):
     for pod in live.values():
         if pod.name == f"lium-fn-{key}" and pod.executor:
             say(f"reusing warm pod {pod.huid} ({pod.executor.gpu_count}x{pod.executor.gpu_type} ${pod.executor.price_per_hour:.2f}/h)")
-            return _Warm(sdk, pod, pod.executor, 0)
+            return _Warm(sdk, pod, pod.executor, 0, owned=False, previous_removal=getattr(pod, "removal_scheduled_at", None))
     return None
 
 
 def _close_all() -> None:
-    """atexit: remove pods held for `.map()`; leave `keep_warm` pods to their TTL."""
+    """atexit: remove pods held for `.map()`; leave `keep_warm` pods, and pods another run rented, to their TTL."""
     for key, warm in list(_WARM.items()):
         _WARM.pop(key, None)
         if warm.keep_warm:
             _say(warm.quiet, "lium.machine", f"pod {warm.pod.huid} stays warm {warm.keep_warm:.0f}s for the next run, then is removed")
+            continue
+        if not warm.owned:
+            _say(warm.quiet, "lium.machine", f"pod {warm.pod.huid} was found warm, not rented here; left to its own removal time")
             continue
         try:
             warm.sdk.down(_pod_ref(warm.pod))
@@ -323,8 +396,14 @@ def machine(
     ``f.local(*a)`` (run the original here), ``f.map(iterable)`` (run every item on one
     pod, rented once) and ``f.close()`` (remove the pod kept by ``keep_warm``).
 
-    Arguments and the return value travel as pickles, so anything picklable that both
-    sides can import (numpy arrays, dataclasses from an installed package, ...) works.
+    Arguments and the return value travel as pickles. Arguments are your own bytes and
+    are loaded on the pod as they are. The result comes back from provider hardware, so
+    it is loaded through a restricted unpickler: plain Python types, the stdlib value
+    types (``pathlib``, ``datetime``, ``decimal``, ``uuid``, ``collections``, ``enum``),
+    numpy arrays and classes from the decorated function's own module reconstruct;
+    anything else raises :class:`RemoteExecutionError` naming the class (return
+    ``.tolist()`` / a dict instead). A remote exception is re-raised here when its type
+    is a builtin; other types come back as :class:`RemoteExecutionError`.
     Only the function's own ``def`` is sent: import what it needs inside the body and
     pass everything else as arguments. Whatever the function prints is relayed to this
     process's stdout/stderr while it runs. An exception raised on the pod is re-raised
@@ -341,7 +420,8 @@ def machine(
             They go into a venv that also sees the image's own packages, created and
             populated once per pod and reused by later calls with the same list.
         timeout: Seconds the function may run on the pod before it is killed (default 1 h;
-            ``None`` for no limit). The pod is also scheduled for removal at
+            ``None`` for no limit; ``0`` or a negative number is refused when decorating).
+            A fraction of a second is rounded up to the next second for the kill. The pod is also scheduled for removal at
             ``timeout + 15 min`` (24 h when ``timeout=None``) so a caller that dies
             mid-call cannot leave it billing.
         keep_warm: Seconds the pod stays after a call for the next one — from this process
@@ -352,6 +432,9 @@ def machine(
             same for every decorated function) — for tests and offline work.
         quiet: Suppress the one-line progress messages written to stderr.
     """
+
+    if timeout is not None and timeout <= 0:
+        raise ValueError(f"timeout must be a positive number of seconds or None for no limit, got {timeout!r}")
 
     def decorator(func):
         run_local = local or os.environ.get("LIUM_MACHINE_LOCAL") == "1"
@@ -451,7 +534,8 @@ def machine(
                         if timeout:
                             # TERM first, KILL 5 s later. (`-s KILL` would kill the process group,
                             # `timeout` included, and the ssh session would report no exit status.)
-                            run_cmd = f"timeout -k 5 {int(timeout)} {run_cmd}"
+                            # ceil, not int(): int(0.5) is 0, which coreutils reads as "no limit"
+                            run_cmd = f"timeout -k 5 {math.ceil(timeout)} {run_cmd}"
                         exec_result = _run_streaming(sdk, pod_info, run_cmd)
 
                         # Step 7: Download the result (also when the run failed: it carries the exception)
@@ -460,11 +544,12 @@ def machine(
                             result_file = f.name
                         try:
                             sdk.download(pod_info, remote=remote_result, local=result_file)
-                            with open(result_file, 'rb') as f:
-                                payload = pickle.load(f)
+                            # the pod wrote these bytes: only plain data, numpy and the function's own
+                            # module may be reconstructed here (_ResultUnpickler)
+                            payload = _load_result(result_file, extra_modules=[func.__module__])
                         except (OSError, IOError):
                             payload = None  # the runner never got to write it
-                        except Exception as exc:  # noqa: BLE001 — unpickling: e.g. numpy missing locally
+                        except Exception as exc:  # noqa: BLE001 — unpickling: a refused class, numpy missing locally
                             raise RemoteExecutionError(
                                 f"the result of {func.__name__} could not be unpickled locally: {exc}. "
                                 "Return plain Python types (str(), .tolist(), .cpu().numpy()) or install "
@@ -495,11 +580,27 @@ def machine(
 
                 # Step 8: Release the pod — remove it, or keep it warm for the next call
                 if pod_info and (keep or warm) and getattr(pod_info, "ssh_cmd", None):
+                    owned = warm.owned if warm else True   # a pod this call rented is ours
                     stay = max(keep_warm, warm.keep_warm if warm else 0)
-                    _WARM[key] = _Warm(sdk, pod_info, executor, stay, quiet)
-                    if stay:
+                    _WARM[key] = _Warm(sdk, pod_info, executor, stay, quiet, owned=owned,
+                                       previous_removal=warm.previous_removal if warm else None)
+                    if stay and (owned or keep_warm):
+                        # ours: re-arm the window; found by name: only when this call asked for warmth
                         _schedule_removal(sdk, pod_info, timedelta(seconds=stay) + _WARM_MARGIN, say)
                         say(f"pod stays warm {stay:.0f}s")
+                    elif not owned:
+                        # found by name and this call asked for no warmth: put back the removal time the run
+                        # that rented it had set (the start of the call moved it out to cover the run);
+                        # when that time has passed, the start-of-call TTL stands, so the pod still goes
+                        previous = _future_time(warm.previous_removal) if warm else None
+                        if previous:
+                            try:
+                                sdk.schedule_termination(_pod_ref(pod_info), termination_time=previous)
+                                say(f"pod left as warm as it was found (removal at {previous})")
+                            except Exception as exc:  # noqa: BLE001 — the start-of-call TTL remains
+                                say(f"warning: could not restore the pod's removal time ({exc}); it keeps this call's TTL")
+                        else:
+                            say("pod left as warm as it was found; its previous removal time has passed, this call's TTL stands")
                 elif cleanup and pod_info:
                     try:
                         sdk.down(_pod_ref(pod_info))

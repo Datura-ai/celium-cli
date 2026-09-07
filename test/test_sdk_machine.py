@@ -368,6 +368,50 @@ def test_remote_sys_exit_does_not_exit_the_caller(fake):
         quits()
 
 
+def test_a_result_pickle_that_names_a_gadget_is_refused_not_executed(tmp_path):
+    """The result file is written by the pod (provider hardware): a pickle naming os.system, builtins.eval
+    or any class outside the allow-list must stop at find_class, never run here."""
+    import os
+    import pickle
+
+    class Gadget:
+        def __reduce__(self):
+            return (os.system, ("echo pwned > /dev/null",))
+
+    path = tmp_path / "result.pkl"
+    path.write_bytes(pickle.dumps({"ok": True, "result": Gadget()}, protocol=4))
+
+    with pytest.raises(pickle.UnpicklingError, match="posix.system|nt.system|os.system"):
+        D._load_result(str(path))
+
+    path.write_bytes(pickle.dumps({"ok": True, "result": [1, "two", {"3": (4.0, None)}, Path("/x"), {5}]}, protocol=4))
+    assert D._load_result(str(path))["result"][3] == Path("/x")
+
+    # a class from a module the caller did not name: refused; named through extra_modules: reconstructed
+    import fractions
+
+    path.write_bytes(pickle.dumps({"ok": True, "result": fractions.Fraction(1, 3)}, protocol=4))
+    assert D._load_result(str(path))["result"] == fractions.Fraction(1, 3)     # stdlib value type, allowed
+    import argparse
+
+    path.write_bytes(pickle.dumps({"ok": True, "result": argparse.Namespace(a=1)}, protocol=4))
+    with pytest.raises(pickle.UnpicklingError, match="argparse.Namespace"):
+        D._load_result(str(path))
+    assert D._load_result(str(path), extra_modules=["argparse"])["result"].a == 1
+
+
+def test_a_remote_exception_of_a_custom_type_is_a_remote_error_with_its_name(fake):
+    @D.machine(machine="A100", quiet=True)
+    def custom():
+        import decimal
+
+        raise decimal.InvalidOperation("custom boom")   # a real class outside builtins
+
+    with pytest.raises(D.RemoteExecutionError, match="InvalidOperation") as info:
+        custom()
+    assert info.value.exception_type == "InvalidOperation"
+
+
 def test_unpicklable_result_is_a_remote_error_not_a_crash(fake):
     @D.machine(machine="A100", quiet=True)
     def gen():
@@ -510,12 +554,46 @@ def test_a_new_process_finds_the_warm_pod_by_name(fake, capsys):
     warm = _pod("pod-9")
     warm.name = f"lium-fn-{D._warm_key('1xA100', None)}"
     warm.executor = EXECUTORS[2]
+    warm.removal_scheduled_at = "2099-01-01T00:00:00Z"   # the window the run that rented it had set
     fake.pods["pod-9"] = warm
 
     assert D.machine(machine="A100")(double)(4) == 8
     assert _rents(fake) == []
     assert "reusing warm pod swift-fox-c8 (1xA100 $1.20/h)" in capsys.readouterr().err
     assert "pod-9" in fake.pods                       # left as warm as it was found
+    schedules = [c for c in fake.calls if c[0] == "schedule_termination"]
+    # the call re-arms the TTL to cover its own run, then puts the previous window back
+    assert schedules[-1][2] == "2099-01-01T00:00:00Z", schedules
+    D._close_all()                                    # interpreter exit: the pod is not ours to remove
+    assert "pod-9" in fake.pods
+    assert not any(c[0] == "down" for c in fake.calls)
+
+
+def test_a_found_pod_is_re_armed_only_when_the_call_asks_for_warmth(fake):
+    warm = _pod("pod-9")
+    warm.name = f"lium-fn-{D._warm_key('1xA100', None)}"
+    warm.executor = EXECUTORS[2]
+    fake.pods["pod-9"] = warm
+
+    assert D.machine(machine="A100", keep_warm=300, quiet=True)(double)(4) == 8
+    assert _rents(fake) == []
+    assert any(c[0] == "schedule_termination" for c in fake.calls)
+    D._close_all()
+    assert "pod-9" in fake.pods                       # keep_warm: left to the new TTL, not removed
+
+
+def test_a_non_positive_timeout_is_refused_when_decorating():
+    with pytest.raises(ValueError, match="timeout must be a positive number"):
+        D.machine(machine="A100", timeout=0)
+    with pytest.raises(ValueError, match="timeout must be a positive number"):
+        D.machine(machine="A100", timeout=-5)
+
+
+def test_a_fractional_timeout_is_rounded_up_for_the_kill(fake):
+    D.machine(machine="A100", timeout=0.5, quiet=True)(one)()
+
+    run = next(c for c in fake.calls if c[0] == "stream_exec")
+    assert "timeout -k 5 1 " in run[1], run   # int(0.5) would have been 0 = no limit
 
 
 def test_map_rents_once_and_removes_at_the_end(fake):

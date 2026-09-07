@@ -49,7 +49,7 @@ what happens to the caller.
 ``keep_warm=300`` keeps the pod five minutes for the next call or the next run of the
 script; ``infer.map(prompts)`` runs every item on one pod; ``infer.local(...)`` runs the
 function in this process (``local=True`` / ``LIUM_MACHINE_LOCAL=1`` does so for every
-call); ``infer.close()`` removes a warm pod. Arguments and results are pickled; only the
+call); ``infer.close()`` removes a warm pod. Arguments and results are pickled (the result through a restricted unpickler: plain types, stdlib value types, numpy, the function's own module); only the
 function's own ``def`` is sent, so import inside it. A remote exception is re-raised with
 its type, with ``lium.RemoteExecutionError`` (remote traceback, exit code, output) as its
 cause. Progress lines go to stderr (``quiet=True`` to silence them).

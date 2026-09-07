@@ -76,7 +76,7 @@ lium rm <pod-name>
 
 The SDK mirrors the CLI's capabilities for programmatic use. Two entry points: the `@lium.machine` decorator for quickly offloading isolated functions, and the `Lium()` client for long-lived orchestration code.
 
-High-level decorator — annotate a function and offload work to a GPU pod. `machine` is `"<count>x<gpu>"` or `"<gpu>"` (`"1xH200"`, `"A100"`, `"2xRTX4090"`; count defaults to 1) and the cheapest matching node is rented; `timeout=` (default 1 h) bounds the run and the pod's lifetime. Arguments and the result are pickled; only the function's own `def` is sent, so import inside it and pass everything else as arguments. A remote exception is re-raised with its type, with `lium.RemoteExecutionError` (remote traceback, exit code, output) as its cause:
+High-level decorator — annotate a function and offload work to a GPU pod. `machine` is `"<count>x<gpu>"` or `"<gpu>"` (`"1xH200"`, `"A100"`, `"2xRTX4090"`; count defaults to 1) and the cheapest matching node is rented; `timeout=` (default 1 h) bounds the run and the pod's lifetime. Arguments and the result are pickled; the result, written by the pod, is loaded through a restricted unpickler (plain types, the stdlib value types, numpy and the function's own module — anything else is a `RemoteExecutionError` naming the class). Only the function's own `def` is sent, so import inside it and pass everything else as arguments. A remote exception is re-raised with its type, with `lium.RemoteExecutionError` (remote traceback, exit code, output) as its cause:
 
 ```python
 import lium
