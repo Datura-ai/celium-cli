@@ -17,11 +17,14 @@ def _free_port() -> int:
 
 
 def test_port_in_use_detects_a_listener() -> None:
+    # Loopback-only listener: the wildcard probe (what compose would bind) must
+    # still report the port taken, and nothing in the test listens publicly.
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as srv:
-        srv.bind(("0.0.0.0", 0))
+        srv.bind(("127.0.0.1", 0))
         srv.listen(1)
         port = srv.getsockname()[1]
         assert mine._port_in_use(port) is True
+        assert mine._port_in_use(port, host="127.0.0.1") is True
     # closed again -> free
     assert mine._port_in_use(port) is False
 
