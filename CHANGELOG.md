@@ -5,13 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
-- Opt-in crash reporting (DAH-2057): `lium config set telemetry.enabled true` or `LIUM_TELEMETRY=1`
-  reports unexpected errors with the command name and stack trace — never arguments, values or
-  account data. Off by default; `Unexpected error:` output now mentions the switch.
-
 ## [0.4.3] - 2025-10-23
 
 ### Added
