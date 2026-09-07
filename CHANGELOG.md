@@ -5,15 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
-- `lium ps --sort created|name|status|price|spent|gpu|uptime [--reverse]`, `--filter KEY=VALUE` (repeatable; `status`, `name`, `huid`, `gpu`, `template`, `id`; case-insensitive prefix match), `--watch N` to refresh, `--wide` to force every column, and `--json` as an alias of `--format json`.
-- `lium spend [--json]`: per active pod the hourly price, uptime, estimated spend (price × wall time since creation) and start time, plus total burn per hour, the balance and the runway at the current burn. The API does not report billed amounts, so the figures are labelled as estimates.
-
-### Changed
-- `lium ps` hides the Ports column on terminals narrower than 120 columns (it made every row wrap) and says how to get it back (`--wide` or `--format json`).
-
 ## [0.4.3] - 2025-10-23
 
 ### Added
