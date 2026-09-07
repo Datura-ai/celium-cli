@@ -5,21 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
-- `lium templates --format json` emits the full template objects, including `id`, `docker_image`, `docker_image_tag` and `category`; the table now shows the template id.
-- `lium balance --format json` (payload gains `balance` and `currency`; `balance_usd` is kept).
-- `--json` is accepted as an alias for `--format json` on `ls`, `ps`, `templates` and `balance`; `describe` accepts `--format json`. Each command's help mentions the machine-readable format.
-- Every failure now carries a hint (what to run next). The JSON error envelope gains `hint` and `exit_code`: `{"ok": false, "error": {"code", "message", "hint", "exit_code"}}`; in text mode the hint is printed under the error.
-- `LIUM_OUTPUT=json` renders failures as the JSON envelope on every command, without a per-command flag.
-- `docs/exit-codes.md` documents the exit codes, the envelope and the shared error codes; a unit test keeps it in step with the constants.
-- SDK: `LiumInsufficientBalanceError` (a `LiumPermissionError`) with `required`/`available` amounts.
-
-### Changed
-- Errors under `--format json` are rendered as the JSON error envelope on stderr, the same as under `--json`.
-- SDK errors map to distinct codes: 401 → `invalid_api_key` (exit 2, it is a configuration problem), 404 → `not_found`, 429 → `rate_limited`, 5xx → `server_error`, insufficient balance → `insufficient_balance` (exit 6). Exit codes of existing cases are unchanged except 401, which moves from 3 to 2.
-
 ## [0.4.3] - 2025-10-23
 
 ### Added
