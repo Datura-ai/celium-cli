@@ -131,12 +131,32 @@ def test_ssh_connection_rejects_changed_host_key(monkeypatch, tmp_path):
         with client.ssh_connection(pod):
             pass
 
-    _PinningSSHClient.server_key = sdk_client.paramiko.ECDSAKey.generate()
+    new_key = sdk_client.paramiko.ECDSAKey.generate()
+    _PinningSSHClient.server_key = new_key
     with pytest.raises(LiumHostKeyError, match="Host key for pod backup-test .* changed") as exc:
         with client.ssh_connection(pod):
             pass
     assert "known_hosts" in str(exc.value)
     assert "LIUM_SSH_INSECURE=1" in str(exc.value)
+    # the platform reboots pods on its own too (tasks/pod.py retries failed pods), so the text says so
+    assert "platform restarting the pod on its own" in str(exc.value)
+    # fingerprints in the form `ssh-keygen -lf` prints, so the user can compare them
+    assert sdk_client.host_key_fingerprint(new_key) in str(exc.value)
+    assert sdk_client.host_key_fingerprint(server_key) in str(exc.value)
+
+
+def test_host_key_fingerprint_matches_ssh_keygen(tmp_path):
+    import shutil
+    import subprocess
+
+    key = sdk_client.paramiko.ECDSAKey.generate()
+    fp = sdk_client.host_key_fingerprint(key)
+    assert fp.startswith("SHA256:") and "=" not in fp
+    if shutil.which("ssh-keygen"):
+        pub = tmp_path / "k.pub"
+        pub.write_text(f"{key.get_name()} {key.get_base64()}\n")
+        out = subprocess.run(["ssh-keygen", "-lf", str(pub)], capture_output=True, text=True, check=True).stdout
+        assert fp in out
 
 
 def test_ssh_connection_known_hosts_are_scoped_per_pod(monkeypatch, tmp_path):
@@ -199,7 +219,7 @@ def test_insecure_policy_accepts_the_key_for_the_session_and_warns(monkeypatch, 
     monkeypatch.setenv("HOME", str(tmp_path))
     ssh_client = sdk_client.paramiko.SSHClient()
     key = sdk_client.paramiko.ECDSAKey.generate()
-    fp = key.get_fingerprint().hex(":")
+    fp = sdk_client.host_key_fingerprint(key)
 
     with pytest.warns(UserWarning) as record:
         sdk_client._InsecureAcceptPolicy().missing_host_key(ssh_client, "[203.0.113.7]:20299", key)
@@ -268,3 +288,38 @@ def test_reboot_and_down_forget_the_pinned_host_key(monkeypatch, tmp_path, metho
     assert seen == [(verb, path)]
     assert not hosts_file.exists()
     getattr(client, method)(pod)  # idempotent when there is nothing to forget
+
+
+def test_edit_forgets_the_pinned_host_key(monkeypatch, tmp_path):
+    # PUT /templates/{id} on a pod's template is routed by the backend into reboot_rental_container
+    # (pod_service.edit_pod): the container, and its host key, are replaced — the pin must go with them
+    monkeypatch.setenv("HOME", str(tmp_path))
+    pod = _pod()
+    hosts_file = sdk_client.known_hosts_path(pod)
+    hosts_file.parent.mkdir(parents=True)
+    hosts_file.write_text("[host]:1 ssh-ed25519 AAAA\n")
+    seen = []
+
+    class Resp:
+        def __init__(self, body):
+            self.body = body
+
+        def json(self):
+            return self.body
+
+    def fake_request(self, m, p, **kwargs):
+        seen.append((m, p, kwargs.get("json")))
+        if m == "GET":
+            return Resp({"id": pod.id, "pod_name": pod.name, "template": {"id": "tpl-1", "docker_image": "a"}})
+        return Resp({"id": "tpl-1", "docker_image": "a", "startup_commands": "python main.py"})
+
+    monkeypatch.setattr(Lium, "_request", fake_request)
+    client = Lium(Config(api_key="test"))
+    result = client.edit(pod.id, startup_commands="python main.py")
+
+    assert result["startup_commands"] == "python main.py"
+    assert seen == [
+        ("GET", f"/pods/{pod.id}", None),
+        ("PUT", "/templates/tpl-1", {"id": "tpl-1", "docker_image": "a", "startup_commands": "python main.py"}),
+    ]
+    assert not hosts_file.exists()

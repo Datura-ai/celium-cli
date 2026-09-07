@@ -1,6 +1,8 @@
 """Lium SDK - Clean, Unix-style SDK for GPU pod management."""
 
+import base64
 import getpass
+import hashlib
 import os
 import re
 import shlex
@@ -63,7 +65,7 @@ def ssh_insecure() -> bool:
     return os.getenv(_SSH_INSECURE_ENV, "").strip().lower() in ("1", "true", "yes")
 
 
-def known_hosts_path(pod: PodInfo) -> Path:
+def known_hosts_path(pod: Union[PodInfo, str]) -> Path:
     """Per-pod known_hosts file: ``~/.lium/known_hosts/<pod id>``.
 
     Pods are ephemeral and executors reuse ``host:port`` for new rentals, so a
@@ -71,11 +73,18 @@ def known_hosts_path(pod: PodInfo) -> Path:
     recycled address as a key change. Keying by pod id pins the key for the
     lifetime of the pod and lets a fresh pod on the same address start clean.
     """
-    safe_id = _POD_ID_SAFE.sub("_", pod.id or "unknown")
+    pod_id = pod if isinstance(pod, str) else pod.id
+    safe_id = _POD_ID_SAFE.sub("_", pod_id or "unknown")
     return Path.home() / ".lium" / "known_hosts" / safe_id
 
 
-def forget_host_key(pod: PodInfo) -> None:
+def host_key_fingerprint(key: paramiko.PKey) -> str:
+    """``SHA256:<base64>`` as ``ssh-keygen -lf`` prints it, so a user can compare the two."""
+    digest = hashlib.sha256(key.asbytes()).digest()
+    return "SHA256:" + base64.b64encode(digest).decode().rstrip("=")
+
+
+def forget_host_key(pod: Union[PodInfo, str]) -> None:
     """Drop the pinned host key of a pod (its container, and so its key, is being replaced)."""
     try:
         known_hosts_path(pod).unlink()
@@ -107,7 +116,7 @@ class _PinOnFirstUsePolicy(paramiko.MissingHostKeyPolicy):
         client._host_keys.add(hostname, key.get_name(), key)
         if client._host_keys_filename is not None:
             client.save_host_keys(client._host_keys_filename)
-        fp = key.get_fingerprint().hex(":")
+        fp = host_key_fingerprint(key)
         warnings.warn(
             f"Pinning {key.get_name()} host key {fp} for {hostname} "
             f"(first connection to this pod; {_SSH_INSECURE_ENV}=1 disables pinning)",
@@ -127,7 +136,7 @@ class _InsecureAcceptPolicy(paramiko.MissingHostKeyPolicy):
     def missing_host_key(self, client, hostname, key):  # noqa: D401 - paramiko interface
         client.get_host_keys().add(hostname, key.get_name(), key)
         warnings.warn(
-            f"Accepting unverified {key.get_name()} host key {key.get_fingerprint().hex(':')} for "
+            f"Accepting unverified {key.get_name()} host key {host_key_fingerprint(key)} for "
             f"{hostname}: {_SSH_INSECURE_ENV}=1 disabled host key verification",
             stacklevel=2,
         )
@@ -769,7 +778,11 @@ class Lium:
             **kwargs,
         }
 
-        return self._request("PUT", f"/templates/{pod['template']['id']}", json=payload).json()
+        result = self._request("PUT", f"/templates/{pod['template']['id']}", json=payload).json()
+        # The backend routes this PUT into a container reboot (pod_service.edit_pod ->
+        # reboot_rental_container), so the pod's SSH host key changes with it.
+        forget_host_key(pod_id)
+        return result
 
     def ls(
         self,
@@ -1174,12 +1187,12 @@ class Lium:
             hosts_file = known_hosts_path(pod)
             raise LiumHostKeyError(
                 f"Host key for pod {pod.name} ({host}:{port}) changed: got "
-                f"{e.key.get_fingerprint().hex(':')}, pinned "
-                f"{e.expected_key.get_fingerprint().hex(':')}. This happens after a reboot or "
-                f"template switch made outside this SDK (the container, and its key, were "
-                f"replaced) but can also mean the connection is being intercepted. If you "
-                f"trust the new key, delete {hosts_file} and reconnect; {_SSH_INSECURE_ENV}=1 "
-                f"disables pinning."
+                f"{host_key_fingerprint(e.key)}, pinned "
+                f"{host_key_fingerprint(e.expected_key)}. The container, and its key, were "
+                f"replaced: a reboot or template change made outside this SDK, or the platform "
+                f"restarting the pod on its own (it retries failed pods); it can also mean the "
+                f"connection is being intercepted. If you trust the new key, delete {hosts_file} "
+                f"and reconnect; {_SSH_INSECURE_ENV}=1 disables pinning."
             ) from e
 
         try:
