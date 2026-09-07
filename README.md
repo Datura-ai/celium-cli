@@ -97,11 +97,31 @@ from lium.sdk import Lium
 
 lium = Lium()
 node = lium.ls(gpu_type="A100")[0]
-pod = lium.up(executor_id=node.id, name="demo")
-ready = lium.wait_ready(pod, timeout=600)
-print(lium.exec(ready, command="nvidia-smi")["stdout"])
-lium.down(ready)
+pod = lium.up(executor_id=node.id, name="demo", wait=True)   # a ready PodInfo
+print(lium.exec(pod, command="nvidia-smi", timeout=60)["stdout"])
+lium.down(pod)
 ```
+
+A long job goes on a pod the caller keeps: `detach=True` starts it in the background and returns at once, and the pod stays up until you remove it.
+
+```python
+pod = lium.up(executor_id=node.id, name="train", wait=True)
+job = lium.exec(pod, command="python train.py", detach=True)   # {"pid", "log_path", "command"}
+for gpu in lium.gpu_stats(pod):                                  # parsed nvidia-smi
+    print(gpu.index, gpu.utilization_pct, gpu.memory_pct)
+print(pod.to_dict())                                             # JSON-ready
+# later: lium.down(pod)
+```
+
+For work that must not outlive the code using it, `rent()` removes the pod on the way out of the block, whatever happened inside — so run the work to completion inside the block (a detached job started here would be killed with the pod):
+
+```python
+with lium.rent(executor_id=node.id, name="eval") as pod:
+    result = lium.exec(pod, command="python eval.py", timeout=1800)
+    print(result["stdout"])
+```
+
+`lium.pod_by_name("job")` finds a pod by name, huid or id.
 
 Full API reference: https://docs.lium.io/developers/sdk/reference
 

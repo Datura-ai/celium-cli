@@ -23,6 +23,7 @@ from dotenv import load_dotenv
 
 from lium.__about__ import __version__ as fallback_version
 
+from . import detach
 from .config import Config
 from .exceptions import (
     LiumAuthError,
@@ -36,6 +37,7 @@ from .models import (
     BackupConfig,
     BackupLog,
     ExecutorInfo,
+    GpuStats,
     PodInfo,
     RestoreLog,
     SSHKey,
@@ -412,7 +414,9 @@ class Lium:
         enable_volume_encryption: bool | None = True,
         backup_id: Optional[str] = None,
         restore_path: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        wait: bool = False,
+        timeout: int = 600,
+    ) -> Union[Dict[str, Any], PodInfo]:
         """Start a new pod on a specific node.
 
         Args:
@@ -437,10 +441,57 @@ class Lium:
             backup_id: Optional backup ID to restore after the pod starts.
             restore_path: New or empty subdirectory where the backup is restored.
                 Required when ``backup_id`` is provided.
+            wait: When ``True``, block until the pod is RUNNING with an SSH
+                endpoint and return it as a :class:`PodInfo`. The pod is billing
+                from the moment the rent call returns, so a timeout raises a
+                :class:`LiumError` that names the pod id rather than hiding it.
+            timeout: Seconds to wait for readiness when ``wait`` is set.
 
         Returns:
-            Pod metadata as returned by the rent API (id, name, status, ssh command, etc.).
+            Pod metadata as returned by the rent API (id, name, status, ssh command,
+            etc.), or the ready :class:`PodInfo` when ``wait`` is ``True``.
         """
+        created = self._rent(
+            executor_id=executor_id,
+            name=name,
+            template_id=template_id,
+            dockerfile_content=dockerfile_content,
+            volume_id=volume_id,
+            ports=ports,
+            ssh_keys=ssh_keys,
+            ssh_name=ssh_name,
+            enable_volume_encryption=enable_volume_encryption,
+            backup_id=backup_id,
+            restore_path=restore_path,
+        )
+        if not wait:
+            return created
+
+        ready = self.wait_ready(created, timeout=timeout)
+        if ready is None:
+            raise LiumError(
+                f"Pod {created.get('id')} ({created.get('name') or name}) was created but "
+                f"did not become ready within {timeout}s; it is still billing — "
+                f"check 'lium ps' and remove it if unwanted"
+            )
+        return ready
+
+    def _rent(
+        self,
+        *,
+        executor_id: str,
+        name: str,
+        template_id: Optional[str],
+        dockerfile_content: Optional[str],
+        volume_id: Optional[str],
+        ports: Optional[int],
+        ssh_keys: Optional[List[str]],
+        ssh_name: Optional[str],
+        enable_volume_encryption: bool | None,
+        backup_id: Optional[str],
+        restore_path: Optional[str],
+    ) -> Dict[str, Any]:
+        """The rent call itself; :meth:`up` adds the optional wait on top."""
         if template_id is not None and dockerfile_content is not None:
             raise ValueError(
                 "Provide either template_id or dockerfile_content, not both"
@@ -602,6 +653,115 @@ class Lium:
             "ssh_cmd": pod.ssh_cmd,
             "executor_id": executor_id,
         }
+
+    def pod_by_name(self, name: str) -> Optional[PodInfo]:
+        """The pod called ``name`` — or whose huid or id is ``name`` — if it exists.
+
+        Names are chosen by the caller and huids are what ``lium ps`` prints, so
+        both are accepted; the first match wins when several pods share a name.
+
+        Args:
+            name: Pod name, huid, or id.
+
+        Returns:
+            The matching :class:`PodInfo`, or ``None``.
+        """
+        for pod in self.ps():
+            if name in (pod.name, pod.huid, pod.id):
+                return pod
+        return None
+
+    @contextmanager
+    def rent(
+        self,
+        *,
+        executor_id: str,
+        timeout: int = 600,
+        **up_kwargs: Any,
+    ) -> Generator[PodInfo, None, None]:
+        """Rent a pod for the duration of a ``with`` block and always remove it.
+
+        The pod is removed on the way out whether the block returned, raised, or
+        was interrupted, and also when the pod was created but never became
+        ready. A pod that outlives the code that needed it is the most common
+        way to pay for nothing.
+
+        Args:
+            executor_id: Target node ID.
+            timeout: Seconds to wait for the pod to become ready.
+            **up_kwargs: Any other keyword argument :meth:`up` accepts
+                (``name``, ``template_id``, ``ports`` ...).
+
+        Yields:
+            The ready :class:`PodInfo`.
+
+        Example:
+            >>> with lium.rent(executor_id=node.id, name="job") as pod:
+            ...     lium.exec(pod, command="nvidia-smi")
+        """
+        rent_args = dict(
+            name="Your Pod", template_id=None, dockerfile_content=None, volume_id=None,
+            ports=None, ssh_keys=None, ssh_name=None, enable_volume_encryption=True,
+            backup_id=None, restore_path=None,
+        )
+        unknown = set(up_kwargs) - set(rent_args)
+        if unknown:
+            raise TypeError(f"rent() got unexpected keyword arguments: {sorted(unknown)}")
+        rent_args.update(up_kwargs)
+
+        # The rent itself can raise after the server created the pod (a timed-out
+        # or failed second POST, a listing that failed while looking for it), so
+        # it runs inside the try; the ids snapshot lets the failure path remove
+        # only a pod that appeared during this call, never an older one that
+        # happens to carry the same name.
+        pods_before = self._pod_ids_or_none()
+        created: Optional[Dict[str, Any]] = None
+        try:
+            created = self._rent(executor_id=executor_id, **rent_args)
+            ready = self.wait_ready(created, timeout=timeout)
+            if ready is None:
+                raise LiumError(
+                    f"Pod {created.get('id')} did not become ready within {timeout}s"
+                )
+            yield ready
+        finally:
+            if created is not None:
+                self._remove_quietly(created)
+            elif pods_before is not None:
+                self._remove_strays(rent_args["name"], executor_id, exclude=pods_before)
+
+    def _pod_ids_or_none(self) -> Optional[frozenset]:
+        """Ids of the pods that exist now, or ``None`` when the listing failed."""
+        try:
+            return frozenset(pod.id for pod in self.ps())
+        except Exception:  # noqa: BLE001 - a listing failure must not fail the rent
+            return None
+
+    def _remove_strays(self, name: str, executor_id: str, *, exclude: frozenset) -> None:
+        """Remove pods called ``name`` on ``executor_id`` that were not there before the rent."""
+        try:
+            pods = self.ps()
+        except Exception:  # noqa: BLE001 - cleanup must not mask the rent's error
+            return
+        for pod in pods:
+            if pod.id in exclude or pod.name != name:
+                continue
+            if pod.executor is not None and pod.executor.id and pod.executor.id != executor_id:
+                continue
+            self._remove_quietly(pod)
+
+    def _remove_quietly(self, pod: Union[Dict[str, Any], PodInfo]) -> None:
+        """Best-effort removal for cleanup paths; a failure here must not mask the real error."""
+        pod_id = pod.id if isinstance(pod, PodInfo) else pod.get("id")
+        if not pod_id:
+            return
+        try:
+            self._request("DELETE", f"/pods/{pod_id}")
+        except Exception as exc:  # noqa: BLE001 - cleanup must not raise
+            warnings.warn(
+                f"lium: could not remove pod {pod_id} ({exc}); remove it with 'lium rm'",
+                stacklevel=3,
+            )
 
     def pod(
         self,
@@ -1094,6 +1254,9 @@ class Lium:
         *,
         command: str,
         env: Optional[Dict[str, str]] = None,
+        timeout: Optional[float] = None,
+        detach: bool = False,
+        log_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute a shell command on a pod over SSH.
 
@@ -1101,10 +1264,26 @@ class Lium:
             pod: Pod to target.
             command: Shell command to run remotely.
             env: Optional environment variables exported before the command runs.
+            timeout: Seconds to wait for the command to finish. When it runs
+                out the channel is closed and :class:`TimeoutError` is raised;
+                the remote process may keep running.
+            detach: Start the command in the background on the pod and return
+                at once. The command runs under ``nohup setsid`` with stdin
+                closed and stdout/stderr to ``log_path``, so it survives the
+                SSH session ending — the shape every user otherwise rediscovers
+                by hand.
+            log_path: Log file for ``detach`` (default
+                ``/workspace/logs/exec-<UTC timestamp>.log``).
 
         Returns:
-            Dict containing stdout, stderr, exit_code, and success flag.
+            Dict containing stdout, stderr, exit_code, and success flag; with
+            ``detach`` a dict with ``pid``, ``log_path`` and ``command``.
         """
+        if log_path is not None and not detach:
+            raise ValueError("log_path only applies with detach=True")
+        if detach:
+            return self._exec_detached(pod, command=command, env=env, log_path=log_path, timeout=timeout)
+
         command = self._prep_command(command, env)
 
         with self.ssh_connection(pod) as client:
@@ -1112,13 +1291,123 @@ class Lium:
             # Send EOF: a remote command that reads stdin waits forever otherwise,
             # and this call has no stdin to give it.
             stdin.close()
-            exit_code = stdout.channel.recv_exit_status()
+            channel = stdout.channel
+            if timeout is not None:
+                deadline = time.monotonic() + timeout
+                while not channel.exit_status_ready():
+                    if time.monotonic() >= deadline:
+                        channel.close()
+                        raise TimeoutError(
+                            f"Command did not finish within {timeout}s on pod {pod.name or pod.huid}: {command}"
+                        )
+                    time.sleep(0.1)
+            exit_code = channel.recv_exit_status()
             return {
                 "stdout": stdout.read().decode("utf-8", errors="replace"),
                 "stderr": stderr.read().decode("utf-8", errors="replace"),
                 "exit_code": exit_code,
                 "success": exit_code == 0
             }
+
+    @staticmethod
+    def default_detach_log_path() -> str:
+        """``/workspace/logs/exec-<UTC stamp>-<6 hex>.log``; the tail keeps two
+        jobs started in the same second from sharing (and truncating) one file."""
+        return detach.default_detach_log_path(detach.detach_token())
+
+    # The launcher line has one home, lium.sdk.detach, shared with `lium exec
+    # --detach`; this is the SDK's public name for it.
+    build_detached_command = staticmethod(detach.build_detached_command)
+
+    def _exec_detached(
+        self,
+        pod: PodInfo,
+        *,
+        command: str,
+        env: Optional[Dict[str, str]],
+        log_path: Optional[str],
+        timeout: Optional[float],
+    ) -> Dict[str, Any]:
+        log_path = log_path or self.default_detach_log_path()
+        launcher = self.build_detached_command(self._prep_command(command, env), log_path)
+        result = self.exec(pod, command=launcher, timeout=timeout or 60)
+        pid = self._parse_pid(result.get("stdout", ""))
+        if pid is None:
+            raise LiumError(
+                f"Could not start detached command on pod {pod.name or pod.huid}: "
+                f"{result.get('stderr', '').strip() or 'launcher printed no PID'}"
+            )
+        return {"pid": pid, "log_path": log_path, "command": command}
+
+    @staticmethod
+    def _parse_pid(stdout: str) -> Optional[int]:
+        for line in reversed(stdout.strip().splitlines()):
+            line = line.strip()
+            if line.isdigit():
+                return int(line)
+        return None
+
+    GPU_QUERY_FIELDS = (
+        "index", "name", "utilization.gpu", "memory.used", "memory.total",
+        "temperature.gpu", "power.draw",
+    )
+    GPU_QUERY_COMMAND = (
+        "nvidia-smi --query-gpu=" + ",".join(GPU_QUERY_FIELDS) + " --format=csv,noheader,nounits"
+    )
+
+    @staticmethod
+    def parse_gpu_stats(csv_text: str) -> List[GpuStats]:
+        """Parse ``nvidia-smi --query-gpu=... --format=csv,noheader,nounits`` output.
+
+        ``[N/A]`` and ``[Not Supported]`` become ``None`` rather than failing
+        the whole reading; a GPU whose power sensor is missing still has a
+        utilisation figure worth showing.
+        """
+
+        def number(value: str) -> Optional[float]:
+            value = value.strip()
+            if not value or value.startswith("["):
+                return None
+            try:
+                return float(value)
+            except ValueError:
+                return None
+
+        stats: List[GpuStats] = []
+        for raw in csv_text.strip().splitlines():
+            parts = [p.strip() for p in raw.split(",")]
+            if len(parts) < 7 or not parts[0].isdigit():
+                continue
+            # The name may itself contain a comma; re-join the middle.
+            name = ", ".join(parts[1:-5])
+            util, mem_used, mem_total, temp, power = parts[-5:]
+            stats.append(GpuStats(
+                index=int(parts[0]),
+                name=name,
+                utilization_pct=number(util),
+                memory_used_mib=number(mem_used),
+                memory_total_mib=number(mem_total),
+                temperature_c=number(temp),
+                power_draw_w=number(power),
+            ))
+        return stats
+
+    def gpu_stats(self, pod: PodInfo, *, timeout: float = 30) -> List[GpuStats]:
+        """Per-GPU utilisation, memory, temperature and power on a pod, via ``nvidia-smi``.
+
+        Raises:
+            LiumError: when ``nvidia-smi`` failed or printed nothing usable.
+        """
+        result = self.exec(pod, command=self.GPU_QUERY_COMMAND, timeout=timeout)
+        if not result["success"]:
+            raise LiumError(
+                f"nvidia-smi failed on pod {pod.name or pod.huid} "
+                f"(exit {result['exit_code']}): {result['stderr'].strip() or result['stdout'].strip()}"
+            )
+        stats = self.parse_gpu_stats(result["stdout"])
+        if not stats:
+            raise LiumError(f"nvidia-smi on pod {pod.name or pod.huid} reported no GPUs")
+        return stats
 
     def stream_exec(
         self,
