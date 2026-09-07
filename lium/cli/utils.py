@@ -434,7 +434,9 @@ def _classify_sdk_error(error: LiumError) -> tuple[str, int]:
     if isinstance(error, LiumPermissionError):
         return "permission_denied", EXIT_PERMISSION_DENIED
     if isinstance(error, LiumAuthError):
-        return "invalid_api_key", EXIT_CONFIGURATION_ERROR
+        # Exit 3, as before: a 401 is the API refusing the call, and callers
+        # (the live e2e suite among them) pin that number.
+        return "invalid_api_key", EXIT_API_ERROR
     if isinstance(error, LiumNotFoundError):
         return "not_found", EXIT_API_ERROR
     if isinstance(error, LiumRateLimitError):

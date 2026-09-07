@@ -135,7 +135,7 @@ def test_output_env_with_another_value_keeps_text(monkeypatch):
 # --- classification of SDK errors ---------------------------------------------------
 
 @pytest.mark.parametrize("error, code, exit_code", [
-    (LiumAuthError("Invalid API key"), "invalid_api_key", EXIT_CONFIGURATION_ERROR),
+    (LiumAuthError("Invalid API key"), "invalid_api_key", EXIT_API_ERROR),
     (LiumPermissionError("User is not verified"), "permission_denied", EXIT_PERMISSION_DENIED),
     (LiumInsufficientBalanceError("Insufficient balance", required=4.0, available=1.0),
      "insufficient_balance", EXIT_PERMISSION_DENIED),
@@ -175,6 +175,58 @@ def test_any_other_403_stays_a_plain_permission_error():
     error = permission_error("User is not verified")
 
     assert type(error) is LiumPermissionError
+
+
+def test_the_structured_error_code_decides_over_the_message_text():
+    """lium-platform#210's ``error.code`` is the contract; the wording is not."""
+    from lium.sdk.client import permission_error
+
+    by_code = permission_error("Not enough funds for this node. Your balance is $0.12.", "insufficient_balance")
+    assert isinstance(by_code, LiumInsufficientBalanceError)
+    assert (by_code.required, by_code.available) == (None, 0.12)
+
+    other_code = permission_error("Insufficient balance verification pending", "account_not_verified")
+    assert type(other_code) is LiumPermissionError
+
+
+def test_a_structured_403_response_is_classified_by_its_code(monkeypatch):
+    """The platform's structured body: ``error.code`` is read, the message keeps the amounts."""
+    from types import SimpleNamespace
+
+    from lium.sdk import Config, Lium
+
+    body = {
+        "success": False,
+        "error": {"code": "insufficient_balance", "message": "Insufficient balance. This node costs $2.00/hour, "
+                  "so renting it requires at least $0.50 (15 minutes of runtime). Your balance is $0.12.",
+                  "hint": "Top up", "request_id": "req-1"},
+        "message": "Insufficient balance. This node costs $2.00/hour, so renting it requires at least $0.50 "
+                   "(15 minutes of runtime). Your balance is $0.12.",
+        "status_code": 403,
+    }
+    response = SimpleNamespace(ok=False, status_code=403, text=json.dumps(body), json=lambda: body)
+    monkeypatch.setattr(utils_client_module.requests, "request", lambda *a, **k: response)
+
+    with pytest.raises(LiumInsufficientBalanceError) as caught:
+        Lium(Config(api_key="k"))._request("GET", "/pods")
+
+    assert (caught.value.required, caught.value.available) == (0.5, 0.12)
+
+
+def test_a_response_without_a_structured_code_falls_back_to_the_text(monkeypatch):
+    from types import SimpleNamespace
+
+    from lium.sdk import Config, Lium
+
+    body = {"detail": "User is not verified", "error": "Forbidden"}
+    response = SimpleNamespace(ok=False, status_code=403, text=json.dumps(body), json=lambda: body)
+    monkeypatch.setattr(utils_client_module.requests, "request", lambda *a, **k: response)
+
+    with pytest.raises(LiumPermissionError) as caught:
+        Lium(Config(api_key="k"))._request("GET", "/pods")
+
+    assert type(caught.value) is LiumPermissionError
+    assert "User is not verified" in str(caught.value)
 
 
 def test_a_403_response_is_classified_through_request(monkeypatch):
