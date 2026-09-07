@@ -84,14 +84,18 @@ def up_command(
     Create a new GPU pod on a node.
     \b
     NODE_ID: Node UUID, HUID, or index from last 'lium ls'.
-    If not provided, uses filters to auto-select best node.
+    If not provided, the filters pick the node and the pick is printed before renting.
+    With --gpu the backend chooses: the cheapest $/GPU·h node matching the filters
+    (one GPU unless -c) with ≥ 100 Mbps ingress, rented in the same call; a pick taken
+    meanwhile falls through to the next node at or below the confirmed price. Without
+    --gpu (or on an older backend) the cheapest ★ optimal node of 'lium ls' is rented.
     \b
     Examples:
       lium up cosmic-hawk-f2                # Create pod on specific node
       lium up 1                             # Create pod on node #1 from last ls
-      lium up --gpu H200                    # Auto-select best H200 node
-      lium up --gpu A6000 -c 2              # Auto-select best 2×A6000 node
-      lium up --country US                  # Auto-select best node in US
+      lium up --gpu H200                    # Auto-select cheapest optimal H200 node
+      lium up --gpu A6000 -c 2              # Auto-select cheapest optimal 2×A6000 node
+      lium up --country US                  # Auto-select cheapest optimal node in US
       lium up --gpu H200 --country FR       # Combine multiple filters
       lium up --ports 5                     # Auto-select with minimum 5 ports
       lium up 1 --name my-pod               # Create with custom name
@@ -212,7 +216,9 @@ def up_command(
             "gpu": gpu,
             "count": count,
             "country": country,
-            "ports": ports
+            "ports": ports,
+            "template_id": template_id,
+            "dockerfile_content": dockerfile_content,
         })
     )
 
@@ -220,6 +226,20 @@ def up_command(
         raise CliFailure("node_selection_failed", result.error, EXIT_GENERAL_ERROR)
 
     executor = result.data["executor"]
+    # What the rental bills: the server's figure when it picked (a split of a larger node
+    # costs price_per_gpu × count, not the node's total), else the node's total $/h.
+    price_per_hour = result.data.get("price_per_hour") or executor.price_per_hour
+    spec = result.data.get("spec")
+    if result.data.get("auto_selected"):
+        # Name the pick and its total $/h before anything is billed: with -y the
+        # confirmation below is skipped and the price would first appear in `ps`.
+        country = (executor.location or {}).get("country") or (executor.location or {}).get("country_code")
+        ui.info(
+            f"Selected {ui.styled(executor.huid, 'id')} "
+            f"({executor.gpu_count}×{executor.gpu_type}{', ' + country if country else ''}) "
+            f"at ${price_per_hour:.2f}/h — cheapest of {result.data['candidates']} "
+            f"{'matching' if spec else 'optimal'} node(s)"
+        )
 
     def _show_estimate(est_secs, dl_speed, img_gb, is_slow, warning_msg):
         est_min, est_sec = divmod(est_secs, 60)
@@ -267,7 +287,8 @@ def up_command(
         action = ResolveTemplateAction()
         result = action.execute({
             "lium": lium,
-            "template_id": template_id,
+            # the server's dry run already named the node's recommended template
+            "template_id": template_id or result.data.get("template_id"),
             "executor": executor
         })
         if not result.ok:
@@ -293,7 +314,7 @@ def up_command(
         confirm_msg = (
             f"Acquire pod on {executor.huid} "
             f"({executor.gpu_count}×{executor.gpu_type}) "
-            f"at ${executor.price_per_hour:.2f}/h?"
+            f"at ${price_per_hour:.2f}/h?"
         )
         if restore_backup_id:
             confirm_msg += f" Restore backup {restore_backup_id} to {restore_path} after startup."
@@ -318,6 +339,7 @@ def up_command(
         lambda: action.execute({
             "lium": lium,
             "executor": executor,
+            "spec": spec,
             "template": template,
             "dockerfile_content": dockerfile_content,
             "name": name,
@@ -332,6 +354,16 @@ def up_command(
 
     pod_id = result.data["pod_id"]
     pod_name = result.data["pod_name"]
+    rented = result.data.get("executor") or executor
+    if rented.id != executor.id:
+        # The confirmed node was taken between the dry run and the rent; the server took the
+        # next candidate at or below the confirmed $/GPU·h.
+        ui.info(
+            f"{ui.styled(executor.huid, 'id')} was taken meanwhile; rented "
+            f"{ui.styled(rented.huid, 'id')} ({rented.gpu_count}×{rented.gpu_type}) "
+            f"at ${result.data['price_per_hour']:.2f}/h instead"
+        )
+    executor = rented
 
     # The pod is rented and already billing from here on. Every failure below
     # names it before propagating, or the caller cannot clean up what it pays for.

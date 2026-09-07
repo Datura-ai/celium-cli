@@ -3,7 +3,9 @@ import time
 
 from lium.cli.actions import ActionResult
 from lium.sdk import ExecutorInfo, Template, PodInfo, Lium
+from lium.sdk.client import RENT_BY_SPEC
 from lium.cli.utils import (
+    MIN_DOWNLOAD_MBPS,
     calculate_pareto_frontier,
     resolve_executor_indices,
     get_pytorch_template_id,
@@ -39,6 +41,35 @@ class ResolveExecutorAction:
                     data={},
                     error=f"Node {executor.huid} has insufficient ports (available: {available}, required: {ports})"
                 )
+        elif gpu and lium.supports(RENT_BY_SPEC):
+            # The backend picks: one dry-run call instead of listing the fleet here. The same
+            # spec, capped at the price shown, rents in RentPodAction (DAH-3047).
+            spec = {
+                "gpu_type": gpu,
+                "gpu_count": count or 1,
+                "country": country,
+                "min_ports": ports,
+                # the floor the Pareto path below has always applied
+                "min_download_mbps": MIN_DOWNLOAD_MBPS,
+            }
+            spec = {key: value for key, value in spec.items() if value is not None}
+            pick = lium.rent(
+                **spec,
+                template_id=ctx.get("template_id"),
+                dockerfile_content=ctx.get("dockerfile_content"),
+                dry_run=True,
+            )
+            return ActionResult(
+                ok=True,
+                data={
+                    "executor": pick.executor,
+                    "auto_selected": True,
+                    "candidates": pick.candidates,
+                    "spec": spec,
+                    "price_per_hour": pick.price_per_hour,
+                    "template_id": pick.template_id,
+                },
+            )
         else:
             executors = lium.ls(gpu_type=gpu)
 
@@ -73,7 +104,14 @@ class ResolveExecutorAction:
 
             pareto_flags = calculate_pareto_frontier(executors)
             pareto_executors = [e for e, is_pareto in zip(executors, pareto_flags) if is_pareto]
-            executor = pareto_executors[0] if pareto_executors else executors[0]
+            candidates = pareto_executors or executors
+            # Cheapest $/GPU·h of the optimal set; min() keeps the first of a
+            # tie, so equal prices fall back to the listing order as before.
+            executor = min(candidates, key=lambda e: e.price_per_gpu or float("inf"))
+            return ActionResult(
+                ok=True,
+                data={"executor": executor, "auto_selected": True, "candidates": len(candidates)},
+            )
 
         return ActionResult(ok=True, data={"executor": executor})
 
@@ -167,8 +205,7 @@ class RentPodAction:
         if not name:
             name = executor.huid
 
-        pod_info = lium.up(
-            executor_id=executor.id,
+        rental = dict(
             name=name,
             template_id=template.id if template else None,
             dockerfile_content=dockerfile_content,
@@ -179,9 +216,27 @@ class RentPodAction:
             backup_id=backup_id,
             restore_path=restore_path,
         )
+        spec: Optional[Dict] = ctx.get("spec")
+        price_per_hour = getattr(executor, "price_per_hour", None)
+        if spec:
+            # The server re-selects at rent time, so a pick taken since the dry run falls
+            # through to the next candidate — never one dearer than the price confirmed.
+            result = lium.rent(**spec, max_price_per_gpu_hour=executor.price_per_gpu, **rental)
+            pod_info, executor, price_per_hour = result.pod, result.executor, result.price_per_hour
+        else:
+            pod_info = lium.up(executor_id=executor.id, **rental)
 
         pod_id = pod_info.get('id') or pod_info.get('name', '')
-        return ActionResult(ok=True, data={"pod_info": pod_info, "pod_id": pod_id, "pod_name": name})
+        return ActionResult(
+            ok=True,
+            data={
+                "pod_info": pod_info,
+                "pod_id": pod_id,
+                "pod_name": name,
+                "executor": executor,
+                "price_per_hour": price_per_hour,
+            },
+        )
 
 
 class WaitReadyAction:

@@ -96,9 +96,10 @@ Direct SDK usage follows the same pattern:
 from lium.sdk import Lium
 
 lium = Lium()
-node = lium.ls(gpu_type="A100")[0]
-pod = lium.up(executor_id=node.id, name="demo")
-ready = lium.wait_ready(pod, timeout=600)
+# the cheapest available 1×A100 with at least 32 CPUs, chosen and rented in one call
+rented = lium.rent(gpu_type="A100", min_cpus=32, name="demo")
+print(f"{rented.executor.huid} at ${rented.price_per_hour:.2f}/h")
+ready = lium.wait_ready(rented.pod, timeout=600)
 print(lium.exec(ready, command="nvidia-smi")["stdout"])
 lium.down(ready)
 ```
