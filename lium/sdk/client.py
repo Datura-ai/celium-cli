@@ -639,6 +639,8 @@ class Lium:
                 try:
                     executor.gpu_count = int(d.get("gpu_count") or executor.gpu_count)
                 except (TypeError, ValueError):
+                    # A malformed pod.gpu_count must not break `lium ps`: keep the
+                    # executor's own count (the pre-DAH-3073 behaviour) and move on.
                     pass
                 if pod_price is not None:
                     executor.price_per_hour = float(pod_price)
