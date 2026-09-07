@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from typing import Optional, Tuple
 import click
 
@@ -384,6 +385,19 @@ def up_command(
         deadline = budget_deadline(pod, budget_usd, fallback_price=executor.price_per_hour)
         if deadline is None:
             ui.warning(f"{pod_label} is running but the --budget cap could not be computed (no price or created_at)")
+        elif deadline <= datetime.now(timezone.utc):
+            # The image pull outlasted the budget. A past deadline is a 400 from
+            # the API and the pod would run uncapped, so the cap is applied the
+            # only way left: the pod goes now, and the caller hears why.
+            ui.warning(f"{pod_label} spent its ${budget_usd:.2f} budget while starting; removing it")
+            lium.down(pod)
+            raise CliFailure(
+                "budget_exhausted",
+                f"Pod {pod.huid} reached the ${budget_usd:.2f} budget before it was usable "
+                f"(billed since {pod.created_at}); it has been removed. Pick a larger --budget or a "
+                "cheaper node ('lium ls --sort price_total'); startup time bills at the pod's hourly price",
+                EXIT_GENERAL_ERROR,
+            )
         elif termination_time is None or deadline < termination_time:
             termination_time = deadline
             ui.dim(f"Spend cap ${budget_usd:.2f}: removal scheduled for {deadline.strftime('%Y-%m-%d %H:%M UTC')}")

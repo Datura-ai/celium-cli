@@ -162,7 +162,7 @@ def build_pods_table(pods: List[PodInfo], short: bool = False) -> tuple[Table | 
     table.add_column("Config", justify="left", width=12, no_wrap=True)
     table.add_column("Template", justify="left", ratio=2, min_width=12, overflow="ellipsis")
     table.add_column("$/h", justify="right", width=6, no_wrap=True)
-    table.add_column("Spent", justify="right", width=14, no_wrap=True)
+    table.add_column("Spent", justify="right", width=18, no_wrap=True)  # "$200.00/$480.00" is 15
     table.add_column("Uptime", justify="right", width=7, no_wrap=True)
     if not short:
         table.add_column("Ports", justify="left", ratio=3, min_width=15, overflow="fold")

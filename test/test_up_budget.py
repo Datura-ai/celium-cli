@@ -16,7 +16,7 @@ from lium.cli.actions import ActionResult
 from lium.cli.ps import display as ps_display
 from lium.cli.up import command as up_command
 from lium.cli.up.budget import MIN_BUDGET_MINUTES, budget_deadline, budget_hours
-from lium.cli.utils import EXIT_CONFIGURATION_ERROR
+from lium.cli.utils import EXIT_CONFIGURATION_ERROR, EXIT_GENERAL_ERROR
 from lium.sdk import Config, ExecutorInfo, Lium, PodInfo
 from lium.sdk.utils import parse_api_timestamp, spend_cap_deadline
 
@@ -136,10 +136,18 @@ def test_ps_table_shows_spent_against_the_cap():
     assert "/" not in without
 
 
+def test_ps_spent_column_is_wide_enough_for_a_three_digit_cap():
+    """"$200.00/$480.00" is 15 characters; a narrower fixed column cropped it to "$200.00/$480.…"."""
+    table, _ = ps_display.build_pods_table([_pod(removal="2026-09-05T17:00:00Z")])
+
+    spent = next(column for column in table.columns if column.header == "Spent")
+    assert spent.width >= len("$200.00/$480.00")
+
+
 # --- lium up --budget -----------------------------------------------------------------------
 
 
-def _run_up(monkeypatch, args, *, price=PRICE, pod=None):
+def _run_up(monkeypatch, args, *, price=PRICE, pod=None, removed=None):
     executor = SimpleNamespace(
         id="exec-1", huid="brave-fox-3a", gpu_count=1, gpu_type="H100",
         price_per_hour=price, available_port_count=10, download_speed=1000,
@@ -148,6 +156,10 @@ def _run_up(monkeypatch, args, *, price=PRICE, pod=None):
 
     class _Lium:
         def get_deployment_estimate(self, *a, **k):
+            return {}
+
+        def down(self, pod):
+            (removed if removed is not None else []).append(pod.id)
             return {}
 
     class _Resolve:
@@ -183,20 +195,41 @@ def _run_up(monkeypatch, args, *, price=PRICE, pod=None):
     return result, scheduled
 
 
+def _fresh_pod(minutes_ago: int = 3) -> tuple[PodInfo, datetime]:
+    """A pod created a few minutes ago, so a budget deadline lies ahead of now."""
+    created = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(minutes=minutes_ago)
+    return _pod(created_at=created.strftime("%Y-%m-%dT%H:%M:%SZ")), created
+
+
 def test_up_budget_schedules_removal_when_the_budget_runs_out(monkeypatch):
-    result, scheduled = _run_up(monkeypatch, ["--budget", "12.50"])
+    pod, created = _fresh_pod()
+    result, scheduled = _run_up(monkeypatch, ["--budget", "12.50"], pod=pod)
 
     assert result.exit_code == 0, result.output
-    assert scheduled["at"] == CREATED + timedelta(hours=5)
+    assert scheduled["at"] == created + timedelta(hours=5)
     assert "Budget $12.50 at $2.50/h ≈ 5.0h" in result.output
     assert "Spend cap $12.50" in result.output
 
 
 def test_up_budget_and_ttl_keep_the_earlier_deadline(monkeypatch):
-    result, scheduled = _run_up(monkeypatch, ["--budget", "12.50", "--ttl", "1h"])
+    pod, created = _fresh_pod()
+    result, scheduled = _run_up(monkeypatch, ["--budget", "12.50", "--ttl", "10h"], pod=pod)
     assert result.exit_code == 0, result.output
-    # --ttl 1h from now is far later than the pod's 2026-09-05 creation + 5 h: the budget wins.
-    assert scheduled["at"] == CREATED + timedelta(hours=5)
+    # --ttl 10h from now is later than creation + 5 h: the budget wins.
+    assert scheduled["at"] == created + timedelta(hours=5)
+
+
+def test_up_budget_spent_during_startup_removes_the_pod_instead_of_scheduling_the_past(monkeypatch):
+    """A deadline already behind us is a 400 from the API and an uncapped pod: the
+    cap is honoured by removing the pod now, and the exit code says so."""
+    removed: list = []
+    # created 2026-09-05 (the fixture default): $12.50 at $2.50/h ran out long ago
+    result, scheduled = _run_up(monkeypatch, ["--budget", "12.50"], removed=removed)
+
+    assert result.exit_code == EXIT_GENERAL_ERROR, result.output
+    assert "at" not in scheduled, "a past termination time must never be sent"
+    assert removed == ["pod-1"]
+    assert "budget" in result.output.lower() and "removed" in result.output.lower()
 
     result, scheduled = _run_up(monkeypatch, ["--budget", "250000", "--ttl", "1h"])
     assert result.exit_code == 0, result.output
