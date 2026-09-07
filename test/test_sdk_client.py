@@ -332,11 +332,11 @@ def test_ps_uses_the_pod_gpu_count_for_a_split_rental(monkeypatch):
     payload = [{
         "id": "d7b3e3b2-0f7c-4f7e-9c3c-0b3f1a2e9a01", "pod_name": "sx-ctl", "status": "RUNNING",
         "gpu_count": "1", "gpu_name": "NVIDIA GeForce RTX 3090", "price": 0.18,
-        "ssh_connect_cmd": "ssh root@203.0.113.7 -p 19404", "ports_mapping": {"22": 19404},
+        "ssh_connect_cmd": "ssh root@pod.invalid -p 2222", "ports_mapping": {"22": 2222},
         "created_at": "2026-09-07T01:51:40", "updated_at": "2026-09-07T01:52:00", "template": {"name": "Pytorch"},
         "executor": {
             "id": "e0a7c1e2-6c2e-4d3d-9d8b-0f1a2b3c4d5e", "machine_name": "NVIDIA GeForce RTX 3090",
-            "gpu_count": 3, "price_per_gpu": None, "executor_ip_address": "203.0.113.7",
+            "gpu_count": 3, "price_per_gpu": None, "executor_ip_address": "pod.invalid",
             "specs": {"gpu": {"count": 3, "details": [{"name": "NVIDIA GeForce RTX 3090", "capacity": 24576}] * 3}},
             "location": {"country": "Germany", "country_code": "DE"},
         },
