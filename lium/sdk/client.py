@@ -7,6 +7,7 @@ import shlex
 import socket
 import subprocess
 import time
+import uuid
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -128,8 +129,31 @@ class Lium:
             "X-Lium-Client-Version": _get_client_version(),
         }
 
-    @with_retry()
     def _request(
+        self,
+        method: str,
+        endpoint: str,
+        base_url: Optional[str] = None,
+        headers: Optional[Dict[str, str]] = None,
+        retry: bool = True,
+        **kwargs,
+    ) -> requests.Response:
+        """Make API request with error handling.
+
+        Transient failures (429, 5xx, network errors) are retried unless
+        ``retry`` is False. A call that creates something must pass ``False``:
+        a timed-out POST may well have succeeded server-side, and repeating it
+        blindly creates a duplicate.
+        """
+        if retry:
+            return self._request_with_retry(method, endpoint, base_url=base_url, headers=headers, **kwargs)
+        return self._request_once(method, endpoint, base_url=base_url, headers=headers, **kwargs)
+
+    @with_retry()
+    def _request_with_retry(self, method: str, endpoint: str, **kwargs) -> requests.Response:
+        return self._request_once(method, endpoint, **kwargs)
+
+    def _request_once(
         self,
         method: str,
         endpoint: str,
@@ -137,7 +161,6 @@ class Lium:
         headers: Optional[Dict[str, str]] = None,
         **kwargs,
     ) -> requests.Response:
-        """Make API request with error handling."""
         url = f"{base_url or self.config.base_url}/{endpoint.lstrip('/')}"
         request_headers = headers or self.headers
         resp = requests.request(method, url, headers=request_headers, timeout=30, **kwargs)
@@ -451,28 +474,134 @@ class Lium:
             "restore_path": restore_path,
         }
 
-        response = self._request("POST", f"/executors/{executor_info.id}/rent", json=payload).json()
+        # The rent call is not idempotent, so it is never retried blindly. A
+        # timeout or a 5xx may have created the pod anyway; look for it before
+        # sending the request a second time. The Idempotency-Key lets a server
+        # that honours it collapse the two requests; one that does not ignores it.
+        rent_endpoint = f"/executors/{executor_info.id}/rent"
+        rent_headers = {**self.headers, "Idempotency-Key": str(uuid.uuid4())}
+        # Pods that exist before the rent can never be the one this call created.
+        # With GPU splitting a node hosts several pods, and the default pod name
+        # is the node huid, so a stale same-name pod on the same node would
+        # otherwise be handed back for a rent the server never received.
+        known_pod_ids = self._pod_ids_before_rent()
+        try:
+            response = self._request(
+                "POST", rent_endpoint, json=payload, headers=rent_headers, retry=False
+            ).json()
+        except (requests.RequestException, LiumServerError, LiumRateLimitError):
+            # "Could not look" (the network that failed the POST fails ps() the
+            # same way) must fall through to the second POST, not escape here.
+            existing = self._find_pod_by_name(
+                name, executor_info.id, attempts=3, interval=3, exclude=known_pod_ids
+            )
+            if existing:
+                return existing
+            time.sleep(1)
+            response = self._request(
+                "POST", rent_endpoint, json=payload, headers=rent_headers, retry=False
+            ).json()
 
         # API should return pod info
         if response and "id" in response:
             return response
 
+        # The rent route answers {"success": true, "pod_id": ...}: the id is
+        # exact, so the pod is read back by it rather than guessed by name. If
+        # the listing cannot be read, the id alone is still the truth: the pod
+        # exists, and the caller gets its id rather than an error.
+        pod_id = (response or {}).get("pod_id")
+        if pod_id:
+            existing = self._find_pod_by_id(str(pod_id), executor_info.id, attempts=3, interval=2)
+            return existing or {
+                "id": str(pod_id),
+                "name": name,
+                "status": "PENDING",
+                "huid": generate_huid(str(pod_id)),
+                "ssh_cmd": None,
+                "executor_id": executor_info.id,
+            }
+
         # Fallback: find pod by name after creation
-        if name:
-            for _ in range(2):
-                time.sleep(3)
-                for pod in self.ps():
-                    if pod.name == name:
-                        return {
-                            "id": pod.id,
-                            "name": pod.name,
-                            "status": pod.status,
-                            "huid": pod.huid,
-                            "ssh_cmd": pod.ssh_cmd,
-                            "executor_id": executor_info.id
-                        }
+        existing = self._find_pod_by_name(
+            name, executor_info.id, attempts=2, interval=3, exclude=known_pod_ids
+        )
+        if existing:
+            return existing
 
         raise LiumError(f"Failed to create pod{' ' + name if name else ''}")
+
+    def _list_pods_or_none(self) -> Optional[List[PodInfo]]:
+        """``ps()`` for the rent lookups: ``None`` when the listing itself failed,
+        so a network that is down for the POST is not mistaken for "no pod"."""
+        try:
+            return self.ps()
+        except (requests.RequestException, LiumError):
+            return None
+
+    def _find_pod_by_id(
+        self, pod_id: str, executor_id: str, *, attempts: int, interval: float
+    ) -> Optional[Dict[str, Any]]:
+        """The pod ``pod_id`` from ``ps``; the server already committed it, so the
+        listing is read at once and only re-read if the row is not there yet."""
+        for attempt in range(attempts):
+            if attempt:
+                time.sleep(interval)
+            for pod in self._list_pods_or_none() or []:
+                if pod.id == pod_id:
+                    return self._created_pod_record(pod, executor_id)
+        return None
+
+    def _pod_ids_before_rent(self) -> frozenset:
+        """Ids of the pods that exist right now, taken before a rent is sent.
+
+        A listing failure of any kind must not turn into a failed ``up``; an
+        empty snapshot only means the by-name lookup cannot rule out older pods.
+        """
+        try:
+            return frozenset(pod.id for pod in self.ps())
+        except Exception:  # noqa: BLE001 - best effort by design
+            return frozenset()
+
+    def _find_pod_by_name(
+        self,
+        name: Optional[str],
+        executor_id: str,
+        *,
+        attempts: int,
+        interval: float,
+        exclude: frozenset = frozenset(),
+    ) -> Optional[Dict[str, Any]]:
+        """A pod called ``name`` on ``executor_id`` if one shows up in ``ps``.
+
+        Used when the rent response did not say what it created. The executor
+        is matched when the listing includes one, so two pods sharing a generic
+        name on different nodes are not confused, and pods whose id is in
+        ``exclude`` (the ones that existed before the rent) are never returned.
+        """
+        if not name:
+            return None
+        for _ in range(attempts):
+            time.sleep(interval)
+            for pod in self._list_pods_or_none() or []:
+                if pod.id in exclude or pod.name != name:
+                    continue
+                if pod.executor is not None and pod.executor.id and pod.executor.id != executor_id:
+                    continue
+                return self._created_pod_record(pod, executor_id)
+        return None
+
+    @staticmethod
+    def _created_pod_record(pod: PodInfo, executor_id: str) -> Dict[str, Any]:
+        """The dict :meth:`up` returns for a pod read back from the listing."""
+        return {
+            "id": pod.id,
+            "name": pod.name,
+            "status": pod.status,
+            "huid": pod.huid,
+            "ssh_cmd": pod.ssh_cmd,
+            "executor_id": executor_id,
+        }
 
     def pod(
         self,
