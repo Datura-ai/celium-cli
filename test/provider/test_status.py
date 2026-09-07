@@ -19,8 +19,10 @@ class _Portal:
     ) -> None:
         self._me_body = me_body
         self._executors = executors
+        self.gets: list[tuple[str, dict | None]] = []
 
     def get(self, path: str, *, params=None, auth=True):
+        self.gets.append((path, params))
         if path == "/auth/me":
             if isinstance(self._me_body, BaseException):
                 raise self._me_body
@@ -90,6 +92,9 @@ def test_status_aggregates_portal_executors_and_metagraph(
     assert snapshot.provider_id == "m-99"
     assert snapshot.node_count == 2
     assert {e.id for e in snapshot.nodes} == {"exec-1", "exec-2"}
+    # The portal listing is global; ``status`` must scope it to this hotkey so
+    # ``node_count``/``nodes`` describe the caller's fleet, not everyone's.
+    assert ("/executors", {"miner_hotkey": fake_signer.ss58_address}) in portal.gets
     assert snapshot.registered_on_subnet is True
     weight_map = {row.validator_hotkey: row.weight for row in snapshot.validator_weights}
     assert weight_map == {"v1": 0.5, "v3": 0.25}
