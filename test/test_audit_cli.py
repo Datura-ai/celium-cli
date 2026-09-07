@@ -8,7 +8,6 @@ import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-import pytest
 from click.testing import CliRunner
 
 from lium.cli.audit import command as audit_module
