@@ -189,6 +189,7 @@ jobs:
     needs: [test, build-python, validate-binary-targets]
     if: always()
     runs-on: ubuntu-latest
+    permissions: {}   # aggregator only: reads job results, needs no token scopes (CodeQL actions/missing-workflow-permissions)
     steps:
     - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
       run: exit 1
