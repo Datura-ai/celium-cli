@@ -1209,11 +1209,25 @@ class Lium:
         finally:
             client.close()
 
+    @staticmethod
+    def _env_exports(env: Dict[str, str]) -> str:
+        """``export NAME=value`` statements for ``env``, shell-quoted so each value
+        reaches the pod byte-for-byte (spaces, quotes, ``$``, newlines)."""
+        return " && ".join(f"export {name}={shlex.quote(str(value))}" for name, value in env.items())
+
+    # Read the exports from stdin and evaluate them in the remote shell. Nothing
+    # here names a value, so the pod's argv never carries one.
+    _ENV_FROM_STDIN = 'eval "$(cat)"'
+
     def _prep_command(self, command: str, env: Optional[Dict[str, str]] = None) -> str:
-        """Prepare command with environment variables."""
+        """Prefix ``command`` with the exports spelled out inline.
+
+        Only :meth:`stream_exec` still uses this form: it requests a pty, which
+        echoes stdin back into the output and never delivers the client's EOF,
+        so the exports cannot travel the way :meth:`exec` sends them.
+        """
         if env:
-            env_str = " && ".join([f'export {k}="{v}"' for k, v in env.items()])
-            return f"{env_str} && {command}"
+            return f"{self._env_exports(env)} && {command}"
         return command
 
     def exec(
@@ -1229,14 +1243,19 @@ class Lium:
             pod: Pod to target.
             command: Shell command to run remotely.
             env: Optional environment variables exported before the command runs.
+                The values are sent over the session's stdin, not in the remote
+                command line, so ``ps`` on the pod never shows them.
 
         Returns:
             Dict containing stdout, stderr, exit_code, and success flag.
         """
-        command = self._prep_command(command, env)
+        if env:
+            command = f"{self._ENV_FROM_STDIN} && {command}"
 
         with self.ssh_connection(pod) as client:
             stdin, stdout, stderr = client.exec_command(command)
+            if env:
+                stdin.write(self._env_exports(env).encode("utf-8"))
             # Send EOF: a remote command that reads stdin waits forever otherwise,
             # and this call has no stdin to give it.
             stdin.close()
