@@ -1222,9 +1222,13 @@ class Lium:
     def _prep_command(self, command: str, env: Optional[Dict[str, str]] = None) -> str:
         """Prefix ``command`` with the exports spelled out inline.
 
-        Only :meth:`stream_exec` still uses this form: it requests a pty, which
-        echoes stdin back into the output and never delivers the client's EOF,
-        so the exports cannot travel the way :meth:`exec` sends them.
+        The values end up in the remote argv, so this form is for pty transports
+        only: :meth:`stream_exec` requests a pty, which echoes stdin back into the
+        output and never delivers the client's EOF, so the exports cannot travel
+        the way :meth:`exec` sends them. Anything that runs through
+        :meth:`exec` (a detached launcher, a background job) passes ``env=`` to
+        it instead — the launching shell exports over stdin and its children
+        inherit the environment without a value ever reaching ``ps``.
         """
         if env:
             return f"{self._env_exports(env)} && {command}"

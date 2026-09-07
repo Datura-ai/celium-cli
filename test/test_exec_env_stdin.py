@@ -115,6 +115,23 @@ def test_several_variables_all_arrive(ssh):
     assert result["stdout"] == "1|two words|x=y\n"
 
 
+def test_child_processes_inherit_the_value_without_it_in_any_argv(ssh):
+    # what a detached launcher (`nohup setsid sh -c '<cmd>'`) relies on: the
+    # launching shell exports over stdin, the child inherits the environment,
+    # and no process — parent or child — carries the value in its argv
+    result = _client().exec(
+        _POD,
+        command="sh -c 'printenv SECRET; ps -o args= -p $$ -p $PPID'",
+        env={"SECRET": "canary-7c21"},
+    )
+
+    assert result["success"], result
+    value, *argvs = result["stdout"].splitlines()
+    assert value == "canary-7c21"
+    assert argvs and all("canary-7c21" not in argv for argv in argvs)
+    assert "canary-7c21" not in ssh.commands[0]
+
+
 def test_no_env_leaves_the_command_and_stdin_alone(ssh):
     result = _client().exec(_POD, command="echo hi")
 
