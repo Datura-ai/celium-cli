@@ -720,7 +720,10 @@ class Lium:
             interconnect: ``"nvlink"`` — every GPU pair on NVLink (unreported counts as no).
             volume_id, ports, ssh_keys, ssh_name, enable_volume_encryption, backup_id,
                 restore_path: as in :meth:`up`.
-            dry_run: Choose and price only; nothing is rented and no SSH key is registered.
+            dry_run: Choose and price only; nothing is rented and no SSH key is registered
+                with the account. Against a rent-by-spec backend the request still carries
+                your SSH public key (``ssh_keys`` or the configured key: the server validates
+                a dry run as a rent); the client-side pick needs no key.
 
         Returns:
             :class:`RentResult` — the node, the hourly price, the pod (``None`` on a dry run),
@@ -769,6 +772,8 @@ class Lium:
         return self._rent_client_side(spec, rental, dry_run)
 
     def _rent_on_server(self, spec: Dict[str, Any], rental: Dict[str, Any], dry_run: bool) -> RentResult:
+        # The server's RentBySpecRequest requires user_public_key on a dry run too (it validates
+        # the request as a rent), so the key is needed either way; only the registration is skipped.
         ssh_material = rental["ssh_keys"] or self.config.ssh_public_keys
         if not ssh_material:
             raise ValueError("No SSH keys found")

@@ -8,12 +8,13 @@ test_up_auto_select.py is unchanged.
 
 from types import SimpleNamespace
 
+import pytest
 from click.testing import CliRunner
 
 from lium.cli.cli import cli
 from lium.cli.up import command as up_module
 from lium.cli.up.actions import RentPodAction, ResolveExecutorAction
-from lium.sdk import ExecutorInfo, RentResult
+from lium.sdk import ExecutorInfo, LiumAuthError, LiumError, RentResult
 
 
 def _executor(huid, price, gpu_count=1):
@@ -67,6 +68,34 @@ def test_resolve_dry_runs_the_spec_instead_of_listing():
     assert result.data["spec"] == {"gpu_type": "RTX4090", "gpu_count": 2, "country": "de", "min_ports": 5,
                                    "min_download_mbps": 100.0}
     assert lium.rents == [{**result.data["spec"], "template_id": None, "dockerfile_content": None, "dry_run": True}]
+
+
+def test_no_match_on_the_spec_path_is_a_selection_failure_not_an_api_error():
+    """The server's 409 (or the client-side "No node matches") ends like the Pareto path's empty
+    list: ActionResult(ok=False) → node_selection_failed, exit 1 — not lium_error, exit 3."""
+    lium = _SpecLium()
+
+    def no_match(**kwargs):
+        raise LiumError("API error 409: no_executor_matches_spec: gpu_count=8: none of the 3 node(s) satisfies it")
+
+    lium.rent = no_match
+
+    result = ResolveExecutorAction().execute({"lium": lium, "gpu": "RTX4090", "count": 8})
+
+    assert not result.ok
+    assert "no_executor_matches_spec" in result.error
+
+
+def test_other_api_errors_on_the_spec_path_keep_their_own_code():
+    lium = _SpecLium()
+
+    def unauthorised(**kwargs):
+        raise LiumAuthError("Invalid API key")
+
+    lium.rent = unauthorised
+
+    with pytest.raises(LiumAuthError):
+        ResolveExecutorAction().execute({"lium": lium, "gpu": "RTX4090"})
 
 
 def test_without_a_gpu_filter_the_client_side_pick_is_kept(monkeypatch):
