@@ -195,6 +195,7 @@ def test_node_list_all_and_miner_hotkey_are_exclusive(patched_build_client) -> N
     assert portal.gets == []
 
 
+
 def test_node_list_json(patched_build_client) -> None:
     portal = _Portal(get_body={"data": [{"id": "e-1"}], "total": 1})
     patched_build_client(portal)
