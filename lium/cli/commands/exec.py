@@ -117,10 +117,10 @@ def parse_environment_variables(env: Tuple[str, ...]) -> dict[str, str]:
                 EXIT_CONFIGURATION_ERROR,
             )
         key, value = env_var.split("=", 1)
-        if not ENV_NAME.match(key):
+        if not ENV_NAME.fullmatch(key):
             raise CliFailure(
                 "invalid_env",
-                f"Invalid env name '{key}' (letters, digits and underscores; not starting with a digit)",
+                f"Invalid env name {key!r} (letters, digits and underscores; not starting with a digit)",
                 EXIT_CONFIGURATION_ERROR,
             )
         env_dict[key] = value

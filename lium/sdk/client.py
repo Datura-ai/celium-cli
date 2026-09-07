@@ -53,7 +53,7 @@ from .utils import expand_gpu_shorthand, extract_gpu_type, generate_huid, with_r
 load_dotenv()
 
 # A POSIX shell identifier: what ``export`` accepts on the pod.
-ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")  # checked with fullmatch: `$` would let a trailing newline through
 
 # Public API key for the pay API (pay-tao-api-v2). Single source of truth so the
 # literal is not re-typed across every pay-API call site.
@@ -1233,7 +1233,7 @@ class Lium:
         """
         exports = []
         for name, value in env.items():
-            if not ENV_NAME.match(name):
+            if not ENV_NAME.fullmatch(name):
                 raise ValueError(
                     f"Invalid environment variable name {name!r}: use letters, digits and "
                     "underscores, not starting with a digit"

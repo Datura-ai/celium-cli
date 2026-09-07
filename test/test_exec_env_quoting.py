@@ -1,10 +1,11 @@
-"""Environment values reach the pod verbatim.
+"""Environment names are checked before anything is sent; exec_all failures name the pod.
 
-``exec(env={...})`` used to build ``export K="v"``: a token with ``$``, a
-password with a backtick or a JSON blob with ``"`` was interpreted by the
-remote shell before the command ran. Values are now shell-quoted, names are
-validated up front, and ``exec_all`` reports failures in the same shape as
-successes.
+The quoting itself is DAH-2984 (``Lium._env_exports``; ``exec()`` sends the
+block over stdin, ``stream_exec`` keeps it inline through ``_prep_command``).
+This module covers what DAH-2894 adds on top: ``_env_exports`` refuses a name
+``export`` would reject on the pod, the CLI refuses it before building the SDK
+client, the inline form still round-trips values through a real ``sh``, and
+``exec_all`` reports a failed pod in the same shape as a successful one.
 """
 
 import shlex
@@ -57,7 +58,7 @@ def test_no_env_leaves_the_command_alone():
     assert _client()._prep_command("ls", env={}) == "ls"
 
 
-@pytest.mark.parametrize("name", ["1ABC", "A-B", "A B", "A=B", "", "$X"])
+@pytest.mark.parametrize("name", ["1ABC", "A-B", "A B", "A=B", "", "$X", "FOO\n"])
 def test_invalid_names_are_rejected_before_anything_is_sent(name):
     with pytest.raises(ValueError, match="Invalid environment variable name"):
         _client()._prep_command("ls", env={name: "x"})
