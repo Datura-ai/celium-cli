@@ -632,10 +632,17 @@ class Lium:
             # The /pods endpoint returns the authoritative total $/h as pod.price; the
             # nested executor.price_per_gpu is not populated in this payload. Anchor
             # executor.price_per_hour on pod.price and derive per-GPU from it.
+            # The nested executor also describes the WHOLE host: for a GPU-split rental
+            # (1 GPU of a 3×3090 node) pod.gpu_count is the renter's count, so use it.
             pod_price = d.get("price")
-            if executor is not None and pod_price is not None:
-                executor.price_per_hour = float(pod_price)
-                executor.price_per_gpu = float(pod_price) / max(1, executor.gpu_count)
+            if executor is not None:
+                try:
+                    executor.gpu_count = int(d.get("gpu_count") or executor.gpu_count)
+                except (TypeError, ValueError):
+                    pass
+                if pod_price is not None:
+                    executor.price_per_hour = float(pod_price)
+                    executor.price_per_gpu = float(pod_price) / max(1, executor.gpu_count)
             pods.append(PodInfo(
                 id=d.get("id", ""),
                 name=d.get("pod_name", ""),
