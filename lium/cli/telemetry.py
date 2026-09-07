@@ -5,8 +5,10 @@ Off unless the user turns it on: ``LIUM_TELEMETRY=1`` in the environment, or
 command (the ``Unexpected error:`` branch of ``handle_errors``, never an API or
 usage error) is sent to Sentry with: the exception type and message, its stack
 frames (file, line, function), the command name (``lium up``), the CLI version,
-the Python version and the OS. Never sent: arguments, option values, local
-variables, pod names, hosts, paths under the home directory, e-mails, API keys.
+the Python version, the OS and the API host the CLI is configured for (host name
+only, the ``api_host`` tag). Never sent: arguments, option values, local variables,
+paths under the home directory, e-mails, API keys; the values the command was given
+(a pod name among them) are cut out of the exception message before it leaves.
 
 ``DEFAULT_SENTRY_DSN`` is the Lium CLI project's public client key (org datura-gc,
 project lium-cli — DAH-3121). A DSN only lets a client *send* events to that
@@ -33,9 +35,10 @@ DEFAULT_API_HOST = "lium.io"
 
 _TRUE = {"1", "true", "yes", "on"}
 
-# home directories (a username is PII) and the usual credential shapes
+# home directories (a username is PII — macOS, Linux and Windows spellings) and the usual credential shapes
 _SCRUB = (
     (re.compile(r"(?:/Users|/home)/[^/\s'\"]+"), "~"),
+    (re.compile(r"(?i)[A-Z]:\\Users\\[^\\\s'\"]+"), "~"),
     (re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b"), "[email]"),
     (re.compile(r"\bsk_[A-Za-z0-9_-]{16,}"), "[api-key]"),
     (re.compile(r"\b(?:ssh-(?:rsa|dss|ed25519)|ecdsa-sha2-nistp\d{3})\s+[A-Za-z0-9+/=]+(?:\s+\S+)?"), "[ssh-key]"),
@@ -93,13 +96,31 @@ def scrub_text(text: str) -> str:
     return text
 
 
+def _argument_values() -> list:
+    """The values the running command was given (arguments and options), longest first, so
+    a pod name or a path that ended up in an exception message can be cut out of it."""
+    context = click.get_current_context(silent=True)
+    values: list = []
+    while context is not None:
+        for value in (context.params or {}).values():
+            for item in value if isinstance(value, (list, tuple)) else (value,):
+                if isinstance(item, str) and len(item) >= 3:
+                    values.append(item)
+        context = context.parent
+    return sorted(set(values), key=len, reverse=True)
+
+
 def _scrub_event(event: dict, hint: Any) -> Optional[dict]:
     # nothing about the machine or the session beyond what init() tagged
     for key in ("request", "user", "breadcrumbs", "server_name", "modules", "extra"):
         event.pop(key, None)
+    arguments = _argument_values()
     for value in (event.get("exception") or {}).get("values") or []:
         if isinstance(value.get("value"), str):
-            value["value"] = scrub_text(value["value"])
+            text = scrub_text(value["value"])
+            for given in arguments:
+                text = text.replace(given, "[arg]")
+            value["value"] = text
         for frame in ((value.get("stacktrace") or {}).get("frames") or []):
             frame.pop("vars", None)
             for path_key in ("abs_path", "filename"):

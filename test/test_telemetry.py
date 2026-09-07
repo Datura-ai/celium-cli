@@ -123,7 +123,7 @@ def events(monkeypatch):
 
 def _crash_with_secrets_in_scope(pod_name: str, api_key: str):
     home_path = "/Users/renter/.lium/config.ini"
-    raise RuntimeError(f"cannot read {home_path} for renter@example.com key {api_key}")
+    raise RuntimeError(f"cannot read {home_path} for renter@example.com key {api_key}; pod {pod_name} missing")
 
 
 def test_report_sends_the_crash_and_the_command_but_not_the_values(events):
@@ -154,7 +154,8 @@ def test_report_sends_the_crash_and_the_command_but_not_the_values(events):
     assert event["environment"] == "prod"
     exc = event["exception"]["values"][0]
     assert exc["type"] == "RuntimeError"
-    assert exc["value"] == "cannot read ~/.lium/config.ini for [email] key [api-key]"
+    # the pod name travelled inside the message; the argument's value is cut out of it
+    assert exc["value"] == "cannot read ~/.lium/config.ini for [email] key [api-key]; pod [arg] missing"
     frames = exc["stacktrace"]["frames"]
     assert frames, "the stack is the point of the report"
     assert all("vars" not in frame for frame in frames)  # local variables held pod_name and the key
@@ -164,6 +165,24 @@ def test_report_sends_the_crash_and_the_command_but_not_the_values(events):
     serialised = repr(event)
     assert pod_name not in serialised
     assert api_key[3:] not in serialised
+
+
+def test_windows_home_directories_are_scrubbed_too():
+    text = r"C:\Users\renter\AppData\Local\lium\config.ini and c:\users\Renter Two\x"
+    assert telemetry.scrub_text(text) == r"~\AppData\Local\lium\config.ini and ~ Two\x"
+
+
+def test_windows_frame_paths_are_scrubbed(events):
+    assert telemetry.init("lium up", "0.0.33") is True
+    event = {
+        "exception": {"values": [{"value": "boom", "stacktrace": {"frames": [
+            {"abs_path": r"C:\Users\renter\lium\cli.py", "filename": r"C:\Users\renter\lium\cli.py", "vars": {"k": 1}},
+        ]}}]},
+    }
+    out = telemetry._scrub_event(event, None)
+    frame = out["exception"]["values"][0]["stacktrace"]["frames"][0]
+    assert frame["abs_path"] == r"~\lium\cli.py" and frame["filename"] == r"~\lium\cli.py"
+    assert "vars" not in frame
 
 
 def test_a_crash_against_a_staging_api_is_a_staging_event(events, monkeypatch):
