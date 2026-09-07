@@ -5,11 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
-- `lium rm` prints one line per removed pod with its uptime and estimated spend — `removed <name> — <h:mm> at $X/h ≈ $Y` (uptime × list $/h; the API returns no billed figure) — and `--format json` returns the same fields (`uptime`, `uptime_hours`, `price_per_hour`, `spent_usd`, `spent_is_estimate`) for removed or scheduled pods. (DAH-2982)
-
 ## [0.4.3] - 2025-10-23
 
 ### Added
