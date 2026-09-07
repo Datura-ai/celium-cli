@@ -14,6 +14,7 @@ Core Objects
    Config
    ExecutorInfo
    PodInfo
+   RentResult
    Template
    GpuStats
    Job

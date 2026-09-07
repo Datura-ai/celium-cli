@@ -96,15 +96,18 @@ Direct SDK usage follows the same pattern:
 from lium.sdk import Lium
 
 lium = Lium()
-node = lium.ls(gpu_type="A100")[0]
-pod = lium.up(executor_id=node.id, name="demo", wait=True)   # a ready PodInfo
+# the cheapest available 1×A100 with at least 32 CPUs, chosen and rented in one call
+rented = lium.rent(gpu_type="A100", min_cpus=32, name="demo")
+print(f"{rented.executor.huid} at ${rented.price_per_hour:.2f}/h")
+pod = lium.wait_ready(rented.pod, timeout=600)                 # a ready PodInfo
 print(lium.exec(pod, command="nvidia-smi", timeout=60)["stdout"])
 lium.down(pod)
 ```
 
-A long job goes on a pod the caller keeps: `detach=True` starts it in the background and returns at once, and the pod stays up until you remove it.
+A long job goes on a pod the caller keeps: `detach=True` starts it in the background and returns at once, and the pod stays up until you remove it. `lium.ls()` lists the nodes when you want to name one; `up(wait=True)` rents it and returns the ready pod.
 
 ```python
+node = lium.ls(gpu_type="A100")[0]
 pod = lium.up(executor_id=node.id, name="train", wait=True)
 job = lium.exec(pod, command="python train.py", detach=True)   # {"pid", "log_path", "command"}
 for gpu in lium.gpu_stats(pod):                                  # parsed nvidia-smi
@@ -113,10 +116,10 @@ print(pod.to_dict())                                             # JSON-ready
 # later: lium.down(pod)
 ```
 
-For work that must not outlive the code using it, `rent()` removes the pod on the way out of the block, whatever happened inside — so run the work to completion inside the block (a detached job started here would be killed with the pod):
+For work that must not outlive the code using it, `rental()` rents a named node for a `with` block and removes the pod on the way out, whatever happened inside — so run the work to completion inside the block (a detached job started here would be killed with the pod). `rent()` above is the other way in: it picks the node by spec and hands you a pod you own.
 
 ```python
-with lium.rent(executor_id=node.id, name="eval") as pod:
+with lium.rental(executor_id=node.id, name="eval") as pod:
     result = lium.exec(pod, command="python eval.py", timeout=1800)
     print(result["stdout"])
 ```

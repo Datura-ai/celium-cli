@@ -62,7 +62,7 @@ def _no_sleep(monkeypatch):
     monkeypatch.setattr(time, "sleep", lambda s: None)
 
 
-# --- up(wait=True), pod_by_name, rent() -----------------------------------------------------
+# --- up(wait=True), pod_by_name, rental() -----------------------------------------------------
 
 def test_up_without_wait_returns_the_rent_payload_unchanged():
     client = _Client()
@@ -99,38 +99,38 @@ def test_pod_by_name_matches_name_huid_or_id():
     assert client.pod_by_name("nope") is None
 
 
-def test_rent_removes_the_pod_after_the_block():
+def test_rental_removes_the_pod_after_the_block():
     client = _Client(ps_sequence=[[_pod()]])
 
-    with client.rent(executor_id="exec-1", name="job") as pod:
+    with client.rental(executor_id="exec-1", name="job") as pod:
         assert pod.status == "RUNNING"
 
     assert ("DELETE", "/pods/pod-1") in client.calls
 
 
-def test_rent_removes_the_pod_when_the_block_raises():
+def test_rental_removes_the_pod_when_the_block_raises():
     client = _Client(ps_sequence=[[_pod()]])
 
     with pytest.raises(RuntimeError, match="job failed"):
-        with client.rent(executor_id="exec-1") as pod:
+        with client.rental(executor_id="exec-1") as pod:
             raise RuntimeError("job failed")
 
     assert client.calls[-1] == ("DELETE", "/pods/pod-1")
 
 
-def test_rent_removes_a_pod_that_never_became_ready(monkeypatch):
+def test_rental_removes_a_pod_that_never_became_ready(monkeypatch):
     client = _Client(ps_sequence=[[_pod("PENDING", None)]])
     clock = iter([0, 0, 1000, 1000, 1000])
     monkeypatch.setattr(time, "time", lambda: next(clock))
 
     with pytest.raises(LiumError, match="did not become ready"):
-        with client.rent(executor_id="exec-1", timeout=5):
+        with client.rental(executor_id="exec-1", timeout=5):
             pytest.fail("the block must not run without a ready pod")
 
     assert ("DELETE", "/pods/pod-1") in client.calls
 
 
-def test_rent_removes_a_pod_the_server_created_before_the_rent_call_raised():
+def test_rental_removes_a_pod_the_server_created_before_the_rent_call_raised():
     """A rent that raised after the server committed it (timed-out second POST, a
     listing that failed) is the case cleanup exists for: the pod that appeared
     during the call is removed, an older same-name pod on the node is not."""
@@ -146,14 +146,14 @@ def test_rent_removes_a_pod_the_server_created_before_the_rent_call_raised():
     client = _RentRaises(ps_sequence=[[stale], [stale, fresh]])
 
     with pytest.raises(LiumError, match="Failed to create pod"):
-        with client.rent(executor_id="exec-1", name="job"):
+        with client.rental(executor_id="exec-1", name="job"):
             pytest.fail("the block must not run when the rent raised")
 
     assert ("DELETE", "/pods/pod-1") in client.calls
     assert ("DELETE", "/pods/pod-stale") not in client.calls
 
 
-def test_rent_that_raised_before_any_pod_appeared_removes_nothing():
+def test_rental_that_raised_before_any_pod_appeared_removes_nothing():
     class _RentRaises(_Client):
         def _rent(self, **kwargs):
             raise ValueError("bad arguments")
@@ -161,23 +161,23 @@ def test_rent_that_raised_before_any_pod_appeared_removes_nothing():
     client = _RentRaises(ps_sequence=[[]])
 
     with pytest.raises(ValueError):
-        with client.rent(executor_id="exec-1", name="job"):
+        with client.rental(executor_id="exec-1", name="job"):
             pass
 
     assert not [c for c in client.calls if c[0] == "DELETE"]
 
 
-def test_rent_rejects_an_unknown_argument_before_renting():
+def test_rental_rejects_an_unknown_argument_before_renting():
     client = _Client()
 
     with pytest.raises(TypeError, match="wiat"):
-        with client.rent(executor_id="exec-1", wiat=True):
+        with client.rental(executor_id="exec-1", wiat=True):
             pass
 
     assert client.calls == []
 
 
-def test_rent_reports_a_failed_cleanup_without_hiding_the_original_error():
+def test_rental_reports_a_failed_cleanup_without_hiding_the_original_error():
     class _Broken(_Client):
         def _request(self, method, endpoint, **kwargs):
             raise LiumError("Server error: 503")
@@ -186,7 +186,7 @@ def test_rent_reports_a_failed_cleanup_without_hiding_the_original_error():
 
     with pytest.warns(UserWarning, match="lium rm"):
         with pytest.raises(RuntimeError, match="job failed"):
-            with client.rent(executor_id="exec-1"):
+            with client.rental(executor_id="exec-1"):
                 raise RuntimeError("job failed")
 
 
