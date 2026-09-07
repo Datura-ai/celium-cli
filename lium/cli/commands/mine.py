@@ -296,14 +296,32 @@ def _host_ports_from_answers(answers: dict) -> dict[str, int]:
     return ports
 
 
-def _check_ports_free(ports: dict[str, int]) -> None:
+def _compose_project_running(executor_dir: Path) -> bool:
+    """Whether this executor's own compose project already has running containers.
+
+    On a re-run (`lium mine` on a host whose executor is up: the update path) the ports are
+    held by the project's own ``docker-proxy``; ``docker compose up -d`` is then a no-op, so
+    the pre-check must not fail on our own listener.
+    """
+    try:
+        out, _ = _run("docker compose ps -q", check=False, cwd=str(executor_dir))
+    except OSError:   # no such directory yet (first run): nothing of ours is running
+        return False
+    return bool(out.strip())
+
+
+def _check_ports_free(ports: dict[str, int], executor_dir: Optional[Path] = None) -> None:
     """Fail before ``docker compose up`` when a configured host port is taken.
 
     ``ports`` maps a human label to the port number, e.g.
     ``{"service port": 8080, "SSH port": 2200}``. Without this check the
     executor container enters a restart loop and the caller only sees the
-    health check time out three minutes later.
+    health check time out three minutes later. Skipped when the executor's
+    own compose project is already running (``executor_dir`` given): those
+    listeners are ours and ``compose up`` keeps them.
     """
+    if executor_dir is not None and _compose_project_running(executor_dir):
+        return
     for label, port in ports.items():
         if not port or not _port_in_use(port):
             continue
@@ -311,7 +329,7 @@ def _check_ports_free(ports: dict[str, int]) -> None:
         who = f" ({owner})" if owner else ""
         raise Exception(
             f"Port {port} ({label}) is already in use on this host{who}. "
-            f"Free it or pick another port (run `lium mine` without --auto to choose ports)."
+            "Free it or pick another port (run `lium mine` without --auto to choose ports)."
         )
 
 
@@ -475,6 +493,7 @@ def _start_preflight_pull():
         shell=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        env=_subprocess_env(),
     )
 
 
@@ -500,14 +519,28 @@ def _validate_executor(extra_args=None, on_check=None):
         errors="replace",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=_subprocess_env(),
     )
+    # Both pipes are drained at once: stdout on a thread, stderr here. Reading stderr to EOF
+    # first would deadlock once the --debug stdout (cipher bytes ahead of the verdict) filled
+    # the 64 KiB pipe — the child blocks on write, stderr never closes.
+    import threading
+
+    captured: dict[str, str] = {}
+
+    def _drain_stdout() -> None:
+        captured["out"] = proc.stdout.read()
+
+    reader = threading.Thread(target=_drain_stdout, daemon=True)
+    reader.start()
     err_tail: list[str] = []
     for line in proc.stderr:
         err_tail = (err_tail + [line.rstrip()])[-20:]
         m = re.search(r"Running check: (.+)$", line)
         if m and on_check:
             on_check(m.group(1).strip())
-    out = proc.stdout.read()
+    reader.join()
+    out = captured.get("out", "")
     proc.wait()
 
     result = _preflight_verdict(out)
@@ -542,6 +575,14 @@ def _preflight_verdict(stdout: str) -> Optional[dict]:
 @click.pass_context
 @handle_errors
 def mine_command(ctx, hotkey, dir_, branch, auto, verbose):
+    """Set up this host as a Lium provider node: clone, configure, start and validate the executor.
+
+    Before `docker compose up`, the service and SSH ports are checked on this host: a port
+    another process holds fails fast, naming that process, instead of a three-minute health
+    timeout. On a host whose executor is already running the check is skipped (the ports are
+    ours). The preflight image is pulled while the node starts; its checks are shown as they
+    run. Exit 1 on any failed step, with the step and the reason.
+    """
     if verbose:
         _show_setup_summary()   # keep the banner only when asked
 
@@ -585,7 +626,7 @@ def mine_command(ctx, hotkey, dir_, branch, auto, verbose):
             # A taken host port makes `docker compose up` loop on
             # "address already in use" and the health check below time out
             # with no explanation. Catch it here, before the 3-minute wait.
-            _check_ports_free(_host_ports_from_answers(answers))
+            _check_ports_free(_host_ports_from_answers(answers), executor_dir)
 
         with timed_step_status(5, TOTAL_STEPS, "Starting node"):
             _start_executor(executor_dir)

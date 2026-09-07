@@ -40,6 +40,20 @@ def test_check_ports_free_names_port_and_owner(monkeypatch) -> None:
     assert "without --auto" in msg
 
 
+def test_check_ports_free_is_skipped_when_the_executor_already_runs(monkeypatch, tmp_path: Path) -> None:
+    """A re-run on a host whose executor is up: the ports are held by our own docker-proxy and
+    `docker compose up -d` is a no-op, so the pre-check must not fail on them."""
+    monkeypatch.setattr(mine, "_port_in_use", lambda port, host="0.0.0.0": True)
+    monkeypatch.setattr(mine, "_listening_process", lambda port: "docker-proxy pid 4242")
+    monkeypatch.setattr(mine, "_run", lambda cmd, check=True, capture=True, cwd=None: ("abc123\ndef456\n", ""))
+
+    mine._check_ports_free({"service port": 8080, "SSH port": 2200}, tmp_path)   # no exception
+
+    monkeypatch.setattr(mine, "_run", lambda cmd, check=True, capture=True, cwd=None: ("", ""))
+    with pytest.raises(Exception, match="Port 8080 .* already in use"):
+        mine._check_ports_free({"service port": 8080, "SSH port": 2200}, tmp_path)
+
+
 def test_check_ports_free_passes_when_nothing_listens(monkeypatch) -> None:
     monkeypatch.setattr(mine, "_port_in_use", lambda port: False)
     mine._check_ports_free({"service port": _free_port(), "SSH port": _free_port()})
@@ -170,6 +184,30 @@ def test_validate_executor_reads_the_verdict_behind_debug_noise(monkeypatch) -> 
 
     monkeypatch.setattr(subprocess, "Popen", Noisy)
     mine._validate_executor()  # no exception: the verdict was found
+
+
+def test_validate_executor_survives_a_stdout_larger_than_the_pipe(monkeypatch) -> None:
+    """A real child: 1 MiB of --debug noise on stdout before the verdict, with stderr streaming
+    the check names. Reading stderr to EOF first would hang here (the child blocks on a full pipe)."""
+    import subprocess
+    import sys
+
+    script = (
+        "import sys; sys.stderr.write('Running check: GPU Configuration\\n'); sys.stderr.flush(); "
+        "sys.stdout.write('x' * (1 << 20) + '\\n'); sys.stdout.write('{\\n  \"passed\": true\\n}\\n')"
+    )
+    real_popen = subprocess.Popen
+
+    def popen(cmd, **kwargs):
+        kwargs.pop("shell", None)
+        return real_popen([sys.executable, "-c", script], **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    seen: list[str] = []
+
+    mine._validate_executor(on_check=seen.append)   # returns: the verdict was read behind 1 MiB of noise
+
+    assert seen == ["GPU Configuration"]
 
 
 def test_validate_executor_raises_the_image_message(monkeypatch) -> None:
