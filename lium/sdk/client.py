@@ -480,12 +480,19 @@ class Lium:
         # that honours it collapse the two requests; one that does not ignores it.
         rent_endpoint = f"/executors/{executor_info.id}/rent"
         rent_headers = {**self.headers, "Idempotency-Key": str(uuid.uuid4())}
+        # Pods that exist before the rent can never be the one this call created.
+        # With GPU splitting a node hosts several pods, and the default pod name
+        # is the node huid, so a stale same-name pod on the same node would
+        # otherwise be handed back for a rent the server never received.
+        known_pod_ids = self._pod_ids_before_rent()
         try:
             response = self._request(
                 "POST", rent_endpoint, json=payload, headers=rent_headers, retry=False
             ).json()
         except (requests.RequestException, LiumServerError, LiumRateLimitError):
-            existing = self._find_pod_by_name(name, executor_info.id, attempts=3, interval=3)
+            existing = self._find_pod_by_name(
+                name, executor_info.id, attempts=3, interval=3, exclude=known_pod_ids
+            )
             if existing:
                 return existing
             time.sleep(1)
@@ -497,40 +504,86 @@ class Lium:
         if response and "id" in response:
             return response
 
+        # The rent route answers {"success": true, "pod_id": ...}: the id is
+        # exact, so the pod is read back by it rather than guessed by name.
+        pod_id = (response or {}).get("pod_id")
+        if pod_id:
+            existing = self._find_pod_by_id(str(pod_id), executor_info.id, attempts=3, interval=2)
+            if existing:
+                return existing
+
         # Fallback: find pod by name after creation
-        existing = self._find_pod_by_name(name, executor_info.id, attempts=2, interval=3)
+        existing = self._find_pod_by_name(
+            name, executor_info.id, attempts=2, interval=3, exclude=known_pod_ids
+        )
         if existing:
             return existing
 
         raise LiumError(f"Failed to create pod{' ' + name if name else ''}")
 
+    def _find_pod_by_id(
+        self, pod_id: str, executor_id: str, *, attempts: int, interval: float
+    ) -> Optional[Dict[str, Any]]:
+        """The pod ``pod_id`` from ``ps``; the server already committed it, so the
+        listing is read at once and only re-read if the row is not there yet."""
+        for attempt in range(attempts):
+            if attempt:
+                time.sleep(interval)
+            for pod in self.ps():
+                if pod.id == pod_id:
+                    return self._created_pod_record(pod, executor_id)
+        return None
+
+    def _pod_ids_before_rent(self) -> frozenset:
+        """Ids of the pods that exist right now, taken before a rent is sent.
+
+        A listing failure of any kind must not turn into a failed ``up``; an
+        empty snapshot only means the by-name lookup cannot rule out older pods.
+        """
+        try:
+            return frozenset(pod.id for pod in self.ps())
+        except Exception:  # noqa: BLE001 - best effort by design
+            return frozenset()
+
     def _find_pod_by_name(
-        self, name: Optional[str], executor_id: str, *, attempts: int, interval: float
+        self,
+        name: Optional[str],
+        executor_id: str,
+        *,
+        attempts: int,
+        interval: float,
+        exclude: frozenset = frozenset(),
     ) -> Optional[Dict[str, Any]]:
         """A pod called ``name`` on ``executor_id`` if one shows up in ``ps``.
 
         Used when the rent response did not say what it created. The executor
         is matched when the listing includes one, so two pods sharing a generic
-        name on different nodes are not confused.
+        name on different nodes are not confused, and pods whose id is in
+        ``exclude`` (the ones that existed before the rent) are never returned.
         """
         if not name:
             return None
         for _ in range(attempts):
             time.sleep(interval)
             for pod in self.ps():
-                if pod.name != name:
+                if pod.id in exclude or pod.name != name:
                     continue
                 if pod.executor is not None and pod.executor.id and pod.executor.id != executor_id:
                     continue
-                return {
-                    "id": pod.id,
-                    "name": pod.name,
-                    "status": pod.status,
-                    "huid": pod.huid,
-                    "ssh_cmd": pod.ssh_cmd,
-                    "executor_id": executor_id,
-                }
+                return self._created_pod_record(pod, executor_id)
         return None
+
+    @staticmethod
+    def _created_pod_record(pod: PodInfo, executor_id: str) -> Dict[str, Any]:
+        """The dict :meth:`up` returns for a pod read back from the listing."""
+        return {
+            "id": pod.id,
+            "name": pod.name,
+            "status": pod.status,
+            "huid": pod.huid,
+            "ssh_cmd": pod.ssh_cmd,
+            "executor_id": executor_id,
+        }
 
     def pod(
         self,

@@ -40,9 +40,9 @@ class _ServerError:
         raise ValueError("no body")
 
 
-def _pod(name=POD_NAME, executor_id=EXECUTOR_ID):
+def _pod(name=POD_NAME, executor_id=EXECUTOR_ID, pod_id="pod-uuid-1"):
     return SimpleNamespace(
-        id="pod-uuid-1", name=name, status="PENDING", huid="eager-wolf-aa", ssh_cmd=None,
+        id=pod_id, name=name, status="PENDING", huid="eager-wolf-aa", ssh_cmd=None,
         executor=SimpleNamespace(id=executor_id) if executor_id else None,
     )
 
@@ -57,8 +57,12 @@ def client(monkeypatch):
     return lium
 
 
-def _rent(client, *, pods_after_failure):
-    """Rent once; `outcomes` decides what each POST does; `ps` answers with `pods_after_failure`."""
+def _rent(client, *, pods_after_failure, pods_before=()):
+    """Rent once; `outcomes` decides what each POST does.
+
+    `ps` answers with `pods_before` until the first POST goes out (the snapshot
+    `up` takes before renting) and with `pods_after_failure` from then on.
+    """
     calls = []
 
     def fake_request(method, url, headers=None, timeout=None, **kwargs):
@@ -68,7 +72,7 @@ def _rent(client, *, pods_after_failure):
             raise outcome
         return outcome
 
-    client.ps = lambda: list(pods_after_failure)
+    client.ps = lambda: list(pods_after_failure) if calls else list(pods_before)
     _rent.calls = calls
     return fake_request
 
@@ -83,6 +87,23 @@ def test_rent_sends_an_idempotency_key(client, monkeypatch):
     assert call["url"].endswith(f"/executors/{EXECUTOR_ID}/rent")
     uuid.UUID(call["headers"]["Idempotency-Key"])  # well-formed
     assert call["headers"]["X-API-KEY"] == "test"  # the usual headers are still there
+
+
+def test_the_real_rent_payload_is_resolved_by_pod_id(client, monkeypatch):
+    """The rent route answers {"success": true, "pod_id": ...}, not a pod record, so
+    every real rent goes through the read-back; the exact id wins over the name."""
+    stale = _pod(pod_id="pod-uuid-stale")  # same name, same node, older
+    _rent.outcomes = [_Resp({"success": True, "pod_id": "pod-uuid-new"})]
+    monkeypatch.setattr(
+        client_module.requests, "request",
+        _rent(client, pods_before=[stale], pods_after_failure=[stale, _pod(pod_id="pod-uuid-new")]),
+    )
+
+    result = client.up(executor_id=EXECUTOR_ID, name=POD_NAME, template_id="tpl-1", ssh_keys=["k"])
+
+    assert result["id"] == "pod-uuid-new"
+    assert result["executor_id"] == EXECUTOR_ID
+    assert len(_rent.calls) == 1
 
 
 def test_a_timed_out_rent_is_not_repeated_when_the_pod_exists(client, monkeypatch):
@@ -132,6 +153,53 @@ def test_a_pod_with_the_same_name_on_another_node_is_not_mistaken_for_ours(clien
 
     assert result["id"] == "pod-uuid-2"
     assert len(_rent.calls) == 2
+
+
+def test_a_stale_same_name_pod_on_the_same_node_is_not_mistaken_for_ours(client, monkeypatch):
+    """GPU splitting puts several pods on one node and the default name is the node huid,
+    so a pod that existed before the rent must not be handed back for a rent the server
+    never got: the request is sent once more instead."""
+    stale = _pod(pod_id="pod-uuid-stale")
+    _rent.outcomes = [requests.Timeout("read timed out"), _Resp({"id": "pod-uuid-2", "name": POD_NAME})]
+    monkeypatch.setattr(
+        client_module.requests, "request",
+        _rent(client, pods_before=[stale], pods_after_failure=[stale]),
+    )
+
+    result = client.up(executor_id=EXECUTOR_ID, name=POD_NAME, template_id="tpl-1", ssh_keys=["k"])
+
+    assert result["id"] == "pod-uuid-2"
+    assert len(_rent.calls) == 2
+
+
+def test_the_pod_that_appeared_next_to_a_stale_one_is_ours(client, monkeypatch):
+    stale = _pod(pod_id="pod-uuid-stale")
+    _rent.outcomes = [requests.Timeout("read timed out")]
+    monkeypatch.setattr(
+        client_module.requests, "request",
+        _rent(client, pods_before=[stale], pods_after_failure=[stale, _pod(pod_id="pod-uuid-new")]),
+    )
+
+    result = client.up(executor_id=EXECUTOR_ID, name=POD_NAME, template_id="tpl-1", ssh_keys=["k"])
+
+    assert result["id"] == "pod-uuid-new"
+    assert len(_rent.calls) == 1
+
+
+def test_a_failed_snapshot_does_not_fail_the_rent(client, monkeypatch):
+    """Listing pods before the rent is best effort: if it fails, `up` still rents."""
+    _rent.outcomes = [_Resp({"id": "pod-uuid-1", "name": POD_NAME})]
+    monkeypatch.setattr(client_module.requests, "request", _rent(client, pods_after_failure=[]))
+
+    def failing_ps():
+        raise LiumServerError("listing down")
+
+    client.ps = failing_ps
+
+    result = client.up(executor_id=EXECUTOR_ID, name=POD_NAME, template_id="tpl-1", ssh_keys=["k"])
+
+    assert result["id"] == "pod-uuid-1"
+    assert len(_rent.calls) == 1
 
 
 def test_a_second_failure_is_raised_not_retried_again(client, monkeypatch):
