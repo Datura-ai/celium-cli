@@ -55,6 +55,26 @@ def _get_public_ip() -> str:
                 return ip
     return "Unable to determine"
 
+def _subprocess_env() -> dict:
+    """The environment for the tools `lium mine` shells out to.
+
+    The Linux binary is a PyInstaller bundle: it puts its own ``_internal/`` (an older libstdc++) on
+    ``LD_LIBRARY_PATH`` and keeps the caller's value in ``LD_LIBRARY_PATH_ORIG``. Children such as
+    ``apt-get`` then load that libstdc++ and die with ``GLIBCXX_3.4.32 not found`` — the install
+    script's ``apt update failed after 5 attempts`` on Ubuntu 22.04/24.04. Give them the host's.
+    """
+    import os
+    import sys
+
+    env = dict(os.environ)
+    if getattr(sys, "frozen", False):
+        orig = env.pop("LD_LIBRARY_PATH_ORIG", None)
+        env.pop("LD_LIBRARY_PATH", None)
+        if orig:
+            env["LD_LIBRARY_PATH"] = orig
+    return env
+
+
 def _run(cmd: list | str, check=True, capture=True, cwd: Optional[str] = None) -> Tuple[str, str]:
     import subprocess
     if isinstance(cmd, list):
@@ -67,12 +87,15 @@ def _run(cmd: list | str, check=True, capture=True, cwd: Optional[str] = None) -
         cwd=cwd,
         text=True,
         capture_output=capture,
+        env=_subprocess_env(),
     )
     if check and result.returncode != 0:
+        # the cause of a failed step is the LAST thing a tool prints; the first 4000 chars of a
+        # `docker compose up` are image-pull progress and the error is cut off
         raise RuntimeError(
             f"Command failed ({result.returncode}): {cmd_str}\n"
-            f"--- stdout ---\n{(result.stdout or '')[:4000]}\n"
-            f"--- stderr ---\n{(result.stderr or '')[:4000]}"
+            f"--- stdout (tail) ---\n{(result.stdout or '')[-4000:]}\n"
+            f"--- stderr (tail) ---\n{(result.stderr or '')[-4000:]}"
         )
     return (result.stdout or ""), (result.stderr or "")
 
@@ -266,8 +289,9 @@ def _apply_env_overrides(
     set_or_append("INTERNAL_PORT", internal)
     set_or_append("EXTERNAL_PORT", external)
     set_or_append("SSH_PORT", ssh)
-    if ssh_pub:
-        set_or_append("SSH_PUBLIC_PORT", ssh_pub)
+    # the executor advertises SSH_PUBLIC_PORT or SSH_PORT (miner_service.py); the template ships
+    # SSH_PUBLIC_PORT=2200, so a blank answer must not leave 2200 next to a different SSH_PORT
+    set_or_append("SSH_PUBLIC_PORT", ssh_pub or ssh)
     if rng:
         set_or_append("RENTING_PORT_RANGE", rng)
     env_f.write_text("\n".join(content) + "\n")
@@ -406,7 +430,7 @@ def mine_command(ctx, hotkey, dir_, branch, auto, verbose):
 
     except Exception as e:
         console.error(f"❌ {e}")
-        return
+        raise SystemExit(1)   # a failed step is a failed command: mine.sh and scripts read the exit code
 
     # Get executor details for summary
     gpu_info = _get_gpu_info()
