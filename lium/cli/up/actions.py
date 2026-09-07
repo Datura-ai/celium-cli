@@ -2,7 +2,7 @@ from typing import Optional, Dict, List
 import time
 
 from lium.cli.actions import ActionResult
-from lium.sdk import ExecutorInfo, Template, PodInfo, Lium
+from lium.sdk import ExecutorInfo, Template, PodInfo, Lium, LiumError
 from lium.sdk.client import RENT_BY_SPEC
 from lium.cli.utils import (
     MIN_DOWNLOAD_MBPS,
@@ -53,12 +53,19 @@ class ResolveExecutorAction:
                 "min_download_mbps": MIN_DOWNLOAD_MBPS,
             }
             spec = {key: value for key, value in spec.items() if value is not None}
-            pick = lium.rent(
-                **spec,
-                template_id=ctx.get("template_id"),
-                dockerfile_content=ctx.get("dockerfile_content"),
-                dry_run=True,
-            )
+            try:
+                pick = lium.rent(
+                    **spec,
+                    template_id=ctx.get("template_id"),
+                    dockerfile_content=ctx.get("dockerfile_content"),
+                    dry_run=True,
+                )
+            except LiumError as exc:
+                if type(exc) is not LiumError:
+                    raise  # auth, permission, not-found, rate-limit and server errors keep their own codes
+                # "No node matches …" (client-side) or the server's 409: the same outcome as the
+                # Pareto path's empty list below — node_selection_failed, not an API error.
+                return ActionResult(ok=False, data={}, error=str(exc))
             return ActionResult(
                 ok=True,
                 data={
