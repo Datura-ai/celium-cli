@@ -251,20 +251,27 @@ class Lium:
 
         Transient failures (429, 5xx, network errors) are retried up to three
         times for idempotent methods (``GET``, ``HEAD``, ``OPTIONS``). Anything
-        that mutates (``POST``, ``PUT``, ``PATCH``, ``DELETE``) is sent once by
-        default: a timed-out POST may well have succeeded server-side, and
-        repeating it blindly creates a second template, volume, backup or pod;
-        a repeated DELETE turns a completed removal into "not found". Pass
-        ``retry=True`` / ``retry=False`` to override the default for one call.
+        that mutates (``POST``, ``PUT``, ``PATCH``, ``DELETE``) is repeated only
+        after a 429: the server answered instead of running the request, so
+        sending it again cannot duplicate anything. A 5xx or a lost connection
+        is not repeated for them — a timed-out POST may well have succeeded
+        server-side, and repeating it blindly creates a second template, volume,
+        backup or pod; a repeated DELETE turns a completed removal into "not
+        found". ``retry=True`` retries every transient failure, ``retry=False``
+        sends exactly once, whatever the method.
         """
-        if retry is None:
-            retry = method.upper() in IDEMPOTENT_METHODS
-        if retry:
+        if retry is True or (retry is None and method.upper() in IDEMPOTENT_METHODS):
             return self._request_with_retry(method, endpoint, base_url=base_url, headers=headers, **kwargs)
-        return self._request_once(method, endpoint, base_url=base_url, headers=headers, **kwargs)
+        if retry is False:
+            return self._request_once(method, endpoint, base_url=base_url, headers=headers, **kwargs)
+        return self._request_backing_off_rate_limits(method, endpoint, base_url=base_url, headers=headers, **kwargs)
 
     @with_retry()
     def _request_with_retry(self, method: str, endpoint: str, **kwargs) -> requests.Response:
+        return self._request_once(method, endpoint, **kwargs)
+
+    @with_retry(exceptions=(LiumRateLimitError,))
+    def _request_backing_off_rate_limits(self, method: str, endpoint: str, **kwargs) -> requests.Response:
         return self._request_once(method, endpoint, **kwargs)
 
     def _request_once(

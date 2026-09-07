@@ -4,7 +4,9 @@
 method. After the rent fix opted the pod-create POST out, every other POST,
 PUT and DELETE still went out again after a timeout — a second template,
 volume, backup or invoice when the first one had in fact been applied. The
-default now follows the HTTP method; callers can still override it per call.
+default now follows the HTTP method: a mutating call is repeated only after a
+429 (the server declined to run it, so nothing was applied); callers can still
+override it per call.
 """
 
 from types import SimpleNamespace
@@ -12,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 import requests
 
-from lium.sdk import Config, Lium, LiumServerError
+from lium.sdk import Config, Lium, LiumRateLimitError, LiumServerError
 from lium.sdk import client as client_module
 from lium.sdk import utils as sdk_utils
 from lium.sdk.client import IDEMPOTENT_METHODS
@@ -33,6 +35,15 @@ class _ServerError:
     ok = False
     status_code = 502
     text = "bad gateway"
+
+    def json(self):
+        raise ValueError("no body")
+
+
+class _RateLimited:
+    ok = False
+    status_code = 429
+    text = "slow down"
 
     def json(self):
         raise ValueError("no body")
@@ -97,6 +108,42 @@ def test_mutating_methods_are_sent_once_on_a_timeout(client, monkeypatch, method
 
     with pytest.raises(requests.Timeout):
         client._request(method, "/things")
+
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE"])
+def test_mutating_methods_back_off_and_repeat_after_a_429(client, monkeypatch, method):
+    # a 429 is an answer instead of an execution: repeating cannot create a duplicate
+    calls = _outcomes(monkeypatch, _RateLimited(), _Ok({"id": "t-1"}))
+
+    assert client._request(method, "/things").json() == {"id": "t-1"}
+    assert len(calls) == 2
+
+
+def test_a_mutating_call_gives_up_after_three_429s(client, monkeypatch):
+    calls = _outcomes(monkeypatch, _RateLimited(), _RateLimited(), _RateLimited())
+
+    with pytest.raises(LiumRateLimitError):
+        client._request("POST", "/things")
+
+    assert len(calls) == 3
+
+
+def test_a_429_followed_by_a_server_error_is_not_repeated_further(client, monkeypatch):
+    calls = _outcomes(monkeypatch, _RateLimited(), _ServerError())
+
+    with pytest.raises(LiumServerError):
+        client._request("DELETE", "/things/1")
+
+    assert len(calls) == 2
+
+
+def test_retry_false_sends_once_even_on_a_429(client, monkeypatch):
+    calls = _outcomes(monkeypatch, _RateLimited(), _Ok())
+
+    with pytest.raises(LiumRateLimitError):
+        client._request("POST", "/pods", retry=False)
 
     assert len(calls) == 1
 
