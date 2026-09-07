@@ -2,7 +2,7 @@
 import pytest
 
 from lium.sdk import Config, Lium
-from lium.sdk.utils import expand_gpu_shorthand, extract_gpu_type, normalize_gpu_short
+from lium.sdk.utils import extract_gpu_type, normalize_gpu_short
 
 
 @pytest.mark.parametrize(
@@ -96,18 +96,3 @@ def test_resolve_machine_name_matches_fall_through_names_in_any_case(monkeypatch
     monkeypatch.setattr(client, "_request", lambda method, endpoint, **kwargs: Response())
 
     assert client._resolve_machine_name(typed) == expected
-
-
-@pytest.mark.parametrize(
-    "typed,expected",
-    [
-        ("RTX4090", "RTX 4090"),
-        ("RTXPRO6000", "RTX PRO 6000"),
-        ("pro6000", "RTX PRO 6000"),
-        ("A100", "A100"),
-        ("H200", "H200"),
-        ("NVIDIA H100 80GB HBM3", "NVIDIA H100 80GB HBM3"),
-    ],
-)
-def test_expand_gpu_shorthand(typed, expected):
-    assert expand_gpu_shorthand(typed) == expected

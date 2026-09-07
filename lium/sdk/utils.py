@@ -90,11 +90,7 @@ def expand_gpu_shorthand(gpu_short: str) -> str:
     if len(gpu_short) > 10 or " " in gpu_short:
         return gpu_short
 
-    gpu_upper = normalize_gpu_short(gpu_short)
-
-    # RTX PRO 6000 (Blackwell) - "RTXPRO6000" / "PRO6000" -> "RTX PRO 6000"
-    if match := re.match(r"RTXPRO(\d+)", gpu_upper):
-        return f"RTX PRO {match.group(1)}"
+    gpu_upper = gpu_short.upper()
 
     # Handle RTX cards - need to add space between RTX and number
     if gpu_upper.startswith("RTX"):
@@ -128,4 +124,4 @@ def with_retry(max_attempts: int = 3, delay: float = 1.0, exceptions: tuple = TR
     return decorator
 
 
-__all__ = ["generate_huid", "extract_gpu_type", "expand_gpu_shorthand", "with_retry"]
+__all__ = ["generate_huid", "extract_gpu_type", "expand_gpu_shorthand", "normalize_gpu_short", "GPU_TYPE_ALIASES", "with_retry"]
