@@ -45,6 +45,20 @@ def ls_store_executor(gpu_type: Optional[str] = None, sort_by: str = "download")
 @click.option("--gpu", "gpu_type", shell_complete=get_gpu_completions, help="Filter by GPU type, e.g. A100")
 @click.option("--count", "gpu_count", type=int, help="Exact GPU count to match (e.g., 1, 8)")
 @click.option("--min-cuda", "min_cuda_version", type=float, help="Minimum CUDA version, e.g. 12.4 (NVIDIA drivers are backward compatible)")
+@click.option(
+    "--nvlink",
+    is_flag=True,
+    default=False,
+    help="Only nodes whose GPUs are all joined by NVLink (Link column NV#). Nodes with no topology report yet are excluded.",
+)
+@click.option(
+    "--min-download",
+    "--min-ingress",
+    "min_download_mbps",
+    type=float,
+    default=None,
+    help="Minimum ingress in Mbps, judged on the CDN probe (Net↓ column) when the node has one, else on Download (Mbps).",
+)
 @click.option("--lat", type=float, help="Latitude for distance filtering")
 @click.option("--lon", type=float, help="Longitude for distance filtering")
 @click.option("--max-distance", "max_distance", type=int, help="Maximum distance in miles from --lat/--lon")
@@ -75,11 +89,20 @@ def ls_command(
     output_format: str,
     json_output: bool,
     min_cuda_version: Optional[float],
+    nvlink: bool,
+    min_download_mbps: Optional[float],
 ):
-    """List available GPU nodes."""
+    """List available GPU nodes.
+
+    Link shows how the GPUs of a node are wired to each other (NV18 = NVLink with
+    18 links, PCIe/SYS = PCIe only, worst class shown); Net↓/↑ is a parallel-stream
+    probe against a CDN edge in Mbps — what a weight download sees — while
+    Upload/Download are the smoothed speed-test figures. Both are "—" until the
+    node's validator reports them.
+    """
     output_format = resolve_output_format(output_format, json_output)
 
-    _, error = validation.validate(limit, lat, lon, max_distance, min_cuda_version)
+    _, error = validation.validate(limit, lat, lon, max_distance, min_cuda_version, min_download_mbps)
     if error:
         raise CliFailure("invalid_arguments", error, EXIT_CONFIGURATION_ERROR)
 
@@ -93,6 +116,8 @@ def ls_command(
         "lon": lon,
         "max_distance": max_distance,
         "min_cuda_version": min_cuda_version,
+        "nvlink": nvlink,
+        "min_download_mbps": min_download_mbps,
     }
 
     action = GetExecutorsAction()
@@ -107,6 +132,15 @@ def ls_command(
     if not executors:
         if output_format == "json":
             click.echo("[]")
+            return
+        if nvlink or min_download_mbps is not None:
+            wanted = [w for w in (
+                "NVLink between every GPU pair" if nvlink else None,
+                f"ingress ≥ {min_download_mbps:g} Mbps" if min_download_mbps is not None else None,
+            ) if w]
+            ui.error(f"No available node reports {' and '.join(wanted)}")
+            ui.info("Nodes whose validator has not reported topology or a CDN probe yet are excluded; "
+                    f"drop the filter and check on the pod: {ui.styled('nvidia-smi topo -m', 'success')}")
             return
         if gpu_type:
             ui.error(f"All {gpu_type} GPUs are currently rented out")

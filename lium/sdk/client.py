@@ -634,6 +634,17 @@ class Lium:
         price_per_gpu = executor_dict.get("price_per_gpu") or 0
         price_per_hour = price_per_gpu * gpu_count
 
+        # Typed top-level fields when the backend sends them; the raw specs object from an older
+        # backend otherwise, so the CLI reads the same thing either way.
+        interconnect = executor_dict.get("interconnect")
+        if not isinstance(interconnect, dict):
+            interconnect = specs.get("interconnect") if isinstance(specs.get("interconnect"), dict) else None
+        nvlink = executor_dict.get("nvlink")
+        if not isinstance(nvlink, bool):
+            nvlink = (interconnect or {}).get("nvlink")
+            nvlink = nvlink if isinstance(nvlink, bool) else None
+        network = specs.get("network") if isinstance(specs.get("network"), dict) else {}
+
         return ExecutorInfo(
             id=executor_dict.get("id", ""),
             ip=executor_dict.get("executor_ip_address", ""),
@@ -653,6 +664,10 @@ class Lium:
             max_cuda_version=executor_dict.get("max_cuda_version"),
             tier=executor_dict.get("tier"),
             available_gpu_count=_int_or_none(executor_dict, "available_gpu_count"),
+            interconnect=interconnect,
+            nvlink=nvlink,
+            cdn_download_speed_mbps=executor_dict.get("cdn_download_speed_mbps") or network.get("cdn_download_speed") or None,
+            cdn_upload_speed_mbps=executor_dict.get("cdn_upload_speed_mbps") or network.get("cdn_upload_speed") or None,
         )
 
     def list_ssh_keys(self) -> List[SSHKey]:
@@ -1307,6 +1322,8 @@ class Lium:
         lon: Optional[float] = None,
         max_distance_miles: Optional[int] = None,
         min_cuda_version: Optional[float] = None,
+        nvlink: Optional[bool] = None,
+        min_download_mbps: Optional[float] = None,
     ) -> List[ExecutorInfo]:
         """List available nodes.
 
@@ -1319,11 +1336,23 @@ class Lium:
             min_cuda_version: Optional minimum CUDA version to require (e.g. ``12.4``). Nodes whose
                 ``max_cuda_version`` is ``None`` or below this threshold are excluded. NVIDIA drivers are
                 backward compatible, so a node with a higher driver CUDA version satisfies the requirement.
+            nvlink: ``True`` keeps only nodes whose validator saw every GPU pair on NVLink
+                (:attr:`ExecutorInfo.nvlink`). Nodes with no verdict yet are excluded — a renter who asks
+                for NVLink must not be handed a PCIe box. ``False``/``None`` do not filter.
+            min_download_mbps: Minimum ingress in Mbps, judged on :attr:`ExecutorInfo.best_download_speed`
+                (the CDN probe when the node has one, else the effective speed-test figure). Nodes with
+                no figure are excluded.
 
         Returns:
             A list of :class:`ExecutorInfo` objects that satisfy the filters.
         """
         params: Dict[str, Any] = {"size": 1000}
+        # Sent to the server (which filters when it knows the parameters) AND applied below, so the
+        # result is the same against a backend that predates them.
+        if nvlink:
+            params["nvlink"] = "true"
+        if min_download_mbps is not None:
+            params["min_download_mbps"] = min_download_mbps
         if gpu_type:
             # Try to map short GPU name to full machine name
             machine_name = self._resolve_machine_name(gpu_type)
@@ -1351,6 +1380,13 @@ class Lium:
             executors = [
                 e for e in executors
                 if e.max_cuda_version is not None and e.max_cuda_version >= min_cuda_version
+            ]
+        if nvlink:
+            executors = [e for e in executors if e.nvlink is True]
+        if min_download_mbps is not None:
+            executors = [
+                e for e in executors
+                if e.best_download_speed is not None and e.best_download_speed >= min_download_mbps
             ]
 
         return executors

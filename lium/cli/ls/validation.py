@@ -7,8 +7,12 @@ def validate(
     lon: float | None,
     max_distance: int | None,
     min_cuda_version: float | None = None,
+    min_download_mbps: float | None = None,
 ) -> tuple[bool, str | None]:
     """Validate ls command options, returns (is_valid, error_message)."""
+
+    if min_download_mbps is not None and not min_download_mbps > 0:
+        return False, "--min-download must be a positive number of Mbps"
 
     # Validate limit
     if limit is not None and limit <= 0:

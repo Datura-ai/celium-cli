@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `lium ls` shows a **Link** column (how the node's GPUs are wired to each other: `NV18` = NVLink with 18 links, `PCIe/SYS` = PCIe only, worst class) and a **Net↓/↑ (Mbps)** column (a parallel-stream probe against a CDN edge — what a weight download sees — next to the existing speed-test Upload/Download figures). Both show `—` until the node's validator reports them.
+- `lium ls --nvlink` keeps only nodes whose GPUs are all joined by NVLink; `lium ls --min-download MBPS` (alias `--min-ingress`) keeps nodes whose best ingress figure (CDN probe, else Download) is at least that. An empty result caused by these filters says so instead of "rented out".
+- `lium ls --format json` rows carry `link`, `nvlink`, `p2p`, `interconnect` (counts and the GPU×GPU matrix) and `cdn_download_mbps` / `cdn_upload_mbps`.
+- `lium describe` prints a **Link** row (`NVLink ×18, 28/28 pairs on NVLink, P2P ok` or `PCIe (SYS), 0/28 pairs on NVLink, no P2P (NCCL needs NCCL_P2P_DISABLE=1)`), the `nvidia-smi topo -m` matrix as a **Topology** row, and a **Net** row with both speed figures; the JSON manifest carries them under `gpu` and `machine`.
+- SDK: `ExecutorInfo.interconnect`, `.nvlink`, `.cdn_download_speed_mbps`, `.cdn_upload_speed_mbps`, and the derived `.link`, `.p2p`, `.best_download_speed`; `Lium.ls(nvlink=True, min_download_mbps=...)` sends the server filters and applies them client-side too, so the result is the same against a backend that predates them. Fields are read from the typed API fields or from `specs.interconnect` / `specs.network.cdn_*` when only those are present.
+
 ## [0.4.3] - 2025-10-23
 
 ### Added

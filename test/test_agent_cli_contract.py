@@ -53,6 +53,12 @@ def _executor(huid: str, price_per_hour: float, download: int) -> SimpleNamespac
         docker_in_docker=False,
         max_cuda_version=12.4,
         tier="secure",
+        interconnect=None,
+        nvlink=None,
+        p2p=None,
+        link=None,
+        cdn_download_speed_mbps=None,
+        cdn_upload_speed_mbps=None,
     )
 
 
