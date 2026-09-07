@@ -6,6 +6,7 @@ from .decorators import machine
 from .exceptions import (
     LiumAuthError,
     LiumError,
+    LiumHostKeyError,
     LiumNotFoundError,
     LiumPermissionError,
     LiumRateLimitError,
@@ -41,6 +42,7 @@ __all__ = [
     "LiumServerError",
     "LiumNotFoundError",
     "LiumPermissionError",
+    "LiumHostKeyError",
     "RemoteExecutionError",
     "machine",
 ]

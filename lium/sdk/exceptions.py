@@ -24,6 +24,8 @@ class LiumPermissionError(LiumError):
     """The account is not allowed to do this (403)."""
 
 
+class LiumHostKeyError(LiumError):
+    """A pod presented an SSH host key that differs from the pinned one."""
 class RemoteExecutionError(LiumError):
     """A function offloaded with ``@lium.machine`` did not return a result from the pod.
 
@@ -56,5 +58,6 @@ __all__ = [
     "LiumServerError",
     "LiumNotFoundError",
     "LiumPermissionError",
+    "LiumHostKeyError",
     "RemoteExecutionError",
 ]
