@@ -5,11 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Security
-- `lium exec -e KEY=VALUE` / `Lium.exec(env=...)`: the values are sent over the ssh session's stdin and evaluated by the remote shell instead of being spelled out in the remote command, so they no longer sit in the job's argv where `ps` on the pod (and any traceback that prints the command) showed them. Values are shell-quoted on the way, so spaces, quotes, `$` and newlines arrive unchanged.
-
 ## [0.4.3] - 2025-10-23
 
 ### Added
