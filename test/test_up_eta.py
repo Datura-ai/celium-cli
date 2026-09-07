@@ -11,7 +11,6 @@ from __future__ import annotations
 from dataclasses import replace
 from unittest.mock import patch
 
-import pytest
 
 from lium.cli.up import actions as up_actions
 from lium.sdk import Config, Lium, PodInfo
