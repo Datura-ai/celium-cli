@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -38,7 +39,9 @@ def sdk_pod(lium):
     yield state
     if state["pod"] is not None:
         try:
-            lium.rm(state["pod"])
+            # state["pod"] is the dict `up` returned or the PodInfo wait_ready returned; down() needs the id either way
+            pod_id = state["pod"]["id"] if isinstance(state["pod"], dict) else state["pod"].id
+            lium.rm(SimpleNamespace(id=pod_id))
         except Exception:  # noqa: BLE001 — teardown must not mask the test
             pass
 
@@ -65,6 +68,14 @@ def test_sdk_up_wait_exec_upload_download_rm(lium, sdk_pod, tmp_path):
     t0 = time.monotonic()
     created = lium.up(executor_id=node.id, name=sdk_pod["name"])
     assert created.get("id") and created.get("status"), created  # {'executor_id','huid','id','name','ssh_cmd','status'}
+    # Recorded before anything can fail, and capped: if wait_ready raises, an assertion trips, or pytest-timeout
+    # kills the process (timeout_method = thread runs no finalizer), the pod still goes — by the fixture, or by
+    # the platform at the deadline.
+    sdk_pod["pod"] = created
+    lium.schedule_termination(
+        SimpleNamespace(id=created["id"]),
+        termination_time=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 30 * 60)),
+    )
     ready = lium.wait_ready(created["id"], timeout=600)
     sdk_pod["pod"] = ready
     assert ready.status == "RUNNING" and ready.ssh_cmd, ready

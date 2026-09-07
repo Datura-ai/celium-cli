@@ -116,7 +116,9 @@ def test_up_rents_exactly_one_pod(session: Session, rental: Rental):
 def test_pod_reaches_running_with_ssh(session: Session, rental: Rental):
     if not rental.pod:
         pytest.skip("no pod")
-    deadline = time.monotonic() + 600
+    # 540 s, under the module's 600 s pytest-timeout: with timeout_method = thread the plugin exits the process
+    # and no finalizer runs, so the informative assertion below must fire first.
+    deadline = time.monotonic() + 540
     while time.monotonic() < deadline:
         mine = [p for p in ps(session) if p.get("name") == rental.name]
         assert mine, "the pod vanished while pending"
@@ -184,21 +186,21 @@ def test_scp_round_trip_is_byte_exact(session: Session, rental: Rental, tmp_path
 
 
 def test_billing_moves_while_the_pod_runs(session: Session, rental: Rental):
-    """Per-second billing settles on a 5-minute accrual tick (docs): either the balance dropped already or the pod
-    row's spent_usd is non-zero; a pod running for minutes with neither is a billing hole."""
+    """Per-second billing settles on a 5-minute accrual tick (docs): once the tick has landed the account balance
+    (the server's number) is below what it was before the rent; a pod running past the tick with the balance
+    unmoved is a billing hole. `ps`'s spent_usd is computed by the CLI from created_at × price, so it proves nothing
+    about the server and is not read here."""
     if not rental.running_at:
         pytest.skip("pod not running")
-    bal = _balance(session)
-    mine = [p for p in ps(session) if p.get("name") == rental.name]
-    spent = float((mine[0].get("spent_usd") if mine else 0) or 0)
+    if rental.balance_before is None:
+        pytest.skip("balance before the rent unknown")
     elapsed = time.monotonic() - rental.up_called_at
-    if elapsed < 330 and bal >= (rental.balance_before or 0) and spent == 0:
+    if elapsed < 330:
         # the first accrual tick may not have landed yet; wait for it once
-        time.sleep(max(0, 330 - elapsed))
-        bal = _balance(session)
-        mine = [p for p in ps(session) if p.get("name") == rental.name]
-        spent = float((mine[0].get("spent_usd") if mine else 0) or 0)
-    assert bal < (rental.balance_before or 0) or spent > 0, f"balance {rental.balance_before}→{bal}, spent_usd {spent} after {elapsed:.0f}s"
+        time.sleep(330 - elapsed)
+    bal = _balance(session)
+    elapsed = time.monotonic() - rental.up_called_at
+    assert bal < rental.balance_before, f"balance {rental.balance_before}→{bal} unchanged after {elapsed:.0f}s of rental"
 
 
 def test_rm_removes_the_pod_and_the_final_charge_matches_the_clock(session: Session, rental: Rental):

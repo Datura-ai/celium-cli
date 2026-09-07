@@ -5,11 +5,16 @@
 #   E2E_MAX_PRICE              cap on $/h for the node rented (default 0.50)
 #   SUITES                     default "renter sdk" (test_<suite>_journey.py); T_INSTALL / T_SUITE timeouts (5m / 25m)
 #
-# Like lium-platform's and lium-io's gate.sh: GNU timeout on every step, every suite runs even after a failure,
+# Like lium-platform's and lium-io's gate.sh: GNU timeout (or macOS gtimeout) on every step, every suite runs even after a failure,
 # artifacts/ always holds timings.txt, summary.md, <suite>-junit.xml and commands.json (every CLI call, exit code,
 # duration, head of its output — the key never appears in any of them). Exit 0 only when every step passed.
 set -uo pipefail
 cd "$(dirname "$0")"
+# GNU timeout: `timeout` on Linux, `gtimeout` from Homebrew coreutils on macOS; without either the steps run unbounded
+# (said once, so a Mac without coreutils still gets a run and knows why it had no time limit).
+if command -v timeout >/dev/null 2>&1; then TIMEOUT=timeout
+elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT=gtimeout
+else TIMEOUT=""; echo "e2e: no GNU timeout on PATH (macOS: brew install coreutils) — steps run without a time limit" >&2; fi
 A=artifacts; mkdir -p "$A"; : > "$A/timings.txt"; rm -f "$A"/*-junit.xml "$A/summary.md" "$A/commands.json"
 SUITES=${SUITES:-renter sdk}
 T_INSTALL=${T_INSTALL:-5m}; T_SUITE=${T_SUITE:-25m}
@@ -19,7 +24,9 @@ export E2E_ARTIFACTS="$PWD/$A"
 step() {  # step <name> <timeout> <command...>
   local name=$1 t=$2; shift 2
   local t0=$SECONDS rc status
-  echo "::group::$name"; timeout -k 30 "$t" "$@"; rc=$?; echo "::endgroup::"
+  echo "::group::$name"
+  if [ -n "$TIMEOUT" ]; then "$TIMEOUT" -k 30 "$t" "$@"; else "$@"; fi; rc=$?
+  echo "::endgroup::"
   case $rc in 0) status=pass ;; 124|137) status="TIMEOUT(>$t)" ;; *) status="FAIL(rc=$rc)" ;; esac
   printf '%s\t%ds\t%s\n' "$name" "$((SECONDS - t0))" "$status" >> "$A/timings.txt"
   echo "e2e: $name $status in $((SECONDS - t0))s"

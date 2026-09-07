@@ -21,6 +21,9 @@ E2E_API_URL=http://localhost:8000/api E2E_API_KEY=… ./e2e/run.sh # the lium-pl
 SUITES=renter ./e2e/run.sh                                     # one journey; E2E_KEEP_POD=1 keeps the pod on failure
 ```
 
+On macOS the per-step time limit needs GNU `timeout` (`brew install coreutils` provides it as `gtimeout`); without it
+`run.sh` says so once and runs the steps unbounded.
+
 `run.sh` installs this checkout (editable) plus pytest into `e2e/.venv` (uv or pip), runs `test_renter_journey.py`
 and `test_sdk_journey.py` each under a hard timeout (`T_SUITE` 25m), and always leaves `e2e/artifacts/`:
 `timings.txt`, `summary.md`, `<suite>-junit.xml`, `commands.json` (every CLI call with exit code, duration and the
@@ -32,8 +35,10 @@ Without `E2E_API_KEY` every test skips and `run.sh` exits 0 — nothing to run a
 
 ## CI (`.github/workflows/ci.yml`, job `e2e-live`)
 
-Runs on every PR from this repo, on `workflow_dispatch`, and once a day (`schedule`) so API drift shows up without
-a push. Needs the repository secret **`LIUM_E2E_API_KEY`** (the key of a funded account on the target API) and the
+Runs on every PR from this repo that touches `lium/**`, the packaging files (`pyproject.toml`, `uv.lock`, `lium.spec`,
+`lium_entry.py`, `Dockerfile.build`, `scripts/install.sh`), `e2e/**` or the workflows (the workflow's `paths:` filter;
+a README- or `test/`-only PR does not run it), on `workflow_dispatch`, and once a day (`schedule`, e2e-live only — the
+build jobs skip on the cron) so API drift shows up without a push. Needs the repository secret **`LIUM_E2E_API_KEY`** (the key of a funded account on the target API) and the
 variable `LIUM_E2E_API_URL` (staging when unset). Today the variable is `https://lium.io/api` and the key belongs to
 a dedicated test account funded with $200, which covers about 6,000 runs at $0.03. Fork PRs have no secrets →
 the job skips and stays green. One run at a time repo-wide (`concurrency: e2e-live-staging`, no cancel): two suites

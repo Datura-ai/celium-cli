@@ -25,6 +25,7 @@ concurrency:
 jobs:
   build-python:
     name: Build Python distribution
+    if: github.event_name != 'schedule'   # the daily cron is for e2e-live only
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -53,6 +54,7 @@ jobs:
 
   validate-binary-targets:
     name: Validate binary target matrix
+    if: github.event_name != 'schedule'   # the daily cron is for e2e-live only
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -72,6 +74,7 @@ jobs:
 
   build-linux-binary:
     name: Build Linux binary (${{ matrix.asset_name }})
+    if: github.event_name != 'schedule'   # the daily cron is for e2e-live only
     strategy:
       fail-fast: false
       matrix:
@@ -115,6 +118,7 @@ jobs:
 
   build-macos-binary:
     name: Build macOS binary (${{ matrix.asset_name }})
+    if: github.event_name != 'schedule'   # the daily cron is for e2e-live only
     strategy:
       fail-fast: false
       matrix:
@@ -227,7 +231,7 @@ jobs:
             '',
             `<sub>This checkout's CLI + SDK against the live API named above (e2e/README.md). Reproduce: \`E2E_API_KEY=… e2e/run.sh\`.</sub>`,
           ].join('\n');
-          const { data: comments } = await github.rest.issues.listComments({ ...context.repo, issue_number: context.issue.number, per_page: 100 });
+          const comments = await github.paginate(github.rest.issues.listComments, { ...context.repo, issue_number: context.issue.number, per_page: 100 });
           const mine = comments.find(c => c.body?.startsWith(marker));
           if (mine) await github.rest.issues.updateComment({ ...context.repo, comment_id: mine.id, body });
           else await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body });
