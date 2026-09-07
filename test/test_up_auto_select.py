@@ -53,6 +53,9 @@ class _FakeLium:
     def __init__(self, *args, **kwargs):
         pass
 
+    def supports(self, feature):
+        return False  # an older backend: the client-side pick under test here
+
     def ls(self, gpu_type=None, **kwargs):
         return [EXPENSIVE, CHEAP, SLOW_AND_CHEAP]
 
