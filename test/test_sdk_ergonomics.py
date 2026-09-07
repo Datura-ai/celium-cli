@@ -6,6 +6,7 @@ A script that rents a pod has to write the same twenty lines every time: poll
 """
 
 import json
+import re
 import time
 from types import SimpleNamespace
 
@@ -129,6 +130,43 @@ def test_rent_removes_a_pod_that_never_became_ready(monkeypatch):
     assert ("DELETE", "/pods/pod-1") in client.calls
 
 
+def test_rent_removes_a_pod_the_server_created_before_the_rent_call_raised():
+    """A rent that raised after the server committed it (timed-out second POST, a
+    listing that failed) is the case cleanup exists for: the pod that appeared
+    during the call is removed, an older same-name pod on the node is not."""
+    stale = _pod()
+    stale.id, stale.huid = "pod-stale", "old-owl-01"
+    fresh = _pod()
+
+    class _RentRaises(_Client):
+        def _rent(self, **kwargs):
+            self.calls.append(("rent", kwargs))
+            raise LiumError("Failed to create pod job")
+
+    client = _RentRaises(ps_sequence=[[stale], [stale, fresh]])
+
+    with pytest.raises(LiumError, match="Failed to create pod"):
+        with client.rent(executor_id="exec-1", name="job"):
+            pytest.fail("the block must not run when the rent raised")
+
+    assert ("DELETE", "/pods/pod-1") in client.calls
+    assert ("DELETE", "/pods/pod-stale") not in client.calls
+
+
+def test_rent_that_raised_before_any_pod_appeared_removes_nothing():
+    class _RentRaises(_Client):
+        def _rent(self, **kwargs):
+            raise ValueError("bad arguments")
+
+    client = _RentRaises(ps_sequence=[[]])
+
+    with pytest.raises(ValueError):
+        with client.rent(executor_id="exec-1", name="job"):
+            pass
+
+    assert not [c for c in client.calls if c[0] == "DELETE"]
+
+
 def test_rent_rejects_an_unknown_argument_before_renting():
     client = _Client()
 
@@ -237,9 +275,17 @@ def test_exec_without_timeout_never_polls(monkeypatch):
 def test_detached_command_line_survives_the_session_and_prints_the_pid():
     line = Lium.build_detached_command("python train.py --lr 1e-4 'a b'", "/workspace/logs/x.log")
 
-    assert line.startswith("mkdir -p /workspace/logs || exit 1; nohup setsid bash -lc ")
+    assert "mkdir -p /workspace/logs || exit 1; nohup setsid bash -lc " in line
     assert "'python train.py --lr 1e-4 '\"'\"'a b'\"'\"''" in line
     assert line.endswith("> /workspace/logs/x.log 2>&1 < /dev/null & echo $!")
+
+
+def test_detached_command_line_checks_for_setsid_and_bash_before_forking():
+    """`echo $!` prints a PID as soon as the shell forks, so the check has to come first."""
+    line = Lium.build_detached_command("true", "/workspace/logs/x.log")
+
+    assert line.index("command -v") < line.index("mkdir -p") < line.index("nohup")
+    assert "setsid" in line[: line.index("mkdir -p")] and "bash" in line[: line.index("mkdir -p")]
 
 
 def test_exec_detach_returns_pid_and_log_path(monkeypatch):
@@ -259,7 +305,11 @@ def test_exec_detach_picks_a_timestamped_log_by_default(monkeypatch):
     result = client.exec(_pod(), command="sleep 1", detach=True)
 
     assert result["log_path"].startswith("/workspace/logs/exec-")
-    assert result["log_path"].endswith("Z.log")
+    assert re.fullmatch(r"/workspace/logs/exec-\d{8}T\d{6}Z-[0-9a-f]{6}\.log", result["log_path"])
+
+
+def test_two_default_log_paths_in_the_same_second_differ():
+    assert Lium.default_detach_log_path() != Lium.default_detach_log_path()
 
 
 def test_exec_detach_exports_env_inside_the_detached_shell(monkeypatch):
