@@ -1,6 +1,7 @@
 """Lium SDK - Clean, Unix-style SDK for GPU pod management."""
 
 import getpass
+import logging
 import os
 import re
 import shlex
@@ -45,6 +46,8 @@ from .ssh_key_cache import fingerprint, load_cache, save_cache
 from .utils import expand_gpu_shorthand, extract_gpu_type, generate_huid, with_retry
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 # Public API key for the pay API (pay-tao-api-v2). Single source of truth so the
 # literal is not re-typed across every pay-API call site.
@@ -641,7 +644,10 @@ class Lium:
                 except (TypeError, ValueError):
                     # A malformed pod.gpu_count must not break `lium ps`: keep the
                     # executor's own count (the pre-DAH-3073 behaviour) and move on.
-                    pass
+                    logger.debug(
+                        "pod %s: ignoring malformed gpu_count %r, keeping executor count %s",
+                        d.get("id"), d.get("gpu_count"), executor.gpu_count,
+                    )
                 if pod_price is not None:
                     executor.price_per_hour = float(pod_price)
                     executor.price_per_gpu = float(pod_price) / max(1, executor.gpu_count)
