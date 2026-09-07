@@ -8,11 +8,12 @@ import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
 from click.testing import CliRunner
 
 from lium.cli.audit import command as audit_module
 from lium.cli.cli import cli
-from lium.cli.utils import EXIT_CONFIGURATION_ERROR, EXIT_POD_NOT_FOUND
+from lium.cli.utils import EXIT_API_ERROR, EXIT_CONFIGURATION_ERROR, EXIT_POD_NOT_FOUND
 from lium.sdk import Lium
 from lium.sdk.exceptions import LiumAuthError
 
@@ -139,8 +140,26 @@ def test_pod_option_rejects_an_unknown_name(monkeypatch):
 def test_auth_failure_points_at_an_old_backend(monkeypatch):
     result = _run(monkeypatch, error=LiumAuthError("Invalid API key"))
 
-    assert result.exit_code == EXIT_CONFIGURATION_ERROR
+    # a 401 is exit 3 on every command (the CLI's exit-code contract); audit only adds the hint
+    assert result.exit_code == EXIT_API_ERROR
     assert "this backend does not yet open" in result.output
+
+
+@pytest.mark.parametrize("value", ["0", "1001", "-5", "many"])
+def test_limit_outside_1_to_1000_is_refused_before_any_request(monkeypatch, value):
+    result = _run(monkeypatch, "--limit", value)
+
+    assert result.exit_code == EXIT_CONFIGURATION_ERROR
+    assert "--limit" in result.output
+    assert _FakeLium.calls == []
+
+
+@pytest.mark.parametrize("value", ["1", "1000"])
+def test_limit_bounds_are_accepted(monkeypatch, value):
+    result = _run(monkeypatch, "--limit", value, "--json")
+
+    assert result.exit_code == 0, result.output
+    assert _FakeLium.calls == [{"since": None, "pod_id": None, "api_key_id": None, "limit": int(value)}]
 
 
 def test_empty_log_says_so(monkeypatch):

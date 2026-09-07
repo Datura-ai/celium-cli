@@ -12,6 +12,7 @@ from lium.sdk.exceptions import LiumAuthError
 from lium.cli import ui
 from lium.cli.utils import (
     CliFailure,
+    EXIT_API_ERROR,
     EXIT_CONFIGURATION_ERROR,
     EXIT_POD_NOT_FOUND,
     ensure_config,
@@ -120,7 +121,7 @@ def _resolve_pod_id(lium: Lium, target: str) -> str:
 @click.option("--pod", "pod", help="Only this pod: id, huid, name or index from the last ps; a deleted pod's full id")
 @click.option("--since", "since", help="Only events after this: 24h, 30m, 7d or an ISO timestamp")
 @click.option("--key", "api_key_id", help="Only actions made with this API key id")
-@click.option("--limit", default=200, show_default=True, help="Newest events to fetch (max 1000)")
+@click.option("--limit", type=click.IntRange(1, 1000), default=200, show_default=True, help="Newest events to fetch (1–1000)")
 @click.option("--json", "json_output", is_flag=True, help="Print the events as machine-readable JSON")
 @handle_errors
 def audit_command(pod: Optional[str], since: Optional[str], api_key_id: Optional[str], limit: int, json_output: bool):
@@ -146,10 +147,11 @@ def audit_command(pod: Optional[str], since: Optional[str], api_key_id: Optional
     try:
         events = lium.events(since=since_at, pod_id=pod_id, api_key_id=api_key_id, limit=limit)
     except LiumAuthError as exc:
+        # same exit code as every other command's 401 (handle_errors → EXIT_API_ERROR); only the hint is added
         raise CliFailure(
             "auth_error",
             f"{exc}. If the key works for 'lium ps', this backend does not yet open /users/me/events to API keys.",
-            EXIT_CONFIGURATION_ERROR,
+            EXIT_API_ERROR,
         )
 
     if json_output:
