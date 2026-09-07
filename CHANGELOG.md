@@ -5,11 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Fixed
-- `--gpu 4090` (a bare model number), `--gpu "rtx 4090"` and other spacing/case variants now find the RTX 4090 nodes instead of matching nothing; `--gpu 6000` returns every 6000-class node (RTX 6000, RTX PRO 6000, A6000). When the value names no GPU type at all, `lium ls` / `lium up` say "No GPU type matches" and list the marketplace's types instead of claiming every such GPU is rented out. SDK: `gpu_short_matches()`, `Lium.gpu_short_types()`, `Lium.unknown_gpu_type()`.
-
 ## [0.4.3] - 2025-10-23
 
 ### Added
