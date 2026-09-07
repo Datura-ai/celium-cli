@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- `Lium.exec(env=...)` / `lium exec -e KEY=VALUE`: values are shell-quoted before being exported on the pod, so tokens with `$`, backticks, `"` or `;` arrive verbatim instead of being expanded or executed by the remote shell. Invalid variable names are rejected locally (`ValueError` in the SDK, configuration error in the CLI) instead of failing on the pod.
+- `Lium.exec_all` reports a pod whose SSH connection failed as `{"pod": <id>, "error": ..., "success": False}`; the failure entry used to carry the `PodInfo` object under `"pod"` while successes carried the id.
+
 ## [0.4.3] - 2025-10-23
 
 ### Added
