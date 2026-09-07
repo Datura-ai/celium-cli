@@ -119,12 +119,18 @@ def test_up_passes_min_cpus_to_the_listing_and_names_it_when_nothing_matches(mon
 
 
 @pytest.mark.parametrize(
-    ("executor_id", "min_cpus", "ok"),
-    [(None, 32, True), ("node-1", 32, False), (None, 0, False)],
+    ("executor_id", "min_cpus", "expected_error"),
+    [
+        (None, 32, ""),
+        ("node-1", 32, "Cannot use filters (--gpu, --count, --country, --min-cpus) when specifying a node ID"),
+        # 0 is falsy: it must reach the positivity check, not read as "no filter given"
+        (None, 0, "--min-cpus must be a positive integer"),
+        ("node-1", 0, "--min-cpus must be a positive integer"),
+        (None, -4, "--min-cpus must be a positive integer"),
+    ],
 )
-def test_up_validation_treats_min_cpus_as_a_filter(executor_id, min_cpus, ok):
+def test_up_validation_treats_min_cpus_as_a_filter(executor_id, min_cpus, expected_error):
     valid, error = up_validation.validate(executor_id, None, None, None, None, None, min_cpus=min_cpus)
 
-    assert valid is ok
-    if not ok:
-        assert "--min-cpus" in error
+    assert valid is (expected_error == "")
+    assert error == expected_error

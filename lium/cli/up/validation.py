@@ -16,14 +16,17 @@ def validate(
     min_cpus: int | None = None,
 ) -> tuple[bool, str]:
     """Validate up command inputs."""
-    if executor_id and (gpu or count or country or min_cpus):
-        return False, "Cannot use filters (--gpu, --count, --country, --min-cpus) when specifying a node ID"
-
-    if not executor_id and not (gpu or count or country or min_cpus):
-        return False, "Must provide either NODE_ID or filters (--gpu, --count, --country, --min-cpus)"
-
+    # Checked first: 0 is falsy, so the filter checks below would otherwise read
+    # `--min-cpus 0` as "no filter given" and answer with the wrong sentence.
     if min_cpus is not None and min_cpus <= 0:
         return False, "--min-cpus must be a positive integer"
+
+    has_filters = bool(gpu or count or country) or min_cpus is not None
+    if executor_id and has_filters:
+        return False, "Cannot use filters (--gpu, --count, --country, --min-cpus) when specifying a node ID"
+
+    if not executor_id and not has_filters:
+        return False, "Must provide either NODE_ID or filters (--gpu, --count, --country, --min-cpus)"
 
     if ttl and until:
         return False, "Cannot specify both --ttl and --until"
