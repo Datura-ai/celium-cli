@@ -69,24 +69,32 @@ Codes raised by the shared error handler (any command can produce them):
 | `invalid_api_key` | 2 | The API answered 401. | `lium config get api.api_key` shows which key is in use; new keys at https://lium.io/api-keys. |
 | `value_error` | 2 | A value the command received was invalid (SDK `ValueError`). | Check the options. |
 | `invalid_arguments` | 2 | Options that contradict each other or a malformed value. | `lium <command> --help`. |
-| `confirmation_required` | 2 | A yes/no question could not be asked (stdin is not a terminal or `LIUM_NONINTERACTIVE=1`). | Re-run with `--yes`. |
-| `input_required` | 2 | A value would have been prompted for. | Pass it as an option. |
+| `confirmation_required` | 2 | *Reserved — not emitted yet.* A yes/no question could not be asked because stdin is not a terminal; arrives with the non-interactive guard (DAH-2893). | Re-run with `--yes`. |
+| `input_required` | 2 | *Reserved — not emitted yet.* A value would have been prompted for (same change). | Pass it as an option. |
 | `permission_denied` | 6 | The API answered 403. | `lium balance`; verification on https://lium.io. |
-| `insufficient_balance` | 6 | 403 with a balance reason; the message carries `required`/`available` when the server sent them. | `lium topup` or `lium fund`, or a cheaper node (`lium ls --sort price_total`). |
+| `insufficient_balance` | 6 | 403 whose reason is "Insufficient balance" (the API's own wording); the SDK raises `LiumInsufficientBalanceError` with `required`/`available` parsed from the message when the server stated them. | `lium topup` or `lium fund`, or a cheaper node (`lium ls --sort price_total`). |
 | `pod_not_found` | 5 | The pod named on the command line matched nothing. | `lium ps`. |
 | `not_found` | 3 | The API returned 404 for a resource other than the target pod. | List it again and retry. |
 | `rate_limited` | 3 | The API returned 429. | Wait and retry with back-off. |
-| `server_error` | 3 | The API returned 5xx. | Retry; `LIUM_DEBUG=1` for details. |
-| `lium_error` | 3 | Any other API failure. | Retry; `LIUM_DEBUG=1` for details. |
+| `server_error` | 3 | The API returned 5xx. | Retry; `LIUM_DEBUG=1` prints the traceback on stderr. |
+| `lium_error` | 3 | Any other API failure. | Retry; `LIUM_DEBUG=1` prints the traceback on stderr. |
 | `ssh_unavailable` | 4 | The pod has no SSH endpoint yet. | Wait for `lium ps` to show it RUNNING with an SSH command. |
 | `ssh_connection_failed` | 4 | ssh could not connect to a RUNNING pod. | Check `lium config get ssh.key_path` and `lium ssh-keys`. |
-| `unexpected_error` | 1 | Anything not classified above. | `LIUM_DEBUG=1`; report the issue. |
+| `unexpected_error` | 1 | Anything not classified above. | `LIUM_DEBUG=1` prints the traceback on stderr; report the issue. |
 
 Commands add their own codes for the failures only they can have — for example
 `up` raises `node_selection_failed`, `template_failed`, `jupyter_install_failed`,
 `unreadable_dockerfile`; `exec` raises `unreadable_script`; `rm` raises
-`removal_failed`. They follow the same envelope and use the exit code of their
-family from the table above.
+`removal_failed`; `fund` raises `transfer_failed`. They follow the same envelope
+and use the exit code of their family from the table above. Where re-running
+the command would not be safe the hint says so: `jupyter_install_failed` from
+`up` points at `lium update <pod> --jupyter` (the pod exists and bills), and
+`transfer_failed` says to check the wallet and `lium balance` before funding
+again (the transfer may have reached the chain).
+
+With `LIUM_DEBUG=1` every handled failure also prints its Python traceback to
+stderr before the error (or the envelope), so "re-run with `LIUM_DEBUG=1`" gives
+the detail the hints promise.
 
 ## Programmatic use
 
