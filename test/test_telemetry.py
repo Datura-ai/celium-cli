@@ -73,14 +73,14 @@ def test_the_shipped_dsn_is_the_lium_cli_project_and_an_empty_override_turns_it_
 @pytest.mark.parametrize(
     "base_url, host, env",
     [
-        (None, "lium.io", "production"),
-        ("https://lium.io/api", "lium.io", "production"),
-        ("https://api.lium.io", "api.lium.io", "production"),
+        (None, "lium.io", "prod"),
+        ("https://lium.io/api", "lium.io", "prod"),
+        ("https://api.lium.io", "api.lium.io", "prod"),
         ("https://staging.lium.io/api", "staging.lium.io", "staging"),
         ("https://api.staging.lium.io/api", "api.staging.lium.io", "staging"),
         ("http://localhost:8000", "localhost", "dev"),
         ("http://10.0.0.4:8000/api", "10.0.0.4", "dev"),
-        ("not a url", "lium.io", "production"),
+        ("not a url", "lium.io", "prod"),
     ],
 )
 def test_environment_follows_the_api_host(monkeypatch, base_url, host, env):
@@ -151,7 +151,7 @@ def test_report_sends_the_crash_and_the_command_but_not_the_values(events):
     assert event["tags"]["api_host"] == "lium.io"
     assert event["tags"]["error_class"] == "RuntimeError"
     assert event["release"] == "lium-cli@0.0.33"
-    assert event["environment"] == "production"
+    assert event["environment"] == "prod"
     exc = event["exception"]["values"][0]
     assert exc["type"] == "RuntimeError"
     assert exc["value"] == "cannot read ~/.lium/config.ini for [email] key [api-key]"

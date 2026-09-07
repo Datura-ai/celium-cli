@@ -14,8 +14,9 @@ project; it reads nothing. ``LIUM_SENTRY_DSN`` overrides it (self-hosted GlitchT
 testing); ``LIUM_SENTRY_DSN=`` (empty) disables reporting even when opted in.
 
 The Sentry ``environment`` follows the API the CLI talks to (``LIUM_BASE_URL``):
-``production`` for lium.io, ``staging`` for the staging host, ``dev`` otherwise —
-so a crash against a dev stack never counts as a production issue.
+``prod`` for lium.io (the name the platform stacks report too — Pulumi stack ``prod`` — so one
+``environment:prod`` search covers backend, web and CLI), ``staging`` for the staging host, ``dev``
+otherwise — so a crash against a dev stack never counts as a production issue.
 """
 
 import os
@@ -77,10 +78,10 @@ def api_host() -> str:
 
 
 def environment(host: Optional[str] = None) -> str:
-    """production for lium.io, staging for a staging host, dev for anything else."""
+    """prod for lium.io (the platform stack name), staging for a staging host, dev for anything else."""
     host = (host or api_host()).lower()
     if host in {DEFAULT_API_HOST, f"www.{DEFAULT_API_HOST}", f"api.{DEFAULT_API_HOST}"}:
-        return "production"
+        return "prod"
     if "staging" in host:
         return "staging"
     return "dev"
