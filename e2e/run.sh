@@ -10,7 +10,7 @@
 # duration, head of its output — the key never appears in any of them). Exit 0 only when every step passed.
 set -uo pipefail
 cd "$(dirname "$0")"
-A=artifacts; mkdir -p "$A"; : > "$A/timings.txt"; rm -f "$A"/*-junit.xml "$A/summary.md"
+A=artifacts; mkdir -p "$A"; : > "$A/timings.txt"; rm -f "$A"/*-junit.xml "$A/summary.md" "$A/commands.json"
 SUITES=${SUITES:-renter sdk}
 T_INSTALL=${T_INSTALL:-5m}; T_SUITE=${T_SUITE:-25m}
 FAILED=""

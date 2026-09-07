@@ -76,8 +76,12 @@ class Session:
 
 
 def _write_artifacts(session: Session) -> None:
+    """Append this process's CLI calls to commands.json. run.sh runs one pytest process per suite and clears the
+    file first; a suite that makes no CLI call (the SDK journey) must not replace the renter journey's log with []."""
     ARTIFACTS.mkdir(parents=True, exist_ok=True)
-    (ARTIFACTS / "commands.json").write_text(json.dumps(session.log, indent=1))
+    path = ARTIFACTS / "commands.json"
+    previous = json.loads(path.read_text()) if path.exists() else []
+    path.write_text(json.dumps(previous + session.log, indent=1))
 
 
 @pytest.fixture(scope="session")
@@ -128,6 +132,7 @@ def rm_pods_named(session: Session, prefix: str, older_than_s: float = 0) -> int
                 if age < older_than_s:
                     continue
             except ValueError:
+                # unreadable created_at: the age is unknown, so the pod is swept like an old one
                 pass
         session.lium("rm", name, "-y", timeout=120)
         n += 1

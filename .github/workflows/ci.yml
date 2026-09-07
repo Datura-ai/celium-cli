@@ -16,7 +16,7 @@ on:
     - '.github/workflows/release.yml'
   workflow_dispatch:
   schedule:
-    - cron: '17 6 * * *'   # the live e2e once a day against staging even when nobody pushes
+    - cron: '17 6 * * *'   # the live e2e once a day against the configured API even when nobody pushes
 
 concurrency:
   group: ci-build-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -165,12 +165,13 @@ jobs:
           dist/${{ matrix.asset_name }}
         retention-days: 7
 
-  # This checkout's CLI and SDK against a LIVE Lium API (staging by default): balance → ls → up → RUNNING → exec
-  # (exit codes, the GPU paid for) → scp round trip → billing → rm → gone → final charge, plus the error contract
-  # (wrong key 3, no key 2, unknown pod 5), then the SDK's pod-lifecycle example. Rents the cheapest ≥1-GPU node
-  # under $0.50/h for a few minutes (≈ $0.02 a run). Needs the secret LIUM_E2E_API_KEY (a funded staging account);
+  # This checkout's CLI and SDK against a LIVE Lium API (the variable LIUM_E2E_API_URL, today https://lium.io/api;
+  # staging when unset): balance → ls → up → RUNNING → exec (exit codes, the GPU paid for) → scp round trip →
+  # billing → rm → gone → final charge, plus the error contract (wrong key 3, no key 2, unknown pod 5), then the
+  # SDK's pod-lifecycle example. Rents the cheapest ≥1-GPU node under $0.50/h for a few minutes ($0.03 on 7 Sep 2026:
+  # two RTX 4090 rentals of 6 and 0.5 min). Needs the secret LIUM_E2E_API_KEY (the dedicated test account's key);
   # without it the job skips every test and stays green, so fork PRs are unaffected. One run at a time repo-wide:
-  # staging has one node. e2e/run.sh puts a timeout on every step and always leaves e2e/artifacts (timings,
+  # two suites on one account would sweep each other's pods. e2e/run.sh puts a timeout on every step and always leaves e2e/artifacts (timings,
   # summary.md, junit, commands.json); summarised in one sticky PR comment. Reproduce: E2E_API_KEY=… e2e/run.sh
   e2e-live:
     name: e2e-live

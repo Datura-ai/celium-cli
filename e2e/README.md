@@ -10,8 +10,8 @@ Then the SDK, the way `docs/developers/sdk/examples/pod-lifecycle.md` uses it: `
 (success and a non-zero exit as a dict) → `upload`/`download` → `ps` → `rm`.
 
 These are PERSONA_TESTS' renter journeys (7 Sep 2026, 31 + 16 steps by hand on staging) as tests that run on every
-PR. They rent the cheapest ≥1-GPU node under `E2E_MAX_PRICE` (default $0.50/h) for a few minutes — about $0.02 a run
-on staging's A4000.
+PR. They rent the cheapest ≥1-GPU node under `E2E_MAX_PRICE` (default $0.50/h) for a few minutes — $0.03 a run on
+lium.io (7 Sep 2026: an RTX 4090 at $0.32/h for 6 min plus one at $0.35/h for 30 s), about $0.02 on staging's A4000.
 
 ## Run it
 
@@ -32,11 +32,13 @@ Without `E2E_API_KEY` every test skips and `run.sh` exits 0 — nothing to run a
 
 ## CI (`.github/workflows/ci.yml`, job `e2e-live`)
 
-Runs on every PR from this repo, on `workflow_dispatch`, and once a day (`schedule`) so staging drift shows up
-without a push. Needs the repository secret **`LIUM_E2E_API_KEY`** (a funded staging account; ~$1 lasts weeks) and,
-optionally, the variable `LIUM_E2E_API_URL`. Fork PRs have no secrets → the job skips and stays green. One run at a
-time repo-wide (`concurrency: e2e-live-staging`, no cancel): staging has one node, and two suites renting it at once
-would fail each other. Artifacts uploaded on every run; `summary.md` posted as one sticky PR comment.
+Runs on every PR from this repo, on `workflow_dispatch`, and once a day (`schedule`) so API drift shows up without
+a push. Needs the repository secret **`LIUM_E2E_API_KEY`** (the key of a funded account on the target API) and the
+variable `LIUM_E2E_API_URL` (staging when unset). Today the variable is `https://lium.io/api` and the key belongs to
+a dedicated test account funded with $200, which covers about 6,000 runs at $0.03. Fork PRs have no secrets →
+the job skips and stays green. One run at a time repo-wide (`concurrency: e2e-live-staging`, no cancel): two suites
+on one account would sweep each other's `e2e-…` pods, and staging has a single node. Artifacts uploaded on every run;
+`summary.md` posted as one sticky PR comment on `pull_request` runs (a `workflow_dispatch` run has no PR to post to).
 
 A stale pod from a run that died mid-way (name `e2e-…`, older than 30 min) is removed at the start of the next run.
 
