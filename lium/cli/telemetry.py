@@ -8,9 +8,14 @@ frames (file, line, function), the command name (``lium up``), the CLI version,
 the Python version and the OS. Never sent: arguments, option values, local
 variables, pod names, hosts, paths under the home directory, e-mails, API keys.
 
-Without a project DSN this module does nothing even when enabled — the CLI ships
-with ``DEFAULT_SENTRY_DSN`` blank until the Lium CLI Sentry project exists;
-``LIUM_SENTRY_DSN`` overrides it (self-hosted GlitchTip, testing).
+``DEFAULT_SENTRY_DSN`` is the Lium CLI project's public client key (org datura-gc,
+project lium-cli — DAH-3121). A DSN only lets a client *send* events to that
+project; it reads nothing. ``LIUM_SENTRY_DSN`` overrides it (self-hosted GlitchTip,
+testing); ``LIUM_SENTRY_DSN=`` (empty) disables reporting even when opted in.
+
+The Sentry ``environment`` follows the API the CLI talks to (``LIUM_BASE_URL``):
+``production`` for lium.io, ``staging`` for the staging host, ``dev`` otherwise —
+so a crash against a dev stack never counts as a production issue.
 """
 
 import os
@@ -20,8 +25,10 @@ from typing import Any, Optional
 
 import click
 
-# the Lium CLI project's public DSN; blank = no reporting even when the user opted in
-DEFAULT_SENTRY_DSN = ""
+# the Lium CLI project's public DSN (datura-gc / lium-cli); a client key, not a secret
+DEFAULT_SENTRY_DSN = "https://cc6f063f312389b480fdbc5b473443cc@o4508882177228800.ingest.de.sentry.io/4512042277601360"
+
+DEFAULT_API_HOST = "lium.io"
 
 _TRUE = {"1", "true", "yes", "on"}
 
@@ -51,7 +58,32 @@ def enabled() -> bool:
 
 
 def dsn() -> str:
-    return os.environ.get("LIUM_SENTRY_DSN") or DEFAULT_SENTRY_DSN
+    override = os.environ.get("LIUM_SENTRY_DSN")
+    if override is not None:
+        return override.strip()
+    return DEFAULT_SENTRY_DSN
+
+
+def api_host() -> str:
+    """Host part of the API the CLI is configured for (LIUM_BASE_URL or the default)."""
+    from urllib.parse import urlsplit
+
+    base = os.environ.get("LIUM_BASE_URL") or ""
+    try:
+        host = urlsplit(base).hostname if base else None
+    except ValueError:
+        host = None
+    return host or DEFAULT_API_HOST
+
+
+def environment(host: Optional[str] = None) -> str:
+    """production for lium.io, staging for a staging host, dev for anything else."""
+    host = (host or api_host()).lower()
+    if host in {DEFAULT_API_HOST, f"www.{DEFAULT_API_HOST}", f"api.{DEFAULT_API_HOST}"}:
+        return "production"
+    if "staging" in host:
+        return "staging"
+    return "dev"
 
 
 def scrub_text(text: str) -> str:
@@ -86,9 +118,11 @@ def init(command: Optional[str], version: str) -> bool:
         return False
     import sentry_sdk
 
+    host = api_host()
     sentry_sdk.init(
         dsn=dsn(),
         release=f"lium-cli@{version}",
+        environment=environment(host),
         # explicit capture only: no excepthook, no logging or HTTP breadcrumbs, no module list
         default_integrations=False,
         max_breadcrumbs=0,
@@ -98,6 +132,8 @@ def init(command: Optional[str], version: str) -> bool:
         before_send=_scrub_event,
     )
     sentry_sdk.set_tag("command", command or "lium")
+    sentry_sdk.set_tag("cli_version", version)
+    sentry_sdk.set_tag("api_host", host)
     sentry_sdk.set_tag("python", platform.python_version())
     sentry_sdk.set_tag("os", platform.system().lower())
     _initialised = True
@@ -113,6 +149,9 @@ def report(exc: BaseException) -> bool:
     context = click.get_current_context(silent=True)
     if context is not None:
         sentry_sdk.set_tag("command", context.command_path)
+    # the exception class is what a triager filters on (KeyError vs ConnectionError); grouping
+    # itself stays Sentry's stack-trace grouping — a CLI crash is one bug at one place
+    sentry_sdk.set_tag("error_class", type(exc).__name__)
     sentry_sdk.capture_exception(exc)
     sentry_sdk.flush(timeout=2)
     return True

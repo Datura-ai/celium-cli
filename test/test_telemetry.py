@@ -19,6 +19,7 @@ def isolated(monkeypatch, tmp_path):
     monkeypatch.delenv("LIUM_TELEMETRY", raising=False)
     monkeypatch.delenv("LIUM_TELEMETRY_ENABLED", raising=False)
     monkeypatch.delenv("LIUM_SENTRY_DSN", raising=False)
+    monkeypatch.delenv("LIUM_BASE_URL", raising=False)
     monkeypatch.setattr(telemetry, "_initialised", False)
     yield
     sentry_sdk.get_global_scope().set_client(None)
@@ -52,6 +53,44 @@ def test_enabled_without_a_dsn_still_sends_nothing(monkeypatch):
 
     assert telemetry.init("lium up", "0.0.33") is False
     assert telemetry.report(RuntimeError("x")) is False
+
+
+def test_the_shipped_dsn_is_the_lium_cli_project_and_an_empty_override_turns_it_off(monkeypatch):
+    # DAH-3121: the default is the project's public client key (it can only send, never read)
+    assert telemetry.DEFAULT_SENTRY_DSN.startswith("https://") and "ingest" in telemetry.DEFAULT_SENTRY_DSN
+    assert telemetry.dsn() == telemetry.DEFAULT_SENTRY_DSN
+
+    monkeypatch.setenv("LIUM_SENTRY_DSN", "https://other@o0.ingest.sentry.io/1")
+    assert telemetry.dsn() == "https://other@o0.ingest.sentry.io/1"
+
+    monkeypatch.setenv("LIUM_SENTRY_DSN", "")
+    monkeypatch.setenv("LIUM_TELEMETRY", "1")
+    monkeypatch.setattr(sentry_sdk, "init", lambda **kwargs: pytest.fail("SDK initialised with an empty DSN"))
+    assert telemetry.dsn() == ""
+    assert telemetry.init("lium up", "0.0.33") is False
+
+
+@pytest.mark.parametrize(
+    "base_url, host, env",
+    [
+        (None, "lium.io", "production"),
+        ("https://lium.io/api", "lium.io", "production"),
+        ("https://api.lium.io", "api.lium.io", "production"),
+        ("https://staging.lium.io/api", "staging.lium.io", "staging"),
+        ("https://api.staging.lium.io/api", "api.staging.lium.io", "staging"),
+        ("http://localhost:8000", "localhost", "dev"),
+        ("http://10.0.0.4:8000/api", "10.0.0.4", "dev"),
+        ("not a url", "lium.io", "production"),
+    ],
+)
+def test_environment_follows_the_api_host(monkeypatch, base_url, host, env):
+    if base_url is None:
+        monkeypatch.delenv("LIUM_BASE_URL", raising=False)
+    else:
+        monkeypatch.setenv("LIUM_BASE_URL", base_url)
+
+    assert telemetry.api_host() == host
+    assert telemetry.environment() == env
 
 
 def test_disabled_never_touches_the_sdk(monkeypatch):
@@ -108,7 +147,11 @@ def test_report_sends_the_crash_and_the_command_but_not_the_values(events):
     event = events[0]
     assert event["tags"]["command"] == "up"
     assert event["tags"]["python"] and event["tags"]["os"]
+    assert event["tags"]["cli_version"] == "0.0.33"
+    assert event["tags"]["api_host"] == "lium.io"
+    assert event["tags"]["error_class"] == "RuntimeError"
     assert event["release"] == "lium-cli@0.0.33"
+    assert event["environment"] == "production"
     exc = event["exception"]["values"][0]
     assert exc["type"] == "RuntimeError"
     assert exc["value"] == "cannot read ~/.lium/config.ini for [email] key [api-key]"
@@ -121,6 +164,23 @@ def test_report_sends_the_crash_and_the_command_but_not_the_values(events):
     serialised = repr(event)
     assert pod_name not in serialised
     assert api_key[3:] not in serialised
+
+
+def test_a_crash_against_a_staging_api_is_a_staging_event(events, monkeypatch):
+    monkeypatch.setenv("LIUM_BASE_URL", "https://staging.lium.io/api")
+    assert telemetry.init("lium ps", "0.0.33") is True
+
+    @click.command("ps")
+    @handle_errors
+    def ps():
+        raise KeyError("gpu_count")
+
+    CliRunner().invoke(ps, [])
+
+    assert len(events) == 1
+    assert events[0]["environment"] == "staging"
+    assert events[0]["tags"]["api_host"] == "staging.lium.io"
+    assert events[0]["tags"]["error_class"] == "KeyError"
 
 
 def test_expected_failures_are_not_crashes(events):
