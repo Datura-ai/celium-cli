@@ -1,6 +1,7 @@
 """GPU type extraction / shorthand resolution (RTX PRO 6000 Blackwell regression)."""
 import pytest
 
+from lium.sdk import Config, Lium
 from lium.sdk.utils import expand_gpu_shorthand, extract_gpu_type, normalize_gpu_short
 
 
@@ -57,12 +58,44 @@ def test_normalize_gpu_short(typed, expected):
 
 
 def test_normalized_short_matches_extracted_type():
-    # The `--gpu` filter compares these two, so every alias must land on the extracted type.
+    # The `--gpu` filter normalises both sides, so every alias must land on the extracted type.
     machine = "NVIDIA RTX PRO 6000 Blackwell Server Edition"
     for typed in ("RTXPRO6000", "pro6000", "RTX PRO 6000"):
-        assert normalize_gpu_short(typed) == extract_gpu_type(machine)
-    assert normalize_gpu_short("RTX6000") == extract_gpu_type("NVIDIA RTX 6000 Ada Generation")
-    assert normalize_gpu_short("RTX6000") != extract_gpu_type(machine)
+        assert normalize_gpu_short(typed) == normalize_gpu_short(extract_gpu_type(machine))
+    assert normalize_gpu_short("RTX6000") == normalize_gpu_short(
+        extract_gpu_type("NVIDIA RTX 6000 Ada Generation")
+    )
+    assert normalize_gpu_short("RTX6000") != normalize_gpu_short(extract_gpu_type(machine))
+
+
+@pytest.mark.parametrize(
+    "typed,expected",
+    [
+        ("ti", "NVIDIA GeForce GTX 1080 Ti"),
+        ("TI", "NVIDIA GeForce GTX 1080 Ti"),
+        ("xp", "NVIDIA TITAN Xp"),
+        ("rtx4090", "NVIDIA GeForce RTX 4090"),
+        ("pro6000", "NVIDIA RTX PRO 6000 Blackwell Server Edition"),
+    ],
+)
+def test_resolve_machine_name_matches_fall_through_names_in_any_case(monkeypatch, typed, expected):
+    # Names with no pattern hit keep their casing ("Ti", "Xp"); the `--gpu` filter
+    # must still match them case-insensitively, as it did before this change.
+    machines = [
+        {"name": "NVIDIA GeForce GTX 1080 Ti"},
+        {"name": "NVIDIA TITAN Xp"},
+        {"name": "NVIDIA GeForce RTX 4090"},
+        {"name": "NVIDIA RTX PRO 6000 Blackwell Server Edition"},
+    ]
+
+    class Response:
+        def json(self):
+            return machines
+
+    client = Lium(Config(api_key="test"))
+    monkeypatch.setattr(client, "_request", lambda method, endpoint, **kwargs: Response())
+
+    assert client._resolve_machine_name(typed) == expected
 
 
 @pytest.mark.parametrize(

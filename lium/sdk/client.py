@@ -1205,9 +1205,10 @@ class Lium:
 
             for machine in available_machines:
                 machine_name = machine.get("name", "")
-                # Check if the short name matches the extracted GPU type
-                # ("pro6000", "RTX PRO 6000" and "RTXPRO6000" all resolve the same way)
-                if extract_gpu_type(machine_name) == gpu_short_normalized:
+                # Both sides go through normalize_gpu_short: pattern hits are already
+                # upper-case, but a name with no pattern hit keeps its casing ("Ti", "Xp"),
+                # and `--gpu ti` must still find it.
+                if normalize_gpu_short(extract_gpu_type(machine_name)) == gpu_short_normalized:
                     matching_machines.append(machine_name)
 
             # Return comma-separated list of all matches
