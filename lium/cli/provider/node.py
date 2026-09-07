@@ -140,7 +140,7 @@ def status_node(ctx: click.Context, node_id: str, watch: bool, interval: int) ->
     while a check runs; the last run's per-step timeline otherwise.
 
     \b
-      verifying · step 3/6 Bandwidth & GPU proof · 42 s elapsed · ~70 s left
+      verifying · step 3/6 Bandwidth & GPU proof · 42 s elapsed · ~1 min 10 s left
         ✓ 1. Upload checks — 4 s (estimated)
         …
 
@@ -150,24 +150,26 @@ def status_node(ctx: click.Context, node_id: str, watch: bool, interval: int) ->
     require_hotkey(ctx, group="node")
     client = build_client(ctx)
     json_mode = bool(((ctx.obj or {}).get("provider_opts") or {}).get("json"))
-    while True:
-        try:
-            body = client.get_node_verification(node_id)
-        except ProviderError as e:
-            ctx.exit(handle_provider_error(ctx, e))
-            return
-        if json_mode:
-            render(ctx, body)
-        else:
-            if watch:
-                click.clear()
-            click.echo(render_text(body))
-        if not watch:
-            return
-        try:
+    # One guard around the whole loop: Ctrl-C exits 0 whether it lands during the fetch,
+    # the print or the sleep (click would otherwise print "Aborted!" and exit 1 mid-fetch).
+    try:
+        while True:
+            try:
+                body = client.get_node_verification(node_id)
+            except ProviderError as e:
+                ctx.exit(handle_provider_error(ctx, e))
+                return
+            if json_mode:
+                render(ctx, body)
+            else:
+                if watch:
+                    click.clear()
+                click.echo(render_text(body))
+            if not watch:
+                return
             time.sleep(interval)
-        except KeyboardInterrupt:
-            return
+    except KeyboardInterrupt:
+        return
 
 
 @node_command.command("add", short_help="Queue a new node addition.")

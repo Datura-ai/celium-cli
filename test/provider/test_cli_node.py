@@ -141,6 +141,8 @@ def test_node_list_shows_computed_status_column(patched_build_client) -> None:
     # A row without computed_status renders a dash, not a crash.
     assert "e-3" in result.output
     assert "—" in result.output
+
+
 def test_node_list_defaults_to_own_hotkey(
     patched_build_client, fake_signer: LocalKeypairSigner
 ) -> None:
@@ -193,7 +195,6 @@ def test_node_list_all_and_miner_hotkey_are_exclusive(patched_build_client) -> N
     assert payload["ok"] is False
     assert payload["error"]["code"] == "ARG_INVALID"
     assert portal.gets == []
-
 
 
 def test_node_list_json(patched_build_client) -> None:

@@ -268,12 +268,17 @@ class ProviderClient:
         # Node list (skip silently if portal not authed). Scoped to this
         # hotkey: the portal's ``GET /executors`` is a global listing and
         # would otherwise report other providers' nodes as ours.
-        if out.portal_session_active:
+        if out.portal_session_active and not out.hotkey:
+            # Without the ss58 the only listing available is the portal's global one, which
+            # would count every provider's nodes as ours (the same refusal `node list` and
+            # `billing list` make with ARG_INVALID).
+            warnings.append("nodes: hotkey not resolvable, pass --miner-hotkey")
+        elif out.portal_session_active:
             try:
                 from lium.provider._routes import EXECUTORS
                 from lium.provider.models import ExecutorInfo
 
-                params = {"miner_hotkey": out.hotkey} if out.hotkey else None
+                params = {"miner_hotkey": out.hotkey}
                 body = self._http.get(EXECUTORS, params=params)
                 rows = body.get("data") if isinstance(body, dict) else body
                 if not isinstance(rows, list):

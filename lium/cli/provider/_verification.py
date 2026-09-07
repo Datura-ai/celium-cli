@@ -3,7 +3,7 @@
 
 Pure functions over the response dict so the rendering is testable without a
 terminal: one headline (``verifying · step 3/6 Bandwidth & GPU proof · 42 s
-elapsed · ~70 s left``) and one line per step with ✓ / ✗ / … and its duration.
+elapsed · ~1 min 10 s left``) and one line per step with ✓ / ✗ / … and its duration.
 """
 
 from __future__ import annotations
