@@ -9,7 +9,6 @@ that pulls weights at 4 GB/s from one at 45 MB/s — both cost hours of an 8-GPU
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
