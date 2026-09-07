@@ -128,7 +128,7 @@ The `lium` CLI exposes the full pod lifecycle. Run `lium --help` to see everythi
 - `lium ps` - List active pods
 - `lium describe <POD>` - Full manifest of one pod: ports, GPU, template, billing (add `--json` for machine-readable output)
 - `lium ssh <POD>` - SSH into a pod
-- `lium exec <POD> <COMMAND>` - Execute command on pod
+- `lium exec <POD> <COMMAND>` - Execute command on pod (add `-d/--detach` to start it in the background and return immediately)
 - `lium scp <POD> <LOCAL_FILE> [REMOTE_PATH]` - Copy files to pods (add `-d` to download from pods)
 - `lium rsync <POD> <LOCAL_DIR> [REMOTE_PATH]` - Sync directories to pods
 - `lium rm <POD>` - Remove/stop a pod
@@ -252,6 +252,11 @@ lium up 1 --jupyter --yes
 # Execute commands
 lium exec my-pod "nvidia-smi"
 lium exec my-pod "python train.py"
+
+# Start a long job in the background and return immediately (prints PID and log path)
+lium exec my-pod -d "python train.py"                      # log: /workspace/logs/exec-<timestamp>-<id>.log
+lium exec my-pod -d --log /workspace/train.log --script train.sh
+lium exec my-pod "tail -n 200 /workspace/train.log"        # exec returns output when the command exits, so read a bounded slice
 
 # Copy files to and from pods
 lium scp my-pod ./script.py                    # Copy to /root/script.py
