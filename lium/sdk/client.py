@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Callable, Dict, Generator, List, Optional, Union
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import paramiko
 import requests
@@ -1241,7 +1241,7 @@ class Lium:
         Returns ``[]`` against a backend that predates the endpoint.
         """
         try:
-            data = self._request("GET", f"/pods/{pod_id}/events").json()
+            data = self._request("GET", f"/pods/{quote(str(pod_id), safe='')}/events").json()
         except LiumNotFoundError:
             return []
         return data if isinstance(data, list) else []
