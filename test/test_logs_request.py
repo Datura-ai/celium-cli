@@ -44,8 +44,11 @@ class _Response:
         return self
 
     def __exit__(self, *exc):
-        self.closed = True
+        self.close()
         return False
+
+    def close(self):
+        self.closed = True
 
 
 @pytest.fixture
@@ -106,6 +109,19 @@ def test_403_uses_the_parsed_detail_like_every_other_call(client, monkeypatch):
 
     with pytest.raises(LiumPermissionError, match="Permission denied: User is not verified"):
         list(client.logs("pod-1"))
+
+
+def test_a_failed_response_is_closed_before_the_exception_leaves(client, monkeypatch):
+    """With stream=True the body is never read, so the socket would live until GC."""
+    responses = [_Response(403, payload={"detail": "no"}), _Response(503), _Response(503), _Response(503)]
+    _script(monkeypatch, *responses)
+
+    with pytest.raises(LiumPermissionError):
+        list(client.logs("pod-1"))
+    with pytest.raises(LiumServerError):
+        list(client.logs("pod-1"))
+
+    assert all(response.closed for response in responses)
 
 
 def test_404_still_names_the_pod(client, monkeypatch):

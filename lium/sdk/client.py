@@ -272,7 +272,15 @@ class Lium:
         request_headers = headers or self.headers
         timeout = kwargs.pop("timeout", 30)
         resp = requests.request(method, url, headers=request_headers, timeout=timeout, **kwargs)
-        self._raise_for_status(resp)
+        try:
+            self._raise_for_status(resp)
+        except Exception:
+            # A streamed response (logs) that is never read keeps its socket
+            # until garbage collection; the caller only gets the exception.
+            close = getattr(resp, "close", None)
+            if callable(close):
+                close()
+            raise
         return resp
 
     @staticmethod
