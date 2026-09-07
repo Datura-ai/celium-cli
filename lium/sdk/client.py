@@ -1352,7 +1352,9 @@ class Lium:
         """
         try:
             events = self.pod_events(pod_id)
-        except LiumError:
+        except Exception:
+            # ``_request(retry=True)`` re-raises ``requests.RequestException`` after its retries, and a
+            # network blip here must not turn a ``PodStartError`` into "Unexpected error".
             return None
         for event in reversed(events):
             if event.get("error"):
