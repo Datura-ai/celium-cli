@@ -54,6 +54,8 @@ load_dotenv()
 
 # A POSIX shell identifier: what ``export`` accepts on the pod.
 ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")  # checked with fullmatch: `$` would let a trailing newline through
+# HTTP methods that are safe to repeat after a lost response; see ``Lium._request``.
+IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 # Public API key for the pay API (pay-tao-api-v2). Single source of truth so the
 # literal is not re-typed across every pay-API call site.
@@ -242,16 +244,21 @@ class Lium:
         endpoint: str,
         base_url: Optional[str] = None,
         headers: Optional[Dict[str, str]] = None,
-        retry: bool = True,
+        retry: Optional[bool] = None,
         **kwargs,
     ) -> requests.Response:
         """Make API request with error handling.
 
-        Transient failures (429, 5xx, network errors) are retried unless
-        ``retry`` is False. A call that creates something must pass ``False``:
-        a timed-out POST may well have succeeded server-side, and repeating it
-        blindly creates a duplicate.
+        Transient failures (429, 5xx, network errors) are retried up to three
+        times for idempotent methods (``GET``, ``HEAD``, ``OPTIONS``). Anything
+        that mutates (``POST``, ``PUT``, ``PATCH``, ``DELETE``) is sent once by
+        default: a timed-out POST may well have succeeded server-side, and
+        repeating it blindly creates a second template, volume, backup or pod;
+        a repeated DELETE turns a completed removal into "not found". Pass
+        ``retry=True`` / ``retry=False`` to override the default for one call.
         """
+        if retry is None:
+            retry = method.upper() in IDEMPOTENT_METHODS
         if retry:
             return self._request_with_retry(method, endpoint, base_url=base_url, headers=headers, **kwargs)
         return self._request_once(method, endpoint, base_url=base_url, headers=headers, **kwargs)
