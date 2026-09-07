@@ -167,6 +167,24 @@ def test_ps_wide_forces_every_column(fake_lium, monkeypatch):
     assert "Ports hidden" not in result.output
 
 
+def test_ps_keeps_every_column_when_stdout_is_not_a_terminal(fake_lium, monkeypatch):
+    """Rich reports 80 columns for a pipe; cron and CI must not lose Ports (and the IP in it)."""
+    monkeypatch.setattr(type(ps_module.console), "is_terminal", property(lambda self: False))
+    # CliRunner's stdout is a pipe, so Rich already reports 80 columns here.
+
+    output = CliRunner().invoke(cli, ["ps"]).output
+
+    assert "Ports" in output and "Ports hidden" not in output
+
+
+def test_ps_json_error_envelope_with_the_json_flag(fake_lium):
+    """`--json` must key the JSON error envelope, not just the happy path."""
+    result = CliRunner().invoke(cli, ["ps", "nope", "--json"])
+
+    assert result.exit_code == EXIT_POD_NOT_FOUND
+    assert '"pod_not_found"' in result.output
+
+
 def test_ps_shows_ports_on_a_wide_terminal(fake_lium, monkeypatch):
     monkeypatch.setattr(ps_module, "_terminal_width", lambda: 160)
 
@@ -220,10 +238,22 @@ def test_build_report_totals_and_runway():
     result = report.build_report(PODS, balance=100.0, now=NOW)
 
     assert [r.huid for r in result.pods] == ["swift-fox-c8", "calm-owl-42", "brave-lion-11"]
-    assert result.burn_per_hour == 48.8            # 17.6 + 1.2 + 30.0, pending pods bill too
+    assert result.burn_per_hour == 18.8            # 17.6 + 1.2; the PENDING pod is not billed yet
     assert result.spent_usd == 56.4                # 52.8 + 0.6 + 3.0
-    assert result.runway_hours == 2.0              # 100 / 48.8 -> 2.0h
+    assert result.runway_hours == 5.3              # 100 / 18.8 -> 5.3h
     assert "estimate" in result.note or "does not report" in result.note
+    assert "volume" in result.note
+    assert [r.billable for r in result.pods] == [True, False, True]
+
+
+def test_burn_counts_the_statuses_the_platform_bills():
+    rebooting = _pod("x-1", "reboot", status="REBOOT_PENDING", executor=_executor("A100", 1, 1.2))
+    failed_reboot = _pod("x-2", "reboot2", status="REBOOT_FAILED", executor=_executor("A100", 1, 1.2))
+    failed = _pod("x-3", "dead", status="FAILED", executor=_executor("A100", 1, 1.2))
+
+    result = report.build_report([rebooting, failed_reboot, failed], balance=None, now=NOW)
+
+    assert result.burn_per_hour == 2.4
 
 
 def test_build_report_runway_edge_cases():
@@ -237,7 +267,7 @@ def test_spend_command_table_and_summary(fake_lium):
 
     assert result.exit_code == 0, result.output
     assert "train" in result.output and "8×H100" in result.output and "$17.60" in result.output
-    assert "Burn $48.80/h across 3 pods" in result.output
+    assert "Burn $18.80/h across 2 of 3 pods" in result.output
     assert "Balance $100.00" in result.output and "runway" in result.output
 
 
@@ -246,7 +276,7 @@ def test_spend_command_json(fake_lium):
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    assert payload["burn_per_hour"] == 48.8 and payload["balance_usd"] == 100.0
+    assert payload["burn_per_hour"] == 18.8 and payload["balance_usd"] == 100.0
     assert payload["pods"][0]["huid"] == "swift-fox-c8" and payload["pods"][0]["spent_usd"] >= 52.8
     assert payload["note"]
 
@@ -271,4 +301,4 @@ def test_spend_survives_a_balance_failure(fake_lium):
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["balance_usd"] is None and payload["runway_hours"] is None
-    assert payload["burn_per_hour"] == 48.8
+    assert payload["burn_per_hour"] == 18.8

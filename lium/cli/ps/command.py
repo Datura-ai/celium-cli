@@ -24,7 +24,11 @@ WIDE_TERMINAL_COLUMNS = 120
 
 
 def _terminal_width() -> int:
+    """Columns available, or "wide" when stdout is not a terminal: Rich reports 80
+    for a pipe, and cron/CI output must keep every column (Ports carries the IP)."""
     try:
+        if not console.is_terminal:
+            return WIDE_TERMINAL_COLUMNS
         return int(console.size.width) or WIDE_TERMINAL_COLUMNS
     except Exception:  # noqa: BLE001 - no terminal at all
         return WIDE_TERMINAL_COLUMNS
@@ -71,8 +75,11 @@ def _render(pods: List[PodInfo], output_format: str, wide: bool, filtered: bool)
     default="table",
     help="Output format. 'json' emits machine-readable JSON to stdout (suitable for piping to jq).",
 )
-@click.option("--json", "json_flag", is_flag=True, help="Same as --format json")
-@click.option("--sort", "sort_key", type=click.Choice(selection.SORT_KEYS), help="Sort rows")
+@click.option("--json", "json_output", is_flag=True, help="Same as --format json")
+@click.option(
+    "--sort", "sort_key", type=click.Choice(selection.SORT_KEYS),
+    help="Sort rows. Display only: numeric targets in rm/ssh/exec follow the unsorted order of a plain 'lium ps'",
+)
 @click.option("--reverse", "-r", is_flag=True, help="Reverse the sort order")
 @click.option(
     "--filter", "filters", multiple=True, metavar="KEY=VALUE",
@@ -84,7 +91,7 @@ def _render(pods: List[PodInfo], output_format: str, wide: bool, filtered: bool)
 def ps_command(
     pod_id: Optional[str],
     output_format: str,
-    json_flag: bool,
+    json_output: bool,
     sort_key: Optional[str],
     reverse: bool,
     filters: Tuple[str, ...],
@@ -103,7 +110,7 @@ def ps_command(
       lium ps --filter gpu=H100 --filter name=train
       lium ps --watch 10                       # refresh every 10 s
     """
-    if json_flag:
+    if json_output:
         output_format = "json"
     if watch is not None and watch <= 0:
         raise CliFailure("invalid_arguments", "--watch must be a positive number of seconds", EXIT_CONFIGURATION_ERROR)

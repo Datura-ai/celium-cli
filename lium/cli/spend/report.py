@@ -14,7 +14,13 @@ from rich.table import Table
 from lium.sdk import PodInfo
 from lium.cli.ps.display import _parse_timestamp
 
-ESTIMATE_NOTE = "spent is price × wall time since creation; the API does not report billed spend"
+ESTIMATE_NOTE = (
+    "spent is price × wall time since creation; the API does not report billed spend. "
+    "burn counts RUNNING/REBOOT_PENDING/REBOOT_FAILED pods only (what the platform bills) and excludes volume storage"
+)
+# The platform bills a pod in these statuses (a reboot keeps the reservation);
+# a PENDING or FAILED pod is not charged, so it is not part of the burn.
+BILLABLE_STATUSES = frozenset({"RUNNING", "REBOOT_PENDING", "REBOOT_FAILED"})
 
 
 @dataclass
@@ -27,6 +33,7 @@ class PodSpend:
     since: Optional[str]
     uptime_hours: Optional[float]
     spent_usd: Optional[float]
+    billable: bool = True
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -41,15 +48,17 @@ def pod_spend(pod: PodInfo, now: Optional[datetime] = None) -> PodSpend:
     config = None
     if executor:
         config = f"{executor.gpu_count}×{executor.gpu_type}" if executor.gpu_count and executor.gpu_count > 1 else executor.gpu_type
+    status = pod.status.upper() if pod.status else None
     return PodSpend(
         huid=pod.huid,
         name=pod.name,
-        status=pod.status.upper() if pod.status else None,
+        status=status,
         config=config,
         price_per_hour=price,
         since=created.isoformat(timespec="seconds") if created else None,
         uptime_hours=hours,
         spent_usd=round(hours * price, 2) if hours is not None and price is not None else None,
+        billable=status in BILLABLE_STATUSES,
     )
 
 
@@ -70,7 +79,7 @@ class SpendReport:
 
 def build_report(pods: List[PodInfo], balance: Optional[float], now: Optional[datetime] = None) -> SpendReport:
     rows = sorted((pod_spend(p, now) for p in pods), key=lambda r: -(r.spent_usd or 0))
-    burn = round(sum(r.price_per_hour or 0 for r in rows), 4)
+    burn = round(sum(r.price_per_hour or 0 for r in rows if r.billable), 4)
     spent = round(sum(r.spent_usd or 0 for r in rows), 2)
     runway = round(balance / burn, 1) if balance is not None and burn > 0 and balance > 0 else None
     if balance is not None and burn > 0 and balance <= 0:
@@ -108,8 +117,10 @@ def build_table(report: SpendReport) -> Table:
 
 def summary_lines(report: SpendReport) -> List[str]:
     pods = len(report.pods)
+    billable = sum(1 for r in report.pods if r.billable)
+    counted = f"{billable} of {pods} pods" if billable != pods else f"{pods} pod{'s' if pods != 1 else ''}"
     lines = [
-        f"Burn {_usd(report.burn_per_hour)}/h across {pods} pod{'s' if pods != 1 else ''}; "
+        f"Burn {_usd(report.burn_per_hour)}/h across {counted} (volumes not included); "
         f"spent so far {_usd(report.spent_usd)} (estimated)",
     ]
     if report.balance_usd is not None:
