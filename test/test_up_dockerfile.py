@@ -466,16 +466,26 @@ def test_up_with_image_creates_a_one_time_template_and_rents_it(monkeypatch):
     # Act
     client.up(executor_id="exec-1", image="pytorch/pytorch:2.9.1-cuda13.0-cudnn9-runtime", ssh_keys=["ssh-ed25519 AAA"])
 
-    # Assert — the same template `lium up --image` creates, then the normal rent
-    assert created["docker_image"] == "pytorch/pytorch"
-    assert created["docker_image_tag"] == "2.9.1-cuda13.0-cudnn9-runtime"
+    # Assert — the same template `lium up --image` creates, then the normal rent.
+    # The reference goes to the backend whole; it splits name, tag and digest
+    # (parse_image_reference_parts, DAH-2739) — no client-side rsplit(":").
+    assert created["docker_image"] == "pytorch/pytorch:2.9.1-cuda13.0-cudnn9-runtime"
+    assert created["docker_image_tag"] == ""
     assert created["ports"] == [22]
     assert created["is_private"] is True and created["one_time_template"] is True
     assert captured["payload"]["template_id"] == "tmpl-ephemeral"
     assert captured["payload"]["dockerfile_content"] is None
 
 
-def test_up_with_image_without_tag_uses_latest(monkeypatch):
+@pytest.mark.parametrize(
+    "image",
+    [
+        "ubuntu",  # no tag: the backend defaults it to latest
+        "registry.example.com:5000/team/img",  # a colon before the last '/' is a registry port
+        "repo/name@sha256:" + "a" * 64,  # a digest reference
+    ],
+)
+def test_up_with_image_hands_the_reference_over_whole(monkeypatch, image):
     client = Lium(Config(api_key="test"))
     captured: dict = {}
     _stub_up(monkeypatch, client, captured)
@@ -484,9 +494,9 @@ def test_up_with_image_without_tag_uses_latest(monkeypatch):
         client, "create_template", lambda **kwargs: created.update(kwargs) or SimpleNamespace(id="t")
     )
 
-    client.up(executor_id="exec-1", image="ubuntu", ssh_keys=["ssh-ed25519 AAA"])
+    client.up(executor_id="exec-1", image=image, ssh_keys=["ssh-ed25519 AAA"])
 
-    assert (created["docker_image"], created["docker_image_tag"]) == ("ubuntu", "latest")
+    assert (created["docker_image"], created["docker_image_tag"]) == (image, "")
 
 
 @pytest.mark.parametrize(

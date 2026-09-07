@@ -787,11 +787,14 @@ class Lium:
             name: Human-friendly pod name (defaults to ``"Your Pod"``).
             template_id: Template ID. Defaults to the node's default template.
                 Mutually exclusive with ``image`` and ``dockerfile_content``.
-            image: Docker image to run (``"repo/name:tag"``; tag defaults to
-                ``latest``), the same as ``lium up --image``: a private one-time
-                template is created for it with port 22 exposed and the image's own
-                entrypoint/command, and deleted with the pod. Mutually exclusive
-                with ``template_id`` and ``dockerfile_content``.
+            image: Docker image to run, passed to the backend whole
+                (``"repo/name:tag"``, ``"registry:5000/team/img"``,
+                ``"repo/name@sha256:<hex>"``; the backend splits name, tag and
+                digest and defaults the tag to ``latest``), the same as
+                ``lium up --image``: a private one-time template is created for it
+                with port 22 exposed and the image's own entrypoint/command, and
+                deleted with the pod. Mutually exclusive with ``template_id`` and
+                ``dockerfile_content``.
             dockerfile_content: Raw Dockerfile text to build the pod image from on
                 the node (custom build). Mutually exclusive with ``template_id`` —
                 pass exactly one. The image is built remotely with no network
@@ -825,11 +828,10 @@ class Lium:
             raise ValueError(f"Node with ID '{executor_id}' not found")
 
         if image is not None:
-            docker_image, docker_tag = image.rsplit(":", 1) if ":" in image else (image, "latest")
             template_id = self.create_template(
                 name=f"ephemeral-{hashlib.md5(image.encode()).hexdigest()[:8]}",
-                docker_image=docker_image,
-                docker_image_tag=docker_tag,
+                docker_image=image,
+                docker_image_tag="",  # backend splits name/tag/digest
                 ports=[22],
                 is_private=True,
                 one_time_template=True,
