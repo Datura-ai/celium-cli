@@ -143,8 +143,10 @@ def test_exec_propagates_exit_codes_and_streams(session: Session, rental: Rental
         pytest.skip("pod not running")
     r = session.lium("exec", rental.name, "--json", "--", "echo out; echo err 1>&2; exit 7", timeout=240)
     assert r.rc == 7, r
-    body = r.json()
-    assert body.get("exit_code") == 7 and "out" in (body.get("stdout") or ""), body
+    body = r.json()  # {"ok": false, "results": [{"pod": …, "exit_code": 7, "stdout": …, "stderr": …, "error": null}]}
+    assert body.get("ok") is False and body.get("results"), body
+    one = body["results"][0]
+    assert one.get("exit_code") == 7 and "out" in (one.get("stdout") or "") and "err" in (one.get("stderr") or ""), one
     r = session.lium("exec", rental.name, "--", "echo -n hello-e2e", timeout=240)
     assert r.rc == 0 and "hello-e2e" in r.out, r
 

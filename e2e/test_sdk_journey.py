@@ -16,7 +16,15 @@ pytestmark = pytest.mark.timeout(900)
 
 
 @pytest.fixture(scope="module")
-def lium(session):  # `session` only for the skip when no key is configured
+def lium(session, tmp_path_factory):  # `session` only for the skip when no key is configured
+    # the SDK reads ~/.ssh/id_ed25519 for `up` (registers the .pub) and `exec` (the private key): a throwaway HOME
+    # with a fresh key, never the runner's
+    import subprocess
+
+    home = tmp_path_factory.mktemp("sdk-home")
+    (home / ".ssh").mkdir(mode=0o700)
+    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(home / ".ssh" / "id_ed25519")], check=True)
+    os.environ["HOME"] = str(home)
     os.environ["LIUM_API_KEY"] = API_KEY
     os.environ["LIUM_BASE_URL"] = API_URL
     from lium.sdk import Lium
