@@ -1,5 +1,7 @@
 """Validation logic for ls command."""
 
+import math
+
 
 def validate(
     limit: int | None,
@@ -11,8 +13,9 @@ def validate(
 ) -> tuple[bool, str | None]:
     """Validate ls command options, returns (is_valid, error_message)."""
 
-    if min_download_mbps is not None and not min_download_mbps > 0:
-        return False, "--min-download must be a positive number of Mbps"
+    # `> 0` alone lets inf through (and nan fails it): both must be refused here, not by the server's 422
+    if min_download_mbps is not None and not (math.isfinite(min_download_mbps) and min_download_mbps > 0):
+        return False, "--min-download must be a positive, finite number of Mbps"
 
     # Validate limit
     if limit is not None and limit <= 0:

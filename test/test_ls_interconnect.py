@@ -17,6 +17,7 @@ from lium.cli.cli import cli
 from lium.cli.ls import command as ls_command_module
 from lium.cli.ls import display
 from lium.cli.ls.validation import validate
+from lium.cli.utils import EXIT_CONFIGURATION_ERROR
 from lium.cli.describe.display import build_manifest, build_manifest_table
 from lium.sdk import Config, ExecutorInfo, Lium, PodInfo
 
@@ -334,12 +335,13 @@ def test_ls_table_shows_the_link_column(monkeypatch):
     assert "NV" in result.output
 
 
-@pytest.mark.parametrize("value", ["0", "-5", "nan"])
+@pytest.mark.parametrize("value", ["0", "-5", "nan", "inf", "-inf"])
 def test_ls_rejects_a_non_positive_min_download(monkeypatch, value):
-    result, _ = _run_ls(monkeypatch, [], "--min-download", value)
+    result, fake = _run_ls(monkeypatch, [], "--min-download", value)
 
-    assert result.exit_code != 0
-    assert "--min-download must be a positive number" in result.output
+    assert result.exit_code == EXIT_CONFIGURATION_ERROR
+    assert "--min-download must be a positive, finite number" in result.output
+    assert not hasattr(fake, "kwargs")  # refused locally: the SDK was never asked
 
 
 def test_validate_accepts_a_positive_min_download():
