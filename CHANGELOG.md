@@ -5,16 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
-- SDK: `PodStartError` (a `LiumError`) with `pod_id`, `pod`, `status` and `history`. `Lium.wait_ready()` raises it as soon as the pod reports a terminal status (`FAILED`, `STOPPED`, `ERROR`, `TERMINATED`, `DELETED`, `REMOVED`, `CANCELLED`), disappears from the pod list after having been seen, or is never listed in three consecutive polls. A timeout while the pod is still starting keeps returning `None`.
-- SDK: `Lium.wait_ready(..., timeout=None)` waits without limit.
-- CLI: `lium up --ready-timeout SECONDS` stops waiting for a pod that is still starting (exit 1; the pod is left running and named with a `lium rm` hint). Default unchanged: wait until ready or failed.
-
-### Changed
-- `lium up` exits 3 with `pod_start_failed`, the pod's huid, id, last status and status history when the pod fails to start, instead of polling forever. `wait_ready_no_timeout()` delegates to `Lium.wait_ready()` and raises the same error.
-
 ## [0.4.3] - 2025-10-23
 
 ### Added
