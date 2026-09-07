@@ -71,8 +71,9 @@ def _run(cmd: list | str, check=True, capture=True, cwd: Optional[str] = None) -
     if check and result.returncode != 0:
         raise RuntimeError(
             f"Command failed ({result.returncode}): {cmd_str}\n"
-            f"--- stdout ---\n{(result.stdout or '')[:4000]}\n"
-            f"--- stderr ---\n{(result.stderr or '')[:4000]}"
+            # DAH-3075: the tail — compose puts the error after screens of pull progress
+            f"--- stdout ---\n{(result.stdout or '')[-4000:]}\n"
+            f"--- stderr ---\n{(result.stderr or '')[-4000:]}"
         )
     return (result.stdout or ""), (result.stderr or "")
 
@@ -194,11 +195,9 @@ def _setup_executor_env(
         elif k == "SSH_PORT":
             put(k, ssh_port)
         elif k == "SSH_PUBLIC_PORT":
-            # only write if provided; otherwise keep template as-is or blank it
-            if ssh_public_port:
-                put(k, ssh_public_port)
-            else:
-                out_lines.append(line)  # preserve whatever template had
+            # DAH-3075: blank means "same as SSH_PORT" (the documented meaning); keeping the template's
+            # hard-coded 2200 while SSH_PORT changed sent the validator to a port nothing listens on
+            put(k, ssh_public_port or ssh_port)
         elif k == "RENTING_PORT_RANGE":
             if port_range:
                 put(k, port_range)
@@ -266,8 +265,7 @@ def _apply_env_overrides(
     set_or_append("INTERNAL_PORT", internal)
     set_or_append("EXTERNAL_PORT", external)
     set_or_append("SSH_PORT", ssh)
-    if ssh_pub:
-        set_or_append("SSH_PUBLIC_PORT", ssh_pub)
+    set_or_append("SSH_PUBLIC_PORT", ssh_pub or ssh)  # DAH-3075: never leave a stale public port behind
     if rng:
         set_or_append("RENTING_PORT_RANGE", rng)
     env_f.write_text("\n".join(content) + "\n")
