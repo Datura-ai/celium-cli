@@ -88,6 +88,10 @@ class _FakeLium:
     def ps(self):
         return [_pod(self.billed_gpus)]
 
+    def wait_ready(self, pod, **kwargs):
+        # DAH-2558: `up` now waits through Lium.wait_ready(); the fake pod is RUNNING with ssh at once
+        return _pod(self.billed_gpus)
+
     def exec(self, pod, command=None, env=None):
         _FakeLium.exec_commands.append(command)
         if self.exec_error:
