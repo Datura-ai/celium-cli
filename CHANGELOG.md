@@ -5,16 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
-- `LiumInsufficientBalanceError` (a `LiumPermissionError`) is raised for a 403 that refuses for lack of balance. `.required` and `.available` are USD floats when the server provides them, else `None`; handlers that catch `LiumPermissionError` are unaffected.
-
-### Changed
-- The SDK records where the API key came from (`env:LIUM_API_KEY` or `config:~/.lium/config.ini [api] api_key`). 401 and 403 errors now end with `key <first 6>…<last 4> from <source>`, and an insufficient-balance 403 shows the required and available amounts when the server provides them.
-- `lium balance` prints the key fingerprint and source (also in `--json` as `api_key_fingerprint` / `api_key_source`); `lium config get` prints where the value was read from.
-- `lium ps` always names the account it listed: `Account: key <first 6>…<last 4> from <source>` under the table (or under "No active pods"); with `--format json` the line goes to stderr so stdout stays a bare array. A stale `LIUM_API_KEY` in the shell (a different account than `~/.lium/config.ini`) is then visible on every listing instead of looking like an outage.
-
 ## [0.4.3] - 2025-10-23
 
 ### Added
