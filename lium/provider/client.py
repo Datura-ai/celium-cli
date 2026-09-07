@@ -313,6 +313,20 @@ class ProviderClient:
         except Exception:  # pragma: no cover - defensive
             return None
 
+    def _own_hotkey_or_fail(self) -> str:
+        """The scope for a default listing. When the signer cannot be materialised
+        (no local wallet for ``--hotkey``), refuse instead of silently falling back
+        to the portal's global view — that fallback is the very confusion DAH-2935
+        removes (a zero-node account reading 1,538 rows as its own)."""
+        hotkey = self._safe_hotkey()
+        if hotkey is None:
+            raise ProviderError(
+                f"cannot resolve the ss58 address of hotkey {self.hotkey!r} (no local wallet)",
+                code=ARG_INVALID,
+                hint="Pass --miner-hotkey <ss58> for one provider, or --all for the portal's global listing.",
+            )
+        return hotkey
+
     # ------------------------------------------------------------------
     # Profile / configuration
     #
@@ -423,7 +437,7 @@ class ProviderClient:
         """
         params: dict[str, Any] = {}
         if miner_hotkey is None and not all_miners:
-            miner_hotkey = self._safe_hotkey()
+            miner_hotkey = self._own_hotkey_or_fail()
         if miner_hotkey is not None:
             params["miner_hotkey"] = _safe_hotkey_segment(miner_hotkey)
         if page is not None:
@@ -601,7 +615,7 @@ class ProviderClient:
             )
         params: dict[str, Any] = {}
         if miner_hotkey is None and not all_miners:
-            miner_hotkey = self._safe_hotkey()
+            miner_hotkey = self._own_hotkey_or_fail()
         if miner_hotkey is not None:
             params["miner_hotkey"] = _safe_hotkey_segment(miner_hotkey)
         if page is not None:

@@ -391,6 +391,23 @@ def test_list_nodes_defaults_to_own_hotkey(client, fake_signer) -> None:
     assert params == {"miner_hotkey": fake_signer.ss58_address, "page": 2, "limit": 10}
 
 
+def test_list_nodes_without_a_resolvable_hotkey_refuses_instead_of_listing_everyone(tmp_token_store) -> None:
+    """No wallet for --hotkey on this machine: refuse, never fall back to the global view."""
+    portal = _Portal(get_body={"data": [], "total": 1538})
+
+    class _NoWallet:
+        @property
+        def ss58_address(self):
+            raise FileNotFoundError("no wallet")
+
+    c = ProviderClient(signer=_NoWallet(), token_store=tmp_token_store, http=portal)  # type: ignore[arg-type]
+    with pytest.raises(ProviderError) as exc_info:
+        c.list_nodes()
+    assert exc_info.value.code == "ARG_INVALID"
+    assert "--all" in exc_info.value.hint
+    assert portal.gets == []
+
+
 def test_list_nodes_all_miners_sends_no_hotkey_filter(client) -> None:
     portal = _Portal(get_body={"data": [], "total": 0})
     c = client(portal)
