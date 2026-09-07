@@ -11,9 +11,12 @@ on:
     - 'Dockerfile.build'
     - 'scripts/install.sh'
     - 'test/test_release_binary_targets.py'
+    - 'e2e/**'
     - '.github/workflows/ci.yml'
     - '.github/workflows/release.yml'
   workflow_dispatch:
+  schedule:
+    - cron: '17 6 * * *'   # the live e2e once a day against staging even when nobody pushes
 
 concurrency:
   group: ci-build-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -161,3 +164,69 @@ jobs:
           dist/${{ matrix.asset_name }}.tar.gz
           dist/${{ matrix.asset_name }}
         retention-days: 7
+
+  # This checkout's CLI and SDK against a LIVE Lium API (staging by default): balance → ls → up → RUNNING → exec
+  # (exit codes, the GPU paid for) → scp round trip → billing → rm → gone → final charge, plus the error contract
+  # (wrong key 3, no key 2, unknown pod 5), then the SDK's pod-lifecycle example. Rents the cheapest ≥1-GPU node
+  # under $0.50/h for a few minutes (≈ $0.02 a run). Needs the secret LIUM_E2E_API_KEY (a funded staging account);
+  # without it the job skips every test and stays green, so fork PRs are unaffected. One run at a time repo-wide:
+  # staging has one node. e2e/run.sh puts a timeout on every step and always leaves e2e/artifacts (timings,
+  # summary.md, junit, commands.json); summarised in one sticky PR comment. Reproduce: E2E_API_KEY=… e2e/run.sh
+  e2e-live:
+    name: e2e-live
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      pull-requests: write
+    concurrency:
+      group: e2e-live-staging
+      cancel-in-progress: false
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - uses: astral-sh/setup-uv@v6
+    - name: install this checkout, CLI journey, SDK journey — each under a hard timeout (e2e/run.sh)
+      id: live
+      timeout-minutes: 40
+      env:
+        E2E_API_URL: ${{ vars.LIUM_E2E_API_URL || 'https://staging.lium.io/api' }}
+        E2E_API_KEY: ${{ secrets.LIUM_E2E_API_KEY }}
+        E2E_MAX_PRICE: "0.50"
+      run: ./e2e/run.sh
+    - uses: actions/upload-artifact@v4
+      id: artifacts
+      if: always()
+      with:
+        name: e2e-live-${{ github.event.pull_request.number || github.run_id }}-${{ github.run_attempt }}
+        path: e2e/artifacts
+        retention-days: 14
+    - name: result on the PR
+      if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+      continue-on-error: true
+      uses: actions/github-script@v7
+      env:
+        OUTCOME: ${{ steps.live.outcome }}
+        ARTIFACT_URL: ${{ steps.artifacts.outputs.artifact-url }}
+      with:
+        script: |
+          const fs = require('fs');
+          const marker = '<!-- e2e-live -->';
+          const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+          const summary = fs.existsSync('e2e/artifacts/summary.md')
+            ? fs.readFileSync('e2e/artifacts/summary.md', 'utf8')
+            : `**live e2e: FAIL** — no summary written (outcome ${process.env.OUTCOME}); see the run log.`;
+          const body = [
+            marker,
+            `### live e2e · ${context.payload.pull_request.head.sha.slice(0, 8)} · [run](${runUrl})${process.env.ARTIFACT_URL ? ` · [artifacts](${process.env.ARTIFACT_URL})` : ''}`,
+            '',
+            summary.trim(),
+            '',
+            `<sub>This checkout's CLI + SDK against the live API named above (e2e/README.md). Reproduce: \`E2E_API_KEY=… e2e/run.sh\`.</sub>`,
+          ].join('\n');
+          const { data: comments } = await github.rest.issues.listComments({ ...context.repo, issue_number: context.issue.number, per_page: 100 });
+          const mine = comments.find(c => c.body?.startsWith(marker));
+          if (mine) await github.rest.issues.updateComment({ ...context.repo, comment_id: mine.id, body });
+          else await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body });
