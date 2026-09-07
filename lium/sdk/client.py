@@ -12,6 +12,7 @@ import warnings
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Dict, Generator, List, Optional, Union
@@ -1901,6 +1902,31 @@ class Lium:
             Floating-point balance value reported by ``/users/me``.
         """
         return float(self._request("GET", "/users/me").json().get("balance") or 0)
+
+    def events(
+        self,
+        *,
+        since: Optional[datetime] = None,
+        pod_id: Optional[str] = None,
+        api_key_id: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """The account's event log, newest first (``GET /users/me/events``).
+
+        Each entry is one recorded action — a rent request, creation, reboot, deletion with its
+        reason, an API/SSH key or template change — with ``actor`` naming the session or API key
+        (``api_key_id``, ``api_key_name``) that made the request; ``null`` when the platform acted
+        by itself. ``pod_id`` also answers for a pod that has since been deleted.
+        """
+        params: Dict[str, Any] = {"limit": limit}
+        if since is not None:
+            params["since"] = since.isoformat()
+        if pod_id:
+            params["pod_id"] = pod_id
+        if api_key_id:
+            params["api_key_id"] = api_key_id
+        data = self._request("GET", "/users/me/events", params=params).json()
+        return data if isinstance(data, list) else []
 
     def topup_currencies(self, refresh: bool = False) -> List[Dict[str, Any]]:
         """List stablecoin currencies/networks supported for self-serve top-ups.
