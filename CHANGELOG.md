@@ -5,11 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
-- Docs: `docs/agents.md`, a single page an LLM agent or unattended script follows end to end (environment-variable auth, JSON output and the error envelope, exit codes, rent → exec → GPU stats → rsync → rm, pod gotchas), with a table saying which flags are on `main` and which on a pending branch. Linked from the README.
-
 ## [0.4.3] - 2025-10-23
 
 ### Added
