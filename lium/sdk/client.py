@@ -2,9 +2,11 @@
 
 import getpass
 import os
+import posixpath
 import re
 import shlex
 import socket
+import stat
 import subprocess
 import time
 import warnings
@@ -116,6 +118,29 @@ class AlphaQuote:
 
 
 # Main SDK Class
+def _remote_file_path(sftp: Any, local: str, remote: str) -> str:
+    """Resolve an SFTP upload destination: a directory becomes ``<dir>/<basename(local)>``."""
+    if remote.endswith("/"):
+        _sftp_mkdir_p(sftp, remote)
+    else:
+        try:
+            if not stat.S_ISDIR(sftp.stat(remote).st_mode):
+                return remote
+        except IOError:
+            return remote  # a new file at that path
+    return posixpath.join(remote.rstrip("/") or "/", os.path.basename(local))
+
+
+def _sftp_mkdir_p(sftp: Any, path: str) -> None:
+    current = ""
+    for part in [p for p in path.split("/") if p]:
+        current += "/" + part
+        try:
+            sftp.stat(current)
+        except IOError:
+            sftp.mkdir(current)
+
+
 class Lium:
     """Clean Unix-style SDK for Lium."""
 
@@ -1094,11 +1119,17 @@ class Lium:
         return None
 
     def scp(self, pod: PodInfo, *, local: str, remote: str) -> None:
-        """Upload a local file to a pod via SFTP."""
+        """Upload a local file to a pod via SFTP.
+
+        ``remote`` is a file path, or a directory: an existing remote directory, or a
+        path ending in ``/`` (created if missing), receives the file under its own name.
+        """
         with self.ssh_connection(pod) as client:
             sftp = client.open_sftp()
-            sftp.put(local, remote)
-            sftp.close()
+            try:
+                sftp.put(local, _remote_file_path(sftp, local, remote))
+            finally:
+                sftp.close()
 
     def download(self, pod: PodInfo, *, remote: str, local: str) -> None:
         """Download a file from a pod via SFTP.
