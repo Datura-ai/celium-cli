@@ -31,6 +31,7 @@ from lium.sdk import client as utils_client_module
 from lium.sdk import (
     LiumAuthError,
     LiumError,
+    LiumHostKeyError,
     LiumInsufficientBalanceError,
     LiumNotFoundError,
     LiumPermissionError,
@@ -143,6 +144,8 @@ def test_output_env_with_another_value_keeps_text(monkeypatch):
     (LiumRateLimitError("Rate limit exceeded"), "rate_limited", EXIT_API_ERROR),
     (LiumServerError("Server error: 503"), "server_error", EXIT_API_ERROR),
     (LiumError("API error 418: teapot"), "lium_error", EXIT_API_ERROR),
+    # main's host-key pinning (DAH-2904): a changed key is an ssh failure to look at, never a retry
+    (LiumHostKeyError("Host key for pod x (203.0.113.5:2222) changed"), "ssh_host_key_changed", EXIT_SSH_ERROR),
     (ValueError("No API key found. Set LIUM_API_KEY"), "no_api_key", EXIT_CONFIGURATION_ERROR),
     (ValueError("bad value"), "value_error", EXIT_CONFIGURATION_ERROR),
     (RuntimeError("boom"), "unexpected_error", EXIT_GENERAL_ERROR),
