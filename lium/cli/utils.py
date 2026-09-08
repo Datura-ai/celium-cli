@@ -4,6 +4,8 @@ from contextlib import contextmanager
 from typing import List, Dict, Any, Tuple, Optional, Callable, TypeVar
 import json
 import os
+import sys
+import traceback
 from pathlib import Path
 import click
 from lium.cli.interactive import is_interactive, noninteractive_reason
@@ -307,6 +309,8 @@ _HINTS_BY_CODE: Dict[str, str] = {
     "not_found": "The resource is gone or the id is wrong; list it again and retry",
     "rate_limited": "Wait a few seconds and retry; back off if it repeats",
     "server_error": "Retry; if it persists, re-run with LIUM_DEBUG=1 and report the request",
+    # Not raised by any command on this branch yet; the non-interactive guard
+    # (lium/cli/ui.py confirm, DAH-2893) is what starts emitting them.
     "confirmation_required": "Re-run with --yes",
     "input_required": "Pass the value as an option instead of answering a prompt",
     "invalid_arguments": "See 'lium <command> --help' for the accepted options",
@@ -408,6 +412,11 @@ def resolve_output_format(output_format: Optional[str], json_output: bool) -> st
     return output_format or "table"
 
 
+def debug_enabled() -> bool:
+    """``LIUM_DEBUG=1`` (or true): failures also print their traceback to stderr."""
+    return os.environ.get("LIUM_DEBUG", "").strip().lower() in ("1", "true")
+
+
 def json_output_requested() -> bool:
     """``LIUM_OUTPUT=json`` asks for machine-readable failures without a per-command flag."""
     return os.environ.get(OUTPUT_ENV, "").strip().lower() == "json"
@@ -464,6 +473,10 @@ def handle_errors(func):
                  hint: str | None = None, prefix: str = "") -> None:
             # ``prefix`` ("Error: ") is for the human line only; the JSON
             # message stays the bare text a program can match on.
+            if debug_enabled():
+                # The hints say "re-run with LIUM_DEBUG=1 for details": this is
+                # the detail. Always stderr, so JSON on stdout stays clean.
+                traceback.print_exc(file=sys.stderr)
             if json_output:
                 _emit_json_error(code, message, exit_code, data, hint)
             _render_human_error(prefix + message, hint or default_hint(code, exit_code))
