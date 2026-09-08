@@ -181,6 +181,7 @@ def test_text_mode_does_not_repeat_a_hint_the_message_already_carries(monkeypatc
                              EXIT_CONFIGURATION_ERROR, hint="re-run with --yes")
 
     monkeypatch.setattr(ps_module, "Lium", _Lium)
+    monkeypatch.setattr(ps_module, "ensure_config", lambda: None)
 
     result = CliRunner().invoke(cli, ["ps"])
 
