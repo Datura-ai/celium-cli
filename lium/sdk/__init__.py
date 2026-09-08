@@ -1,6 +1,6 @@
 """Public SDK exports."""
 
-from .client import AlphaQuote, Lium
+from .client import AlphaQuote, Lium, pod_ssh_command
 from .config import Config
 from .decorators import machine
 from .exceptions import (
@@ -45,4 +45,5 @@ __all__ = [
     "PodStartError",
     "LiumHostKeyError",
     "machine",
+    "pod_ssh_command",
 ]

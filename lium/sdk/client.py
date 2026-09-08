@@ -50,7 +50,7 @@ from .models import (
     VolumeInfo,
 )
 from .ssh_key_cache import fingerprint, load_cache, save_cache
-from .utils import expand_gpu_shorthand, extract_gpu_type, generate_huid, with_retry
+from .utils import extract_gpu_type, generate_huid, with_retry
 
 load_dotenv()
 
@@ -102,28 +102,40 @@ def forget_host_key(pod: Union[PodInfo, str]) -> None:
         pass  # best effort; a pin we cannot delete surfaces as LiumHostKeyError on the next connection, which names the file
 
 
-def _ensure_known_hosts_file(path: Path) -> None:
+def _ensure_known_hosts_dir(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         os.chmod(path.parent, 0o700)
     except OSError:
         pass  # best effort (read-only or foreign filesystem); the per-file 0600 mode below is what protects the pins
+
+
+def _ensure_known_hosts_file(path: Path) -> None:
+    _ensure_known_hosts_dir(path)
     if not path.exists():
         path.touch(mode=0o600)
 
 
-def openssh_host_key_options(pod: PodInfo) -> List[str]:
+def openssh_host_key_options(pod: PodInfo, *, create_pin_file: bool = True) -> List[str]:
     """The ``-o`` arguments that make the OpenSSH client check a pod's host key.
 
     Pinned per pod under ``~/.lium/known_hosts/<pod id>`` (created here), accepted
     on the first connection and refused by ssh itself when the pod later presents
     a different key — the same rule :meth:`Lium.ssh_connection` applies through
     paramiko. ``LIUM_SSH_INSECURE=1`` returns the old accept-anything options.
+    ``create_pin_file=False`` creates only the directory (a listing that prints the
+    command should not leave a file per pod behind; ssh writes the file itself).
     """
     if ssh_insecure():
         return ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]
     hosts_file = known_hosts_path(pod)
-    _ensure_known_hosts_file(hosts_file)
+    if create_pin_file:
+        _ensure_known_hosts_file(hosts_file)
+    else:
+        try:
+            _ensure_known_hosts_dir(hosts_file)
+        except OSError:
+            pass  # a read-only home: the command is still right, ssh says it could not record the key
     # OpenSSH splits an unquoted UserKnownHostsFile value on whitespace (it takes several files); the
     # quotes keep a home directory with a space in it as one path.
     return ["-o", "StrictHostKeyChecking=accept-new", "-o", f'UserKnownHostsFile="{hosts_file}"']
@@ -165,6 +177,26 @@ def ssh_target(ssh_cmd: Optional[str]) -> tuple[str, str, int]:
             raise ValueError(f"Unexpected ssh command from the API: {ssh_cmd!r}")
         port = int(tokens[3])
     return user, host, port
+
+
+def pod_ssh_command(pod: PodInfo) -> Optional[str]:
+    """The pod's ssh command for a shell, with the host-key options and without a key.
+
+    ``ssh -p <port> -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=<pin> <user>@<host>``
+    (:func:`ssh_target` + :func:`openssh_host_key_options`, shell-quoted): what
+    ``lium ps --format json`` and ``lium describe`` show as ``ssh_command``. It
+    carries no ``-i <key>`` — the key path lives in the SDK config, not in the pod
+    record; :meth:`Lium.ssh` adds it. Unlike :meth:`Lium.ssh` it creates no pin
+    file (only the directory): a listing leaves nothing per pod behind. None when
+    the pod has no ssh command yet or the API's value is not ``ssh <user>@<host>
+    [-p <port>]``; both views keep the raw ``ssh_cmd`` next to it.
+    """
+    try:
+        user, host, port = ssh_target(pod.ssh_cmd)
+    except ValueError:
+        return None
+    options = openssh_host_key_options(pod, create_pin_file=False)
+    return shlex.join(["ssh", "-p", str(port), *options, f"{user}@{host}"])
 
 
 class _PinOnFirstUsePolicy(paramiko.MissingHostKeyPolicy):
@@ -1712,7 +1744,29 @@ class Lium:
         argv += ["-p", str(port), *openssh_host_key_options(pod), f"{user}@{host}"]
         return argv
 
-    def ssh(self, pod: PodInfo) -> str:
+    def refresh_pod(self, pod: Union[str, PodInfo]) -> PodInfo:
+        """Re-read one pod from the API.
+
+        A ``PodInfo`` is a snapshot: after a restart the pod's host, port and
+        ``ssh_cmd`` can all change, and the copy a caller holds says nothing
+        about it. Call this before reconnecting to a pod held for a while.
+
+        Args:
+            pod: A ``PodInfo``, a pod id or a huid.
+
+        Returns:
+            The current ``PodInfo`` for that pod (one ``/pods`` call).
+
+        Raises:
+            LiumNotFoundError: The pod is no longer in the account's pod list.
+        """
+        pod_id = pod.id if isinstance(pod, PodInfo) else pod
+        current = next((p for p in self.ps() if pod_id in (p.id, p.huid)), None)
+        if current is None:
+            raise LiumNotFoundError(f"Pod not found: {pod_id}")
+        return current
+
+    def ssh(self, pod: PodInfo, *, refresh: bool = False) -> str:
         """Get SSH command string for connecting to a pod.
 
         The shell-quoted form of :meth:`ssh_argv`: the configured key, the pinned
@@ -1722,13 +1776,19 @@ class Lium:
 
         Args:
             pod: The pod to generate SSH command for.
+            refresh: Re-read the pod first (see :meth:`refresh_pod`), so the
+                command reflects the host and port the pod has *now*, not the
+                ones it had when ``pod`` was fetched.
 
         Returns:
             SSH command string with the configured SSH key path.
 
         Raises:
             ValueError: If SSH is not configured for the pod or no SSH key path is set.
+            LiumNotFoundError: ``refresh=True`` and the pod is gone.
         """
+        if refresh:
+            pod = self.refresh_pod(pod)
         if not pod.ssh_cmd or not self.config.ssh_key_path:
             raise ValueError("No SSH configured")
 
