@@ -173,6 +173,36 @@ def test_windows_home_directories_are_scrubbed_too():
     assert telemetry.scrub_text("C:\\Users\\Renter Two\nnext line") == "~\nnext line"   # home dir last on its line
     assert telemetry.scrub_text(r"'C:\Users\Renter Two' is not writable") == "'~' is not writable"
     assert telemetry.scrub_text(r"C:\Users\O'Brien\lium\cli.py and 'C:\Users\D'Souza' too") == r"~\lium\cli.py and '~' too"
+    # an apostrophe followed by a non-ASCII letter is still inside the name
+    assert telemetry.scrub_text(r"C:\Users\D'Ávila\x and 'C:\Users\D'Ávila' too") == r"~\x and '~' too"
+    # a bare home directory followed by prose and a second path: the second path's `C:` is not swallowed
+    text = r"C:\Users\Renter Two not writable; falling back to C:\Users\Renter Two\AppData\Local\Temp"
+    assert telemetry.scrub_text(text) == r"~~\AppData\Local\Temp"
+    assert telemetry.scrub_text(r"cannot use C:\Users\bob, using C:\Users\bob\.lium instead") == r"cannot use ~~\.lium instead"
+
+
+def test_a_windows_path_inside_a_real_oserror_message_is_scrubbed(events):
+    """`OSError.__str__` reprs the filename, doubling the backslashes (`'C:\\Users\\Renter Two\\…'`); an
+    `open()` failure under `~/.lium` is the likeliest unexpected error that carries a home directory."""
+    assert telemetry.init("lium up", "0.0.33") is True
+    user = " ".join(["Renter", "Two"])   # built at runtime: the SDK attaches source context lines
+
+    @click.command("up")
+    @handle_errors
+    def up():
+        raise FileNotFoundError(2, "No such file or directory", "C:\\Users\\" + user + "\\.lium\\config.ini")
+
+    assert CliRunner().invoke(up, []).exit_code == EXIT_GENERAL_ERROR
+    assert len(events) == 1
+    value = events[0]["exception"]["values"][0]["value"]
+    assert value == "[Errno 2] No such file or directory: '~\\\\.lium\\\\config.ini'"
+    assert user not in repr(events[0])
+    for message in (
+        str(PermissionError(13, "Permission denied", "C:\\Users\\O'Brien\\.lium")),
+        str(FileExistsError(17, "File exists", r"C:\Users\bob\a", 0, r"C:\Users\bob\b")),
+        str(KeyError(r"C:\Users\bob\x")),
+    ):
+        assert "Users" not in telemetry.scrub_text(message), message
 
 
 def test_scrub_patterns_are_linear_on_long_text_and_the_message_is_capped(monkeypatch):
@@ -191,7 +221,29 @@ def test_scrub_patterns_are_linear_on_long_text_and_the_message_is_capped(monkey
     monkeypatch.setattr(telemetry, "_initialised", False)
     monkeypatch.setattr(sentry_sdk, "init", lambda **kwargs: seen.update(kwargs))
     assert telemetry.init("lium up", "0.0.33") is True
-    assert seen["max_value_length"] == 4096 and seen["include_local_variables"] is False
+    assert seen["include_local_variables"] is False
+
+
+def test_a_long_message_is_capped_before_the_scrubber_sees_it(events, monkeypatch):
+    """The SDK serialises (and truncates to max_value_length) before it calls before_send, so a 15,000-char
+    message reaches _scrub_event as MAX_VALUE_LENGTH characters ending in `...`."""
+    seen = {}
+    real_scrub = telemetry._scrub_event
+
+    def spy(event, hint):
+        seen["value"] = event["exception"]["values"][0]["value"]
+        return real_scrub(event, hint)
+    monkeypatch.setattr(telemetry, "_scrub_event", spy)
+    assert telemetry.init("lium up", "0.0.33") is True
+
+    @click.command("up")
+    @handle_errors
+    def up():
+        raise RuntimeError("m" * 15000)
+
+    assert CliRunner().invoke(up, []).exit_code == EXIT_GENERAL_ERROR
+    assert len(seen["value"]) == telemetry.MAX_VALUE_LENGTH and seen["value"].endswith("...")
+    assert events[0]["exception"]["values"][0]["value"] == seen["value"]
 
 
 def test_windows_frame_paths_are_scrubbed(events):

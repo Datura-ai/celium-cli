@@ -35,15 +35,20 @@ DEFAULT_API_HOST = "lium.io"
 
 _TRUE = {"1", "true", "yes", "on"}
 
+MAX_VALUE_LENGTH = 4096   # sentry_sdk.init(max_value_length=…): the exception message is capped before _scrub_event sees it
+
 # home directories (a username is PII — macOS, Linux and Windows spellings) and the usual credential shapes.
-# A Windows username may contain spaces and apostrophes ("Renter Two", "O'Brien"), so that segment runs to
-# the next backslash, double quote, closing quote (an apostrophe not followed by a letter) or line end — never
-# to the next space, which would leave the second half of the name in the event. Every pattern here is
+# A Windows username may contain spaces and apostrophes ("Renter Two", "O'Brien", "D'Ávila"), so that segment
+# runs to the next backslash, double quote, closing quote (an apostrophe not followed by a word character), the
+# start of another drive path (`C:\`) or line end — never to the next space, which would leave the second half
+# of the name in the event. The separator is one or two backslashes: `OSError.__str__` (and `KeyError`,
+# `CalledProcessError`, anything that reprs its argument) doubles them, as in
+# `[Errno 2] No such file or directory: 'C:\\Users\\Renter Two\\.lium\\config.ini'`. Every pattern here is
 # linear on the event text: no `\b` before an unbounded class (the e-mail pattern was quadratic on long
-# messages), and `sentry_sdk.init(max_value_length=…)` caps the text before it reaches them.
+# messages), and `sentry_sdk.init(max_value_length=MAX_VALUE_LENGTH)` caps the text before it reaches them.
 _SCRUB = (
     (re.compile(r"(?:/Users|/home)/[^/\s'\"]+"), "~"),
-    (re.compile(r"(?i)[A-Z]:\\Users\\[^\\\"\n]+?(?=[\\\"\n]|'(?![A-Za-z0-9])|\Z)"), "~"),
+    (re.compile(r"(?i)[A-Z]:\\{1,2}Users\\{1,2}[^\\\"\n]+?(?=[\\\"\n]|'(?!\w)|[A-Za-z]:\\|\Z)"), "~"),
     (re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b"), "[email]"),
     (re.compile(r"\bsk_[A-Za-z0-9_-]{16,}"), "[api-key]"),
     (re.compile(r"\b(?:ssh-(?:rsa|dss|ed25519)|ecdsa-sha2-nistp\d{3})\s+[A-Za-z0-9+/=]+(?:\s+\S+)?"), "[ssh-key]"),
@@ -156,7 +161,7 @@ def init(command: Optional[str], version: str) -> bool:
         include_local_variables=False,
         send_default_pii=False,
         max_request_body_size="never",   # the CLI makes requests but never serves them; nothing request-shaped may travel
-        max_value_length=4096,           # the exception message is capped before _scrub_event sees it
+        max_value_length=MAX_VALUE_LENGTH,   # the exception message is capped before _scrub_event sees it
         traces_sample_rate=0,
         before_send=_scrub_event,
     )
