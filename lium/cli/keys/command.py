@@ -78,5 +78,5 @@ def keys_create_command(name: str, workspace: Optional[str], save: bool, json_ou
     ui.success(f"Key '{name}' created in {target.name}")
     ui.print(key.get("key", ""))
     ui.dim(
-        f"Saved for `lium --workspace {target.name} …`" if save else f"Not saved; add --save to use it with --workspace"
+        f"Saved for `lium --workspace {target.name} …`" if save else "Not saved; add --save to use it with --workspace"
     )
