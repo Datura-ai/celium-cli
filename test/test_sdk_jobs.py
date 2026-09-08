@@ -52,13 +52,23 @@ class _Client(Lium):
 class _Stream:
     def __init__(self, text: str = "", exit_code: int = 0):
         self._text = text
+        self.written = b""
         self.channel = SimpleNamespace(exit_status_ready=lambda: True, recv_exit_status=lambda: exit_code, close=lambda: None)
 
     def read(self):
         return self._text.encode()
 
+    def write(self, data):
+        self.written += data
+
     def close(self):
         pass
+
+
+class _Sent(list):
+    """The remote command lines sent, with ``.stdins[i]`` the stdin written for each."""
+
+    stdins: list
 
 
 def _ssh_answering(monkeypatch, client, answers):
@@ -67,7 +77,8 @@ def _ssh_answering(monkeypatch, client, answers):
     Each answer is a string (stdout, exit 0), a ``(stdout, exit_code)`` tuple, or an
     exception instance to raise when connecting. The last answer repeats.
     """
-    sent: list[str] = []
+    sent = _Sent()
+    stdins: list[_Stream] = []  # what the client wrote to each session before closing it
     queue = list(answers)
 
     def _next():
@@ -78,7 +89,9 @@ def _ssh_answering(monkeypatch, client, answers):
             sent.append(command)
             answer = _next()
             stdout, code = answer if isinstance(answer, tuple) else (answer, 0)
-            return _Stream(), _Stream(stdout, code), _Stream("")
+            stdin = _Stream()
+            stdins.append(stdin)
+            return stdin, _Stream(stdout, code), _Stream("")
 
     @contextmanager
     def fake_connection(pod, timeout=30):
@@ -87,6 +100,7 @@ def _ssh_answering(monkeypatch, client, answers):
         yield _Ssh()
 
     monkeypatch.setattr(client, "ssh_connection", fake_connection)
+    sent.stdins = stdins
     return sent
 
 
@@ -205,40 +219,53 @@ def test_run_background_names_the_job_after_the_time_by_default(monkeypatch):
     assert job.log_path == f"/workspace/logs/{job.name}.log"
 
 
-def test_run_background_exports_env_inside_the_job_shell(monkeypatch):
+def test_run_background_sends_env_over_stdin_and_applies_it_inside_the_job_shell(monkeypatch):
+    """The value never sits in the pod's argv (DAH-2984): the exports travel over stdin
+    as one variable, the job's `bash -lc` applies them after its profile (so the given
+    value wins), and the .cmd file records the command as given, so job() returns the
+    same command and no secret is written to disk."""
     client = _Client()
     sent = _ssh_answering(monkeypatch, client, ["7\n"])
 
     job = client.run_background(_pod(), "run", name="j", env={"HF_HOME": "/workspace/hf"})
 
-    assert "export HF_HOME=/workspace/hf && run" in sent[0]
-    # The .cmd file records the command as given; env values stay out of it, so
-    # job() returns the same command and no secret is written to disk.
+    assert sent[0].startswith('eval "$(cat)" && mkdir -p /workspace/logs || exit 1; ')
+    assert "/workspace/hf" not in sent[0]
+    assert sent.stdins[0].written == b"export LIUM_JOB_ENV='export HF_HOME=/workspace/hf'"
+    inner = 'eval "$LIUM_JOB_ENV" || exit 1; unset LIUM_JOB_ENV; run'
+    wrapper = f"bash -lc {shlex.quote(inner)}; echo $? > /workspace/logs/j.exit"
+    assert f"bash -c {shlex.quote(wrapper)}" in sent[0]
     assert "printf %s run > /workspace/logs/j.cmd" in sent[0]
     assert job.command == "run"
 
 
-def test_launcher_env_precedes_workdir_and_stays_out_of_the_cmd_file():
-    line = build_job_launcher("python train.py", name="t", workdir="/workspace/repo", env={"TOKEN": "s3cret"})
+def test_launcher_prelude_precedes_workdir_and_the_command_and_stays_out_of_the_cmd_file():
+    line = build_job_launcher("python train.py", name="t", workdir="/workspace/repo", prelude="true; ")
 
-    assert "export TOKEN=s3cret && cd /workspace/repo && python train.py" in line
-    assert "printf %s 'python train.py' > /workspace/logs/t.cmd" in line
-    assert line.count("s3cret") == 1
-
-
-def test_launcher_env_values_are_quoted_and_keys_validated():
-    """A value with quotes or `$(` is a literal inside the job shell, never shell text."""
-    line = build_job_launcher("run", name="t", env={"MSG": 'say "hi" $(id)'})
-
-    # the job shell (bash -lc <inner>) sees `export MSG='say "hi" $(id)' && run`, the value one literal word
-    inner = "export MSG=" + shlex.quote('say "hi" $(id)') + " && run"
+    inner = "true; cd /workspace/repo && python train.py"
     wrapper = f"bash -lc {shlex.quote(inner)}; echo $? > /workspace/logs/t.exit"
     assert f"bash -c {shlex.quote(wrapper)}" in line
+    assert "printf %s 'python train.py' > /workspace/logs/t.cmd" in line
 
-    with pytest.raises(ValueError, match="Invalid environment variable name"):
-        build_job_launcher("run", name="t", env={"BAD-NAME": "x"})
-    with pytest.raises(ValueError, match="Invalid environment variable name"):
-        build_job_launcher("run", name="t", env={"X; rm -rf /": "x"})
+
+def test_run_background_env_values_are_quoted_and_keys_validated(monkeypatch):
+    """A value with quotes or `$(` reaches the job as one literal export; a key that is
+    not a variable name is refused before anything is sent."""
+    client = _Client()
+    sent = _ssh_answering(monkeypatch, client, ["7\n"])
+
+    client.run_background(_pod(), "run", name="t", env={"MSG": 'say "hi" $(id)'})
+
+    exports = "export MSG=" + shlex.quote('say "hi" $(id)')
+    assert sent.stdins[0].written == b"export LIUM_JOB_ENV=" + shlex.quote(exports).encode()
+    assert "$(id)" not in sent[0]
+
+    for bad in ("BAD-NAME", "X; rm -rf /"):
+        with pytest.raises(ValueError, match="Invalid environment variable name"):
+            client.run_background(_pod(), "run", name="t", env={bad: "x"})
+    with pytest.raises(ValueError, match="LIUM_JOB_ENV is reserved"):
+        client.run_background(_pod(), "run", name="t", env={"LIUM_JOB_ENV": "x"})
+    assert len(sent) == 1  # nothing else reached the pod
 
 
 def test_run_background_refuses_a_name_whose_job_is_still_running(monkeypatch):

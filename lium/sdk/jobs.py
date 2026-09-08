@@ -49,16 +49,6 @@ def validate_job_name(name: str) -> str:
     return name
 
 
-_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-
-
-def _validate_env_name(key: str) -> str:
-    """An ``env`` key must be a shell variable name; anything else would be shell text."""
-    if not _ENV_NAME_RE.match(key or ""):
-        raise ValueError(f"Invalid environment variable name {key!r}: use letters, digits and '_'")
-    return key
-
-
 def default_job_name() -> str:
     return time.strftime("job-%Y%m%dT%H%M%SZ", time.gmtime())
 
@@ -104,7 +94,7 @@ def build_job_launcher(
     name: str,
     job_dir: str = DEFAULT_JOB_DIR,
     workdir: Optional[str] = None,
-    env: Optional[Dict[str, str]] = None,
+    prelude: str = "",
 ) -> str:
     """The remote command line that starts ``command`` as job ``name`` and prints its PID.
 
@@ -115,21 +105,20 @@ def build_job_launcher(
     name whose process is still alive is refused (exit 3) rather than silently
     running two servers.
 
-    ``env`` is exported inside the job shell, ahead of ``workdir`` and the
-    command; the ``.cmd`` file records the raw ``command`` only, so
-    :meth:`Lium.job` hands back the same ``command`` :meth:`Lium.run_background`
-    was given and no environment value is written to disk.
+    Environment values are not part of this line: :meth:`Lium.run_background`
+    hands them to :meth:`Lium.exec`, which exports them over the session's stdin
+    as one variable, and passes the ``prelude`` that applies them inside the job
+    shell (after ``bash -lc``'s profile, ahead of ``workdir`` and the command). The
+    ``.cmd`` file records the raw ``command`` only, so :meth:`Lium.job` hands back
+    the same ``command`` :meth:`Lium.run_background` was given and no environment
+    value is written to disk.
     """
     q = shlex.quote
     name = validate_job_name(name)  # safe to interpolate: [A-Za-z0-9_.-] only
     p = job_paths(name, job_dir)
     pid_file = q(p["pid_file"])
     inner = command if workdir is None else f"cd {q(workdir)} && {command}"
-    if env:
-        # Quoted like every other interpolation here: a value with `"` or `$(` is a
-        # literal, not shell; a key that is not a variable name is refused up front.
-        exports = " && ".join(f"export {_validate_env_name(key)}={q(str(value))}" for key, value in env.items())
-        inner = f"{exports} && {inner}"
+    inner = prelude + inner
     wrapper = f"bash -lc {q(inner)}; echo $? > {q(p['exit_file'])}"
     # "still running" needs the recorded PID to be the job's own process, not one that
     # took the number after a pod restart (the .pid file on /workspace survives one).

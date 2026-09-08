@@ -342,9 +342,10 @@ def test_two_default_log_paths_in_the_same_second_differ():
     assert Lium.default_detach_log_path() != Lium.default_detach_log_path()
 
 
-def test_exec_detach_sends_env_over_stdin_not_in_the_launcher_line(monkeypatch):
-    """The detached process inherits the exports from the launching shell; the
-    value never sits in the pod's argv (DAH-2984 applies to detach too)."""
+def test_exec_detach_sends_env_over_stdin_and_applies_it_inside_the_login_shell(monkeypatch):
+    """The value never sits in the pod's argv (DAH-2984 applies to detach too): the
+    exports travel over stdin as one variable, and the detached `bash -lc` applies
+    them after its profile, so the given value wins over a profile assignment."""
     client = _Client()
     sent, channel = _ssh_returning(monkeypatch, client, "7\n")
 
@@ -352,8 +353,8 @@ def test_exec_detach_sends_env_over_stdin_not_in_the_launcher_line(monkeypatch):
 
     assert sent[0].startswith('eval "$(cat)" && ')
     assert "/workspace/hf" not in sent[0]
-    assert "nohup setsid bash -lc run" in sent[0]
-    assert channel.stdin.written == b"export HF_HOME=/workspace/hf"
+    assert "nohup setsid bash -lc 'eval \"$LIUM_JOB_ENV\" || exit 1; unset LIUM_JOB_ENV; run'" in sent[0]
+    assert channel.stdin.written == b"export LIUM_JOB_ENV='export HF_HOME=/workspace/hf'"
 
 
 def test_exec_detach_fails_loudly_when_no_pid_came_back(monkeypatch):

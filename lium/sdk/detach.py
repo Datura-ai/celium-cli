@@ -17,10 +17,13 @@ DEFAULT_DETACH_LOG_DIR = "/workspace/logs"
 # ``echo $!`` prints a PID as soon as the shell forks, whether or not the child
 # manages to exec, so both programs the launcher needs are checked first. A
 # failed check writes to stderr only and exits before anything is started; the
-# caller then sees "no PID" plus the reason instead of a false "Started".
+# caller then sees "no PID" plus the reason instead of a false "Started". The
+# trailing ``&&`` chains the check to the ``mkdir … || exit 1`` that follows, so
+# anything ``&&``-ed in front of the launcher (the ``eval "$(cat)"`` with which
+# ``Lium.exec`` applies the stdin exports) failing stops the launch too.
 _PREFLIGHT = (
     'for t in setsid bash; do command -v "$t" >/dev/null 2>&1 || '
-    '{ echo "$t not found on the pod" >&2; exit 127; }; done; '
+    '{ echo "$t not found on the pod" >&2; exit 127; }; done && '
 )
 
 

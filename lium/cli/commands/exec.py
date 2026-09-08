@@ -105,12 +105,16 @@ def build_script_upload_command(script_text: str, remote_path: str) -> str:
     )
 
 
-def build_detached_script_command(script_text: str, log_path: str, token: str) -> str:
-    """Copy the script to the pod, then start it detached and print its PID."""
+def build_detached_script_command(script_text: str, log_path: str, token: str, prelude: str = "") -> str:
+    """Copy the script to the pod, then start it detached and print its PID.
+
+    ``prelude`` runs inside the detached login shell before the script (the
+    ``-e`` exports, see :meth:`Lium.login_shell_env`).
+    """
     remote_script = f"{DETACH_SCRIPT_DIR}/lium-exec-{token}.sh"
     return (
         f"{build_script_upload_command(script_text, remote_script)} && "
-        f"{build_detached_command(remote_script, log_path)}"
+        f"{build_detached_command(prelude + remote_script, log_path)}"
     )
 
 
@@ -330,12 +334,16 @@ def exec_command(
     if detach:
         token = detach_token()
         log_path = log_path or default_detach_log_path(token)
+        # The detached process runs under a login shell whose profile would win
+        # over an inherited value: the -e exports travel as one variable and are
+        # applied inside that shell instead (names only ever reach the pod's argv).
+        prelude, env_dict = lium.login_shell_env(env_dict)
         # A script is copied to the pod first so the detached process runs it
         # from a file rather than from a command line that ends with this session.
         if script:
-            command_to_run = build_detached_script_command(command_to_run, log_path, token)
+            command_to_run = build_detached_script_command(command_to_run, log_path, token, prelude=prelude)
         else:
-            command_to_run = build_detached_command(command_to_run, log_path)
+            command_to_run = build_detached_command(prelude + command_to_run, log_path)
 
     if len(selected_pods) == 1:
         results = [lium.exec(selected_pods[0], command=command_to_run, env=env_dict)]

@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any, Callable, Dict, Generator, List, Optional, Union
+from typing import Any, Callable, Dict, Generator, List, Optional, Tuple, Union
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
@@ -1900,13 +1900,15 @@ class Lium:
                 command line, so ``ps`` on the pod never shows them.
             timeout: Seconds to wait for the command to finish. When it runs
                 out the channel is closed and :class:`TimeoutError` is raised;
-                the remote process may keep running.
+                the remote process may keep running. With ``detach`` it bounds
+                only the launcher (default 60 s), never the job.
             detach: Start the command in the background on the pod and return
                 at once. The command runs under ``nohup setsid`` with stdin
                 closed and stdout/stderr to ``log_path``, so it survives the
                 SSH session ending — the shape every user otherwise rediscovers
-                by hand. ``env`` reaches it the same way: exported over stdin
-                in the launching shell, inherited by the detached process.
+                by hand. ``env`` still travels over stdin, and is applied inside
+                the detached login shell after its profile, so the given value
+                wins.
             log_path: Log file for ``detach`` (default
                 ``/workspace/logs/exec-<UTC timestamp>-<id>.log``, the ``<id>`` a
                 6-hex tail that keeps two launches in the same second apart).
@@ -1965,6 +1967,40 @@ class Lium:
     # --detach`; this is the SDK's public name for it.
     build_detached_command = staticmethod(detach.build_detached_command)
 
+    # A detached command and a background job run under ``bash -lc``, and a login
+    # shell runs the pod's profile after inheriting the environment, so a value
+    # merely inherited loses to any name the profile assigns (Debian's
+    # ``/etc/profile`` reassigns PATH unconditionally). The exports therefore
+    # travel as the value of this one variable — over stdin, so no value is in
+    # argv (DAH-2984) — and are re-applied inside the login shell, after the
+    # profile, where the given value wins. Only the name below is in argv.
+    JOB_ENV_VAR = "LIUM_JOB_ENV"
+
+    @classmethod
+    def login_shell_env(cls, env: Optional[Dict[str, str]]) -> Tuple[str, Optional[Dict[str, str]]]:
+        """``(prelude, exec_env)`` that make a ``bash -lc`` job see ``env``.
+
+        ``prelude`` goes in front of the job's command inside the login shell;
+        ``exec_env`` is what the launching :meth:`exec` call exports over stdin.
+        Both are empty when ``env`` is. ``lium exec --detach`` uses it the same
+        way for the launcher it builds itself. An export the job shell cannot
+        apply (a name bash keeps read-only, such as ``UID``, or one the pod's
+        profile marked ``readonly``) ends the shell with exit 1 and the reason
+        in the log; the command never runs with a different environment than
+        the one asked for.
+
+        Raises:
+            ValueError: an ``env`` name is not a shell identifier, or is
+                :attr:`JOB_ENV_VAR` itself (the carrier, unset before the
+                command runs).
+        """
+        if not env:
+            return "", None
+        if cls.JOB_ENV_VAR in env:
+            raise ValueError(f"{cls.JOB_ENV_VAR} is reserved: it carries the other variables to the job shell")
+        prelude = f'eval "${cls.JOB_ENV_VAR}" || exit 1; unset {cls.JOB_ENV_VAR}; '
+        return prelude, {cls.JOB_ENV_VAR: cls._env_exports(env)}
+
     def _exec_detached(
         self,
         pod: PodInfo,
@@ -1975,11 +2011,9 @@ class Lium:
         timeout: Optional[float],
     ) -> Dict[str, Any]:
         log_path = log_path or self.default_detach_log_path()
-        # ``env`` goes to exec(), not into the launcher line: the launching shell
-        # exports it from stdin and the detached process inherits it, so the
-        # values never sit in the pod's argv (DAH-2984).
-        launcher = self.build_detached_command(command, log_path)
-        result = self.exec(pod, command=launcher, env=env, timeout=timeout or 60)
+        prelude, exec_env = self.login_shell_env(env)
+        launcher = self.build_detached_command(prelude + command, log_path)
+        result = self.exec(pod, command=launcher, env=exec_env, timeout=timeout or 60)
         pid = self._parse_pid(result.get("stdout", ""))
         if pid is None:
             raise LiumError(
@@ -2013,7 +2047,9 @@ class Lium:
 
         The job survives this SSH session and this process: it runs under
         ``nohup setsid`` with stdin closed, logs to ``<job_dir>/<name>.log``, records
-        its PID in ``<name>.pid`` and its exit code in ``<name>.exit`` when it ends.
+        its PID in ``<name>.pid`` (with the process's boot id and start time in
+        ``<name>.id``, so a reused PID never passes as the job) and its exit code
+        in ``<name>.exit`` when it ends.
         :meth:`job` re-attaches later by name.
 
         Args:
@@ -2022,7 +2058,10 @@ class Lium:
                 environment — conda, PATH — applies).
             name: Job name, also the stem of its files; default ``job-<UTC timestamp>``.
                 Refused when a job of that name is still running on the pod.
-            env: Environment variables exported before the command.
+            env: Environment variables for the job. Sent over the session's
+                stdin like :meth:`exec` does, never in a command line, and
+                applied inside the job shell after its login profile, so the
+                given value wins.
             workdir: Directory to ``cd`` into first.
             job_dir: Where the job files live (default ``/workspace/logs``, the
                 fast local volume rather than the encrypted ``/root``).
@@ -2032,10 +2071,12 @@ class Lium:
             LiumError: the launcher printed no PID, or the name is taken by a live job.
         """
         name = validate_job_name(name or default_job_name())
-        # The raw command goes to the launcher; env is exported inside the job
-        # shell there, so the .cmd file (what job() reads back) never carries it.
-        launcher = build_job_launcher(command, name=name, job_dir=job_dir, workdir=workdir, env=env)
-        result = self.exec(pod, command=launcher, timeout=timeout)
+        # The raw command goes to the launcher (so the .cmd file job() reads back
+        # never carries a value) and env goes to exec() as one variable the job
+        # shell re-applies after its profile — see login_shell_env.
+        prelude, exec_env = self.login_shell_env(env)
+        launcher = build_job_launcher(command, name=name, job_dir=job_dir, workdir=workdir, prelude=prelude)
+        result = self.exec(pod, command=launcher, env=exec_env, timeout=timeout)
         pid = self._parse_pid(result.get("stdout", "")) if result.get("success") else None
         if pid is None:
             detail = result.get("stderr", "").strip() or result.get("stdout", "").strip() or "launcher printed no PID"
@@ -2368,7 +2409,8 @@ class Lium:
 
         Returns:
             PodInfo when the pod is ready, otherwise ``None`` if the timeout
-            expires while the pod is still starting.
+            expires while the pod is still starting (or, with ``ready_port``,
+            while the port has not answered yet).
 
         Raises:
             PodStartError: The pod reached a terminal status (``FAILED``,
