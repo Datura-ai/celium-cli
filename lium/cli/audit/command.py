@@ -94,6 +94,8 @@ def _when(created_at: Optional[str]) -> str:
         stamp = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
     except ValueError:
         return created_at
+    if stamp.tzinfo is not None:
+        stamp = stamp.astimezone(timezone.utc)   # the column is UTC whatever offset the stamp carries
     return stamp.strftime("%Y-%m-%d %H:%M:%SZ")
 
 

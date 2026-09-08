@@ -88,6 +88,18 @@ def test_table_reads_oldest_first_and_names_the_actor(monkeypatch):
     assert "user_initiated" in out
 
 
+def test_when_column_is_utc_whatever_offset_the_stamp_carries(monkeypatch):
+    aware = [_event("pod-create.success", created_at="2026-09-06T04:02:00+02:00"),
+             _event("pod-rent.requested", created_at="2026-09-06T04:00:00Z", actor={"auth": "session"})]
+
+    result = _run(monkeypatch, events=aware)
+
+    assert result.exit_code == 0, result.output
+    assert "2026-09-06 02:02:00Z" in result.output      # +02:00 wall clock converted, not relabelled
+    assert "2026-09-06 04:00:00Z" in result.output
+    assert "04:02:00Z" not in result.output
+
+
 def test_json_prints_the_events_as_returned(monkeypatch):
     result = _run(monkeypatch, "--json")
 
