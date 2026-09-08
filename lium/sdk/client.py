@@ -2244,13 +2244,17 @@ class Lium:
 
         ``partial`` keeps half-copied files so an interrupted transfer resumes
         instead of starting over — multi-GB pulls over a flaky link are the
-        normal case, not the exception.
+        normal case, not the exception. It stays ``--partial`` only: ``--inplace``
+        would drop rsync's write-then-rename, and a job on the pod could read a
+        half-written checkpoint. ``progress`` is plain ``--progress``, which both
+        GNU rsync and the openrsync stock macOS ships accept (``--info=progress2``
+        needs GNU rsync >= 3.1 and dies before any byte moves on a Mac).
         """
         options = ["-az"]
         if partial:
-            options += ["--partial", "--inplace"]
+            options += ["--partial"]
         if progress:
-            options += ["--info=progress2"]
+            options += ["--progress"]
         if bwlimit is not None:
             if bwlimit <= 0:
                 raise ValueError("bwlimit must be a positive number of KiB/s")
@@ -2406,25 +2410,52 @@ class Lium:
             return result
         finally:
             if authorized:
+                revoke = self.revoke_transfer_key_command(marker)
                 self._exec_quietly(
                     dst_pod,
-                    f"grep -vF {shlex.quote(marker)} ~/.ssh/authorized_keys > ~/.ssh/authorized_keys.lium-cp "
-                    "&& mv ~/.ssh/authorized_keys.lium-cp ~/.ssh/authorized_keys",
+                    revoke,
+                    consequence=(
+                        f"the transfer key '{marker}' is still authorised on pod "
+                        f"{dst_pod.name or dst_pod.huid}; revoke it with: "
+                        f"lium exec {dst_pod.huid} {shlex.quote(revoke)}"
+                    ),
                 )
             self._exec_quietly(src_pod, f"rm -f {key_path} {key_path}.pub")
 
-    def _exec_quietly(self, pod: PodInfo, command: str) -> None:
-        """Cleanup step: report a failure as a warning, never as the error the caller sees."""
+    @staticmethod
+    def revoke_transfer_key_command(marker: str) -> str:
+        """The remote line that drops the authorized_keys entry tagged ``marker``.
+
+        The scratch file carries the marker, so two ``cp`` runs into the same
+        pod never share one, and the result is written back with ``cat >``
+        (the way lium-io removes keys) rather than ``mv``: the file keeps its
+        mode and a second run's half-written scratch file can never replace it.
+        ``grep`` exits 1 when nothing is left to keep, which is fine; any other
+        failure leaves authorized_keys untouched.
+        """
+        scratch = f"~/.ssh/authorized_keys.{marker}"
+        return (
+            f"( grep -vF {shlex.quote(marker)} ~/.ssh/authorized_keys > {scratch} || [ $? -eq 1 ] ) "
+            f"&& cat {scratch} > ~/.ssh/authorized_keys; rc=$?; rm -f {scratch}; exit $rc"
+        )
+
+    def _exec_quietly(self, pod: PodInfo, command: str, *, consequence: Optional[str] = None) -> None:
+        """Cleanup step: report a failure as a warning, never as the error the caller sees.
+
+        ``consequence`` says what a failure leaves behind and how to undo it by hand.
+        """
+        where = f"pod {pod.name or pod.huid}"
         try:
             result = self.exec(pod, command=command)
         except Exception as exc:  # noqa: BLE001 - cleanup must not raise
-            warnings.warn(f"lium: cleanup on pod {pod.name or pod.huid} failed ({exc}): {command}", stacklevel=3)
-            return
-        if not result["success"]:
-            warnings.warn(
-                f"lium: cleanup on pod {pod.name or pod.huid} failed: {command}: {result['stderr'].strip()}",
-                stacklevel=3,
-            )
+            detail = str(exc)
+        else:
+            if result["success"]:
+                return
+            detail = result["stderr"].strip() or f"exit {result['exit_code']}"
+        message = f"lium: cleanup on {where} failed ({detail})"
+        message += f": {consequence}" if consequence else f": {command}"
+        warnings.warn(message, stacklevel=3)
     
     def switch_template(self, pod: PodInfo, *, template_id: str) -> PodInfo:
         """Switch the template of a running pod.

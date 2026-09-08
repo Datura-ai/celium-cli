@@ -36,8 +36,8 @@ def rsync_command(
 ):
     """Sync directories to GPU pods using rsync.
 
-    Transfers resume where they stopped (rsync --partial --inplace), so an
-    interrupted copy can simply be re-run.
+    Transfers resume where they stopped (rsync --partial), so an interrupted
+    copy can simply be re-run.
 
     \b
     Examples:

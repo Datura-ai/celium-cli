@@ -6,7 +6,9 @@ long transfer needs, and `Lium.cp` / `lium cp` move data straight from one pod
 to another, granting and revoking a one-off key around the copy.
 """
 
+import re
 import subprocess
+import warnings
 from types import SimpleNamespace
 
 import pytest
@@ -51,11 +53,22 @@ class _RecordingLium(Lium):
 # --- rsync options ------------------------------------------------------------------------
 
 def test_rsync_options_resume_by_default_and_render_every_flag():
-    assert Lium.rsync_options() == ["-az", "--partial", "--inplace"]
+    assert Lium.rsync_options() == ["-az", "--partial"]
     assert Lium.rsync_options(bwlimit=5000, exclude=[".git", "*.pt"], delete=True, progress=True) == [
-        "-az", "--partial", "--inplace", "--info=progress2", "--bwlimit=5000",
+        "-az", "--partial", "--progress", "--bwlimit=5000",
         "--exclude=.git", "--exclude=*.pt", "--delete",
     ]
+
+
+def test_rsync_options_never_write_in_place():
+    """--inplace drops write-then-rename: a job on the pod could read half a checkpoint."""
+    assert "--inplace" not in Lium.rsync_options(partial=True, progress=True, delete=True)
+
+
+def test_rsync_progress_is_the_flag_openrsync_accepts_too():
+    """stock macOS rsync rejects --info=progress2 and the transfer would die before any byte moved."""
+    assert "--progress" in Lium.rsync_options(progress=True)
+    assert not any(opt.startswith("--info") for opt in Lium.rsync_options(progress=True))
 
 
 def test_rsync_options_reject_a_non_positive_bwlimit():
@@ -81,7 +94,7 @@ def test_rsync_pushes_with_the_options_and_captures_output(monkeypatch):
     client.rsync(SRC, local="./data/", remote="/workspace/data", bwlimit=1000, exclude=[".git"], delete=True)
 
     cmd, kwargs = calls[0]
-    assert cmd[:7] == ["rsync", "-az", "--partial", "--inplace", "--bwlimit=1000", "--exclude=.git", "--delete"]
+    assert cmd[:6] == ["rsync", "-az", "--partial", "--bwlimit=1000", "--exclude=.git", "--delete"]
     assert cmd[-2:] == ["./data/", "root@1.2.3.4:/workspace/data"]
     assert "-p 20299" in cmd[cmd.index("-e") + 1]
     assert kwargs["capture_output"] is True
@@ -101,7 +114,7 @@ def test_rsync_progress_streams_to_the_terminal(monkeypatch):
     _RecordingLium().rsync(SRC, local="./a", remote="/b", progress=True)
 
     cmd, kwargs = calls[0]
-    assert "--info=progress2" in cmd and kwargs["capture_output"] is False
+    assert "--progress" in cmd and kwargs["capture_output"] is False
 
 
 def test_rsync_failure_carries_stderr(monkeypatch):
@@ -167,10 +180,14 @@ def test_cp_grants_a_one_off_key_copies_and_revokes_it():
     keygen, grant, copy, revoke, remove_key = commands
     assert keygen.startswith(KEYGEN) and "/tmp/lium-cp-" in keygen
     assert PUBKEY in grant and ">> ~/.ssh/authorized_keys" in grant
-    assert "rsync -az --partial --inplace --bwlimit=3000 '--exclude=*.tmp'" in copy
+    assert "rsync -az --partial --bwlimit=3000 '--exclude=*.tmp'" in copy
     assert "-p 31000" in copy and "root@5.6.7.8:/workspace/ckpt/" in copy and "/workspace/ckpt/ " in copy
     assert "StrictHostKeyChecking=no" in copy
-    assert revoke.startswith("grep -vF") and "authorized_keys" in revoke
+    assert "grep -vF" in revoke and "authorized_keys" in revoke
+    marker = re.search(r"lium-cp-[0-9a-f]{12}", grant).group(0)
+    assert f"authorized_keys.{marker}" in revoke, "the scratch file carries this run's marker"
+    assert f"cat ~/.ssh/authorized_keys.{marker} > ~/.ssh/authorized_keys" in revoke
+    assert "mv " not in revoke
     assert remove_key.startswith("rm -f /tmp/lium-cp-")
 
 
@@ -183,7 +200,7 @@ def test_cp_revokes_the_key_even_when_the_copy_fails():
         client.cp(SRC, "/a", DST, "/b")
 
     commands = [c for _, c in client.sent]
-    assert any(c.startswith("grep -vF") for c in commands)
+    assert any("grep -vF" in c for c in commands)
     assert any(c.startswith("rm -f /tmp/lium-cp-") for c in commands)
 
 
@@ -205,7 +222,7 @@ def test_cp_does_not_revoke_what_it_never_granted():
         client.cp(SRC, "/a", DST, "/b")
 
     commands = [c for _, c in client.sent]
-    assert not any(c.startswith("grep -vF") for c in commands)
+    assert not any("grep -vF" in c for c in commands)
     assert any(c.startswith("rm -f /tmp/lium-cp-") for c in commands)
 
 
@@ -214,14 +231,50 @@ def test_cp_within_one_pod_is_a_local_rsync():
 
     client.cp(SRC, "/workspace/a/", SRC, "/workspace/b/")
 
-    assert client.sent == [("swift-fox-c8", "rsync -az --partial --inplace /workspace/a/ /workspace/b/")]
+    assert client.sent == [("swift-fox-c8", "rsync -az --partial /workspace/a/ /workspace/b/")]
 
 
 def test_cp_cleanup_failure_is_a_warning_not_the_error():
     client = _cp_client(**{"grep -vF": {"success": False, "exit_code": 1, "stdout": "", "stderr": "denied"}})
 
-    with pytest.warns(UserWarning, match="cleanup"):
+    with pytest.warns(UserWarning, match="cleanup") as caught:
         client.cp(SRC, "/a", DST, "/b")
+
+    message = str(caught[0].message)
+    assert "still authorised on pod train" in message
+    assert "revoke it with: lium exec brave-lion-11 " in message and "grep -vF" in message
+
+
+def test_revoke_command_keeps_the_other_keys_and_the_mode(tmp_path):
+    """Run the revoke line for real against a scratch home."""
+    import os
+    import stat
+    import subprocess as sp
+
+    ssh_dir = tmp_path / ".ssh"
+    ssh_dir.mkdir()
+    keys = ssh_dir / "authorized_keys"
+    keys.write_text("ssh-ed25519 AAA renter@laptop\nssh-ed25519 BBB lium-cp-abc123\n")
+    keys.chmod(0o600)
+
+    done = sp.run(["/bin/sh", "-c", Lium.revoke_transfer_key_command("lium-cp-abc123")],
+                  env={"HOME": str(tmp_path), "PATH": os.environ.get("PATH", "/usr/bin:/bin")}, capture_output=True, text=True)
+
+    assert done.returncode == 0, done.stderr
+    assert keys.read_text() == "ssh-ed25519 AAA renter@laptop\n"
+    assert stat.S_IMODE(keys.stat().st_mode) == 0o600
+    assert list(ssh_dir.iterdir()) == [keys]
+
+
+def test_revoke_command_fails_loudly_when_it_cannot_read_the_file(tmp_path):
+    import os
+    import subprocess as sp
+
+    (tmp_path / ".ssh").mkdir()
+    done = sp.run(["/bin/sh", "-c", Lium.revoke_transfer_key_command("lium-cp-abc123")],
+                  env={"HOME": str(tmp_path), "PATH": os.environ.get("PATH", "/usr/bin:/bin")}, capture_output=True, text=True)
+
+    assert done.returncode != 0
 
 
 # --- lium cp -------------------------------------------------------------------------------
@@ -255,6 +308,31 @@ def _run_cp(monkeypatch, args, pods=(SRC, DST), cp_result=None):
 
     monkeypatch.setattr(cp_module, "Lium", _Lium)
     return CliRunner().invoke(cli, ["cp", *args]), calls
+
+
+def test_cp_command_shows_a_failed_revoke_as_a_warning_with_the_command(monkeypatch):
+    """A key left on the destination must be visible, with the line that removes it."""
+    pods = [SRC, DST]
+
+    class _Lium:
+        def __init__(self, *a, **k):
+            pass
+
+        def ps(self):
+            return list(pods)
+
+        def cp(self, *a, **k):
+            warnings.warn("lium: cleanup on pod train failed (denied): the transfer key 'lium-cp-abc' is still "
+                          "authorised on pod train; revoke it with: lium exec brave-lion-11 'grep -vF ...'")
+            return {"success": True, "exit_code": 0}
+
+    monkeypatch.setattr(cp_module, "Lium", _Lium)
+
+    result = CliRunner().invoke(cli, ["cp", "dev:/a", "brave-lion-11:/b"])
+
+    assert result.exit_code == 0, result.output
+    assert "revoke it with: lium exec brave-lion-11" in result.output
+    assert "UserWarning" not in result.output
 
 
 def test_cp_command_resolves_both_pods_and_passes_options(monkeypatch):

@@ -1,6 +1,7 @@
 """`lium cp`: copy files from one pod to another over SSH."""
 
 import json
+import warnings
 from typing import Optional
 
 import click
@@ -60,13 +61,19 @@ def cp_command(
         )
     src, dst = parsed
 
-    result = ui.load(
-        f"Copying {src.pod.huid}:{src.path} -> {dst.pod.huid}:{dst.path}",
-        lambda: lium.cp(
-            src.pod, src.path, dst.pod, dst.path,
-            bwlimit=bwlimit, exclude=list(exclude), delete=delete,
-        ),
-    )
+    # The SDK reports a failed cleanup (a transfer key left authorised on the
+    # destination) as a warning; show it as one, with the revoke command in it.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = ui.load(
+            f"Copying {src.pod.huid}:{src.path} -> {dst.pod.huid}:{dst.path}",
+            lambda: lium.cp(
+                src.pod, src.path, dst.pod, dst.path,
+                bwlimit=bwlimit, exclude=list(exclude), delete=delete,
+            ),
+        )
+    for warning in caught:
+        ui.warning(str(warning.message))
 
     if json_output:
         click.echo(json.dumps({
