@@ -209,6 +209,7 @@ def test_mine_status_help_and_usage_carry_the_typed_name(patched_client, monkeyp
     result = CliRunner().invoke(cli, ["mine", "status", "--help"])
     assert result.exit_code == 0, result.output
     assert result.output.startswith("Usage: lium mine status [OPTIONS] NODE_ID") and "--watch" in result.output
+    assert "--hotkey, -k NAME" in result.output   # the option `mine` passes on for `status` (mine.py `_mine_status`)
     assert "node status node status" not in result.output
 
     result = CliRunner().invoke(cli, ["mine", "status"])

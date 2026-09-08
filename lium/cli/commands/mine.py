@@ -351,7 +351,7 @@ def _validate_executor(extra_args=None):
 _MINE_STATUS_PROG = "lium mine status"
 
 
-def _mine_status(args: list, hotkey: Optional[str] = None) -> int:
+def _mine_status(args: list[str], hotkey: Optional[str] = None) -> int:
     """Run `lium provider node status <args>`; `--json` may come after the node id here.
 
     ``hotkey`` is what `--hotkey`/`-k` was set to on the `lium mine` line: click gives it to `mine` wherever
@@ -366,7 +366,11 @@ def _mine_status(args: list, hotkey: Optional[str] = None) -> int:
 
     own_ctx = click.Context(status_node, info_name=_MINE_STATUS_PROG)
     if "--help" in args:
+        # the leaf's help, plus the one option `mine` takes on its behalf (the changelog and the ARG_INVALID
+        # message both name it, so `--help` has to as well)
         click.echo(status_node.get_help(own_ctx))
+        click.echo(f"  {'--hotkey, -k NAME':<24}  Provider wallet hotkey the portal is signed in with (else")
+        click.echo(f"  {'':<24}  LIUM_PROVIDER_HOTKEY / ~/.lium/config.ini).")
         return 0
     group_args = ["--json"] if "--json" in args else []
     if hotkey:
