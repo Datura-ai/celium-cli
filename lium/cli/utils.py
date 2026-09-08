@@ -752,6 +752,8 @@ def _prune_pod_snapshots(keep: Path, now: datetime) -> None:
             if now.timestamp() - path.stat().st_mtime > POD_INDEX_TTL_SECONDS:
                 path.unlink()
     except OSError:
+        # Pruning other shells' stale snapshots is best-effort housekeeping: a stat/unlink race with
+        # another lium process, or an unreadable file, must never fail the command that ran `lium ps`.
         pass
 
 
