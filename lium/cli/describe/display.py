@@ -192,8 +192,6 @@ def build_manifest(pod: PodInfo, detail: Optional[dict] = None) -> dict:
             "docker_in_docker": executor.docker_in_docker,
             "download_mbps": executor.effective_download_speed_mbps,
             "upload_mbps": executor.effective_upload_speed_mbps,
-            "cdn_download_mbps": executor.cdn_download_speed_mbps,
-            "cdn_upload_mbps": executor.cdn_upload_speed_mbps,
         } if executor else None,
         "ports": _ports_section(pod.ports),
         "access": {
@@ -249,7 +247,7 @@ def _format_link(gpu: dict) -> str:
     if not gpu["nvlink"] and interconnect.get("pcie_class"):
         parts[0] += f" ({interconnect['pcie_class']})"
     if interconnect.get("gpu_pairs"):
-        parts.append(f"{interconnect.get('nvlink_pairs', 0)}/{interconnect['gpu_pairs']} pairs on NVLink")
+        parts.append(f"{interconnect.get('nvlink_pairs') or 0}/{interconnect['gpu_pairs']} pairs on NVLink")
     if gpu.get("p2p") is True:
         parts.append("P2P ok")
     elif gpu.get("p2p") is False:
@@ -269,17 +267,9 @@ def _format_topology(interconnect: dict | None) -> str | None:
 
 
 def _format_net(machine: dict) -> str:
-    """Speed-test and CDN figures side by side, in Mbps."""
+    """The speed-test figures in Mbps, ``↓300 ↑480 Mbps (speed test)``; a dash for a missing one."""
     down, up = machine.get("download_mbps"), machine.get("upload_mbps")
-    cdn_down, cdn_up = machine.get("cdn_download_mbps"), machine.get("cdn_upload_mbps")
-
-    def pair(d, u):
-        return f"↓{int(d) if d else '—'} ↑{int(u) if u else '—'}"
-
-    text = f"{pair(down, up)} Mbps (speed test)"
-    if cdn_down or cdn_up:
-        text += f"; {pair(cdn_down, cdn_up)} Mbps (CDN probe)"
-    return text
+    return f"↓{int(down) if down else '—'} ↑{int(up) if up else '—'} Mbps (speed test)"
 
 
 def build_manifest_table(manifest: dict) -> Table:

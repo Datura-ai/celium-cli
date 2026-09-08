@@ -36,10 +36,6 @@ class ExecutorInfo:
     interconnect: Optional[Dict] = None
     # Every GPU pair on NVLink (an HGX board). False = PCIe and/or no peer-to-peer; None = unknown.
     nvlink: Optional[bool] = None
-    # Parallel-stream throughput to a CDN edge in Mbps — what a weight download sees, as opposed
-    # to the speed-test figures above. None until the node's validator reports it.
-    cdn_download_speed_mbps: Optional[float] = None
-    cdn_upload_speed_mbps: Optional[float] = None
 
     @property
     def link(self) -> Optional[str]:
@@ -58,11 +54,6 @@ class ExecutorInfo:
         """Every GPU pair can read each other's memory (NCCL works without NCCL_P2P_DISABLE=1); None when unknown."""
         value = (self.interconnect or {}).get("p2p")
         return value if isinstance(value, bool) else None
-
-    @property
-    def best_download_speed(self) -> Optional[float]:
-        """The most trustworthy ingress figure in Mbps: the CDN probe when present, else the effective speed-test value; None when neither exists."""
-        return self.cdn_download_speed_mbps or self.effective_download_speed_mbps or None
 
     @property
     def driver_version(self) -> str:

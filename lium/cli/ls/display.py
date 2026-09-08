@@ -90,14 +90,6 @@ def _link_display(exe: ExecutorInfo) -> str:
     return console.get_styled(link, "success" if exe.nvlink else "warning")
 
 
-def _cdn_display(exe: ExecutorInfo) -> str:
-    """``down/up`` from the CDN probe in Mbps; dash when the node has not reported it."""
-    down, up = _intish(exe.cdn_download_speed_mbps), _intish(exe.cdn_upload_speed_mbps)
-    if down is None and up is None:
-        return "—"
-    return f"{down if down is not None else '—'}/{up if up is not None else '—'}"
-
-
 def _first_gpu_detail(specs: Optional[Dict]) -> Dict:
     """Get first GPU detail from specs."""
     if not specs:
@@ -170,7 +162,6 @@ def _add_table_columns(t: Table) -> None:
     t.add_column("Disk (Gb)", justify="right", width=11, no_wrap=True)
     t.add_column("Upload (Mbps)", justify="right", width=14, no_wrap=True)
     t.add_column("Download (Mbps)", justify="right", width=16, no_wrap=True)
-    t.add_column("Net↓/↑ (Mbps)", justify="right", width=14, no_wrap=True)
     t.add_column("Ports", justify="left", ratio=3, min_width=5, overflow="fold")
 
 
@@ -205,8 +196,6 @@ def compact_executor(exe: ExecutorInfo, is_pareto: bool, index: int) -> Dict[str
         "disk_gb": _intish(s["Disk"]),
         "upload_mbps": _intish(s["Upload"]),
         "download_mbps": _intish(s["Download"]),
-        "cdn_download_mbps": _intish(exe.cdn_download_speed_mbps),
-        "cdn_upload_mbps": _intish(exe.cdn_upload_speed_mbps),
         "available_ports": _intish(s["Ports"]),
         "docker_in_docker": exe.docker_in_docker,
         "is_pareto": is_pareto,
@@ -312,7 +301,6 @@ def build_executors_table(
             s["Disk"],
             s["Upload"],
             dl_display,
-            _cdn_display(exe),
             s["Ports"]
         )
 

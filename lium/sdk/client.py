@@ -643,7 +643,6 @@ class Lium:
         if not isinstance(nvlink, bool):
             nvlink = (interconnect or {}).get("nvlink")
             nvlink = nvlink if isinstance(nvlink, bool) else None
-        network = specs.get("network") if isinstance(specs.get("network"), dict) else {}
 
         return ExecutorInfo(
             id=executor_dict.get("id", ""),
@@ -666,8 +665,6 @@ class Lium:
             available_gpu_count=_int_or_none(executor_dict, "available_gpu_count"),
             interconnect=interconnect,
             nvlink=nvlink,
-            cdn_download_speed_mbps=executor_dict.get("cdn_download_speed_mbps") or network.get("cdn_download_speed") or None,
-            cdn_upload_speed_mbps=executor_dict.get("cdn_upload_speed_mbps") or network.get("cdn_upload_speed") or None,
         )
 
     def list_ssh_keys(self) -> List[SSHKey]:
@@ -1339,9 +1336,9 @@ class Lium:
             nvlink: ``True`` keeps only nodes whose validator saw every GPU pair on NVLink
                 (:attr:`ExecutorInfo.nvlink`). Nodes with no verdict yet are excluded — a renter who asks
                 for NVLink must not be handed a PCIe box. ``False``/``None`` do not filter.
-            min_download_mbps: Minimum ingress in Mbps, judged on :attr:`ExecutorInfo.best_download_speed`
-                (the CDN probe when the node has one, else the effective speed-test figure). Nodes with
-                no figure are excluded.
+            min_download_mbps: Minimum Download in Mbps, judged on
+                :attr:`ExecutorInfo.effective_download_speed_mbps` (the figure ``lium ls`` shows as
+                Download). Nodes with no figure are excluded.
 
         Returns:
             A list of :class:`ExecutorInfo` objects that satisfy the filters.
@@ -1386,7 +1383,7 @@ class Lium:
         if min_download_mbps is not None:
             executors = [
                 e for e in executors
-                if e.best_download_speed is not None and e.best_download_speed >= min_download_mbps
+                if e.effective_download_speed_mbps is not None and e.effective_download_speed_mbps >= min_download_mbps
             ]
 
         return executors

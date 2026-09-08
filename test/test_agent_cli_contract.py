@@ -57,8 +57,6 @@ def _executor(huid: str, price_per_hour: float, download: int) -> SimpleNamespac
         nvlink=None,
         p2p=None,
         link=None,
-        cdn_download_speed_mbps=None,
-        cdn_upload_speed_mbps=None,
     )
 
 

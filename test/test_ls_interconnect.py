@@ -1,9 +1,9 @@
-"""Interconnect (NVLink / P2P) and CDN throughput in the SDK, ``lium ls`` and ``lium describe``.
+"""Interconnect (NVLink / P2P) and the Download floor in the SDK, ``lium ls`` and ``lium describe``.
 
 The backend reports how a node's GPUs are wired to each other (``interconnect`` / ``nvlink``, from the
-validator's ``nvidia-smi topo`` run) and a parallel-stream CDN probe (``cdn_*_speed_mbps``). Before
-that a renter could not tell an HGX board from eight PCIe cards without peer-to-peer, nor a node
-that pulls weights at 4 GB/s from one at 45 MB/s — both cost hours of an 8-GPU bill.
+validator's ``nvidia-smi topo`` run). Before that a renter could not tell an HGX board from eight PCIe
+cards without peer-to-peer — hours of an 8-GPU bill. ``--min-download`` puts a floor on the Download
+(Mbps) figure the node already reports.
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ def _executor_dict(executor_id: str, **extra) -> dict:
     base = {
         "id": executor_id,
         "machine_name": "NVIDIA H200 8x",
-        "executor_ip_address": "1.2.3.4",
+        "executor_ip_address": "203.0.113.4",
         "price_per_gpu": 3.25,
         "status": "available",
         "location": {"country": "United States", "country_code": "US"},
@@ -91,29 +91,23 @@ class _Response:
 
 
 def test_typed_backend_fields_are_carried_onto_executor_info():
-    exe = _map(_executor_dict("hgx", interconnect=HGX, nvlink=True, cdn_download_speed_mbps=7900.5, cdn_upload_speed_mbps=2100.2))
+    exe = _map(_executor_dict("hgx", interconnect=HGX, nvlink=True))
 
     assert exe.nvlink is True
     assert exe.interconnect["nvlink_links"] == 18
     assert exe.p2p is True
     assert exe.link == "NV18"
-    assert exe.cdn_download_speed_mbps == 7900.5
-    assert exe.cdn_upload_speed_mbps == 2100.2
-    assert exe.best_download_speed == 7900.5
 
 
 def test_raw_specs_are_read_when_the_backend_predates_the_typed_fields():
     """An older API returns the scrape's objects inside specs only; the CLI must still show them."""
     payload = _executor_dict("hgx")
     payload["specs"]["interconnect"] = HGX
-    payload["specs"]["network"].update({"cdn_download_speed": 6100.0, "cdn_upload_speed": 900.0})
 
     exe = _map(payload)
 
     assert exe.nvlink is True
     assert exe.link == "NV18"
-    assert exe.cdn_download_speed_mbps == 6100.0
-    assert exe.cdn_upload_speed_mbps == 900.0
 
 
 def test_pcie_host_is_false_with_its_worst_class():
@@ -131,9 +125,6 @@ def test_unreported_topology_is_none_not_false():
     assert exe.p2p is None
     assert exe.link is None
     assert exe.interconnect is None
-    assert exe.cdn_download_speed_mbps is None
-    # the speed-test figure is still the best ingress figure there is
-    assert exe.best_download_speed == 300.0
 
 
 def test_nvlink_without_a_link_count_still_reads_nvlink():
@@ -147,10 +138,10 @@ def test_nvlink_without_a_link_count_still_reads_nvlink():
 
 def _fleet() -> list[dict]:
     return [
-        _executor_dict("hgx-fast", interconnect=HGX, nvlink=True, cdn_download_speed_mbps=7900.5),
-        _executor_dict("hgx-slow", interconnect=HGX, nvlink=True, cdn_download_speed_mbps=350.0),
-        _executor_dict("pcie-fast", interconnect=PCIE, nvlink=False, cdn_download_speed_mbps=8000.0),
-        _executor_dict("unknown"),  # no topology, no probe: only the speed-test 300 Mbps
+        _executor_dict("hgx-fast", interconnect=HGX, nvlink=True, effective_download_speed_mbps=7900.5),
+        _executor_dict("hgx-slow", interconnect=HGX, nvlink=True, effective_download_speed_mbps=350.0),
+        _executor_dict("pcie-fast", interconnect=PCIE, nvlink=False, effective_download_speed_mbps=8000.0),
+        _executor_dict("unknown"),  # no topology; the fixture's Download is 300 Mbps
     ]
 
 
@@ -182,20 +173,23 @@ def test_ls_nvlink_excludes_nodes_with_no_verdict():
     assert "unknown" not in [e.id for e in client.ls(nvlink=True)]
 
 
-def test_ls_min_download_judges_the_cdn_probe_then_the_speed_test():
+def test_ls_min_download_judges_the_download_figure():
     captured: dict = {}
     client = _client_with(_fleet(), captured)
 
     result = client.ls(min_download_mbps=1000)
 
     assert captured["min_download_mbps"] == 1000
-    # hgx-slow has a 350 Mbps probe (excluded); "unknown" has only its 300 Mbps speed test (excluded)
+    # hgx-slow reports 350 Mbps and "unknown" 300 Mbps: both under the floor
     assert [e.id for e in result] == ["hgx-fast", "pcie-fast"]
 
 
-def test_ls_min_download_falls_back_to_the_speed_test_when_there_is_no_probe():
-    client = _client_with(_fleet(), {})
+def test_ls_min_download_excludes_a_node_with_no_figure():
+    """A node whose Download is unknown is not handed to a renter who asked for a floor."""
+    fleet = _fleet() + [_executor_dict("silent", effective_download_speed_mbps=None)]
+    client = _client_with(fleet, {})
 
+    assert "silent" not in [e.id for e in client.ls(min_download_mbps=1)]
     assert "unknown" in [e.id for e in client.ls(min_download_mbps=250)]
 
 
@@ -218,13 +212,13 @@ def test_ls_without_the_new_arguments_sends_no_new_parameters():
 # -- lium ls display -----------------------------------------------------------------------------------
 
 
-def test_table_has_link_and_net_columns():
+def test_table_has_the_link_column_after_config():
     table, *_ = display.build_executors_table([_map(_executor_dict("hgx", interconnect=HGX, nvlink=True))], show_pareto=False)
 
     headers = [c.header for c in table.columns]
     assert "Link" in headers
-    assert "Net↓/↑ (Mbps)" in headers
     assert headers.index("Link") == headers.index("Config") + 1
+    assert [h for h in headers if "Net" in h] == []  # no second speed column: Download (Mbps) is the figure
 
 
 def test_link_cell_shows_the_class_and_dashes_when_unknown():
@@ -233,15 +227,9 @@ def test_link_cell_shows_the_class_and_dashes_when_unknown():
     assert display._link_display(_map(_executor_dict("old"))) == "—"
 
 
-def test_net_cell_shows_down_and_up_from_the_probe():
-    assert display._cdn_display(_map(_executor_dict("a", cdn_download_speed_mbps=7900.5, cdn_upload_speed_mbps=2100.2))) == "7900/2100"
-    assert display._cdn_display(_map(_executor_dict("b", cdn_download_speed_mbps=400.0))) == "400/—"
-    assert display._cdn_display(_map(_executor_dict("c"))) == "—"
-
-
 def test_compact_executor_carries_the_fields_for_agents():
     row = display.compact_executor(
-        _map(_executor_dict("hgx", interconnect=HGX, nvlink=True, cdn_download_speed_mbps=7900.5, cdn_upload_speed_mbps=2100.2)),
+        _map(_executor_dict("hgx", interconnect=HGX, nvlink=True)),
         is_pareto=False,
         index=1,
     )
@@ -250,11 +238,10 @@ def test_compact_executor_carries_the_fields_for_agents():
     assert row["nvlink"] is True
     assert row["p2p"] is True
     assert row["interconnect"]["nvlink_pairs"] == 28
-    assert row["cdn_download_mbps"] == 7900
-    assert row["cdn_upload_mbps"] == 2100
-    # existing fields unchanged
+    # existing fields unchanged, and no second pair of speed keys
     assert row["download_mbps"] == 300
     assert row["upload_mbps"] == 480
+    assert [k for k in row if k.startswith("cdn_")] == []
 
 
 def test_compact_executor_unknown_topology_is_null():
@@ -263,7 +250,6 @@ def test_compact_executor_unknown_topology_is_null():
     assert row["link"] is None
     assert row["nvlink"] is None
     assert row["interconnect"] is None
-    assert row["cdn_download_mbps"] is None
 
 
 # -- lium ls command -----------------------------------------------------------------------------------
@@ -280,7 +266,7 @@ def _run_ls(monkeypatch, fleet: list[ExecutorInfo], *args: str):
             if kwargs.get("nvlink"):
                 result = [e for e in result if e.nvlink is True]
             if kwargs.get("min_download_mbps") is not None:
-                result = [e for e in result if (e.best_download_speed or 0) >= kwargs["min_download_mbps"]]
+                result = [e for e in result if (e.effective_download_speed_mbps or 0) >= kwargs["min_download_mbps"]]
             return result
 
     monkeypatch.setattr(ls_command_module, "Lium", _FakeLium)
@@ -299,7 +285,7 @@ def test_ls_nvlink_and_min_ingress_reach_the_sdk_and_the_json(monkeypatch):
     rows = json.loads(result.output)
     assert [row["id"] for row in rows] == ["hgx-fast"]
     assert rows[0]["link"] == "NV18"
-    assert rows[0]["cdn_download_mbps"] == 7900
+    assert rows[0]["download_mbps"] == 7900
 
 
 def test_ls_min_download_is_the_same_option_as_min_ingress(monkeypatch):
@@ -325,30 +311,30 @@ def test_ls_explains_an_empty_result_caused_by_the_new_filters(monkeypatch):
 
 
 def test_ls_explains_an_empty_result_caused_by_min_download(monkeypatch):
-    # the fixture's Download is 300 Mbps and it has no CDN probe: the floor is judged on Download, so the hint
-    # must say so rather than claim probe-less nodes were excluded
+    # the fixture's Download is 300 Mbps: the hint names the column the floor was judged on
     fleet = [_map(_executor_dict("old"))]
 
     result, _ = _run_ls(monkeypatch, fleet, "--min-download", "1000")
 
     assert result.exit_code == 0, result.output
-    assert "ingress ≥ 1000 Mbps" in result.output
-    assert "--min-download judges the CDN probe, else Download (Mbps)" in result.output
+    assert "Download ≥ 1000 Mbps" in result.output
+    assert "--min-download judges the Download (Mbps) column" in result.output
+    assert "or lower the" in result.output  # the 80-column test terminal wraps the line after "the"
     assert "--nvlink" not in result.output
+    assert "nvidia-smi" not in result.output  # the topology hint belongs to --nvlink
     assert "rented out" not in result.output
 
 
 def test_ls_table_shows_the_link_column(monkeypatch):
-    fleet = [_map(_executor_dict("hgx", interconnect=HGX, nvlink=True, cdn_download_speed_mbps=7900.5, cdn_upload_speed_mbps=2100.2))]
+    fleet = [_map(_executor_dict("hgx", interconnect=HGX, nvlink=True))]
 
     result, _ = _run_ls(monkeypatch, fleet)
 
     # CliRunner renders on an 80-column pseudo-terminal, so headers are ellipsised; the full header
-    # set is asserted on the Table object in test_table_has_link_and_net_columns
+    # set is asserted on the Table object in test_table_has_the_link_column_after_config
     assert result.exit_code == 0, result.output
-    assert "Net↓/↑" in result.output
-    assert "7900/2100" in result.output
     assert "NV" in result.output
+    assert "Net↓/↑" not in result.output
 
 
 @pytest.mark.parametrize("value", ["0", "-5", "nan", "inf", "-inf"])
@@ -386,18 +372,36 @@ def _pod(executor: ExecutorInfo | None) -> PodInfo:
 
 
 def test_describe_manifest_carries_the_topology():
-    manifest = build_manifest(_pod(_map(_executor_dict("hgx", interconnect=HGX, nvlink=True, cdn_download_speed_mbps=7900.5))))
+    manifest = build_manifest(_pod(_map(_executor_dict("hgx", interconnect=HGX, nvlink=True))))
 
     assert manifest["gpu"]["link"] == "NV18"
     assert manifest["gpu"]["nvlink"] is True
     assert manifest["gpu"]["p2p"] is True
     assert manifest["gpu"]["interconnect"]["matrix"][0][1] == "NV18"
-    assert manifest["machine"]["cdn_download_mbps"] == 7900.5
     assert manifest["machine"]["download_mbps"] == 300.0
+    assert manifest["machine"]["upload_mbps"] == 480.0
+    assert [k for k in manifest["machine"] if k.startswith("cdn_")] == []
+
+
+def test_describe_table_prints_the_nvlink_link_row():
+    table = build_manifest_table(build_manifest(_pod(_map(_executor_dict("hgx", interconnect=HGX, nvlink=True)))))
+
+    labels = [str(cell) for cell in table.columns[0]._cells]
+    cells = [str(cell) for cell in table.columns[1]._cells]
+    assert cells[labels.index("Link")] == "NVLink ×18, 28/28 pairs on NVLink, P2P ok"
+    assert cells[labels.index("Topology")].startswith("GPU0") and "NV18" in cells[labels.index("Topology")]
+
+
+def test_describe_link_row_treats_a_null_pair_count_as_zero():
+    table = build_manifest_table(build_manifest(_pod(_map(_executor_dict("pcie", interconnect={**PCIE, "nvlink_pairs": None}, nvlink=False)))))
+
+    labels = [str(cell) for cell in table.columns[0]._cells]
+    cells = [str(cell) for cell in table.columns[1]._cells]
+    assert "0/28 pairs on NVLink" in cells[labels.index("Link")]
 
 
 def test_describe_table_prints_link_topology_and_net():
-    table = build_manifest_table(build_manifest(_pod(_map(_executor_dict("pcie", interconnect=PCIE, nvlink=False, cdn_download_speed_mbps=400.0)))))
+    table = build_manifest_table(build_manifest(_pod(_map(_executor_dict("pcie", interconnect=PCIE, nvlink=False)))))
 
     labels = [str(c._cells[i]) for c in table.columns[:1] for i in range(len(c._cells))]
     cells = [str(cell) for cell in table.columns[1]._cells]
@@ -408,7 +412,7 @@ def test_describe_table_prints_link_topology_and_net():
     assert "NCCL_P2P_DISABLE=1" in link_text
     topology = cells[labels.index("Topology")]
     assert topology.startswith("GPU0") and "SYS" in topology and topology.count("\n") == 7
-    assert "CDN probe" in cells[labels.index("Net")]
+    assert cells[labels.index("Net")] == "↓300 ↑480 Mbps (speed test)"
 
 
 def test_describe_table_says_when_the_node_has_not_reported():

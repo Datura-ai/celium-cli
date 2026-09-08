@@ -57,7 +57,7 @@ def ls_store_executor(gpu_type: Optional[str] = None, sort_by: str = "download")
     "min_download_mbps",
     type=float,
     default=None,
-    help="Minimum ingress in Mbps, judged on the CDN probe (Net↓ column) when the node has one, else on Download (Mbps).",
+    help="Minimum Download (Mbps) a node must report; nodes with no figure are excluded.",
 )
 @click.option("--lat", type=float, help="Latitude for distance filtering")
 @click.option("--lon", type=float, help="Longitude for distance filtering")
@@ -95,10 +95,8 @@ def ls_command(
     """List available GPU nodes.
 
     Link shows how the GPUs of a node are wired to each other (NV18 = NVLink with
-    18 links, PCIe/SYS = PCIe only, worst class shown); Net↓/↑ is a parallel-stream
-    probe against a CDN edge in Mbps — what a weight download sees — while
-    Upload/Download are the smoothed speed-test figures. Both are "—" until the
-    node's validator reports them.
+    18 links, PCIe/SYS = PCIe only, worst class shown); it is "—" until the node's
+    validator reports it.
     """
     output_format = resolve_output_format(output_format, json_output)
 
@@ -136,17 +134,18 @@ def ls_command(
         if nvlink or min_download_mbps is not None:
             wanted = [w for w in (
                 "NVLink between every GPU pair" if nvlink else None,
-                f"ingress ≥ {min_download_mbps:g} Mbps" if min_download_mbps is not None else None,
+                f"Download ≥ {min_download_mbps:g} Mbps" if min_download_mbps is not None else None,
             ) if w]
             ui.error(f"No available node reports {' and '.join(wanted)}")
             # each filter's rule, as the help text states it: --nvlink needs a topology report; --min-download
-            # judges the CDN probe when there is one, else the Download (Mbps) figure
+            # judges the Download (Mbps) column
             rules = [r for r in (
                 "--nvlink excludes nodes with no topology report yet" if nvlink else None,
-                "--min-download judges the CDN probe, else Download (Mbps)" if min_download_mbps is not None else None,
+                "--min-download judges the Download (Mbps) column" if min_download_mbps is not None else None,
             ) if r]
-            ui.info(f"{'; '.join(rules)}. "
-                    f"Drop the filter and check on the pod: {ui.styled('nvidia-smi topo -m', 'success')}")
+            tail = (f"Drop the filter and check on the pod: {ui.styled('nvidia-smi topo -m', 'success')}" if nvlink
+                    else "Drop the filter or lower the floor")
+            ui.info(f"{'; '.join(rules)}. {tail}")
             return
         if gpu_type:
             ui.error(f"All {gpu_type} GPUs are currently rented out")
