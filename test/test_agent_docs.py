@@ -28,7 +28,7 @@ def _lium_invocations(text: str):
     out = []
     for no, line in enumerate(text.splitlines(), 1):
         line = re.sub(r"<[^<>\n]{1,40}>", "PLACEHOLDER", line)   # `<pod>` is an argument, not a redirect
-        for m in re.finditer(r"(?:^|[\s`$>(])lium\s+(?=\S)", line):
+        for m in re.finditer(r"(?:^|[\s`$>('\"])lium\s+(?=\S)", line):   # `trap 'lium rm …' EXIT` counts too
             rest, cmd, quote = line[m.end():], "", None
             for ch in rest:
                 if quote:
@@ -60,10 +60,15 @@ def _resolve(tokens):
     return command, chain, flags
 
 
+SHELL_FENCES = ("", "bash", "sh", "shell", "console")
+
+
 def _code_blocks(text: str, fence: str) -> str:
     """The bodies of the page's shell code blocks only (prose lines such as "lium requires" are not commands)."""
     if fence == "md":
-        return "\n".join(re.findall(r"```(?:bash|sh|shell|console)?\n(.*?)```", text, re.S))
+        # every fence is paired in order and then filtered by language: an unpaired ```python opener would
+        # otherwise make the *prose* after it the next "block" and hide every shell block that follows
+        return "\n".join(body for lang, body in re.findall(r"```(\w*)[^\n]*\n(.*?)```", text, re.S) if lang in SHELL_FENCES)
     # rst: `.. code-block:: bash` bodies are the indented lines that follow
     blocks, out = re.split(r"^\.\. code-block:: (?:bash|sh|shell|console)\s*$", text, flags=re.M)[1:], []
     for block in blocks:
@@ -89,7 +94,29 @@ INVOCATIONS = [(page, no, toks) for page, text in PAGES.items() for no, toks in 
 
 def test_the_pages_have_commands_to_check():
     per_page = {page: sum(1 for p, _, _ in INVOCATIONS if p == page) for page in PAGES}
-    assert per_page["docs/agents.md"] >= 20 and per_page["README.md"] >= 20 and per_page["docs/getting-started.rst"] >= 1, per_page
+    assert per_page["docs/agents.md"] >= 30 and per_page["README.md"] >= 60 and per_page["docs/getting-started.rst"] >= 1, per_page
+
+
+def test_shell_blocks_after_a_python_block_are_still_read():
+    """`_code_blocks` pairs fences by language: a ```python block does not swallow the shell blocks after it, and
+    neither prose between blocks nor the python itself is treated as a command line."""
+    page = (
+        "# Title\n\n```bash\nlium ls\n```\n\nProse: lium requires a key.\n\n"
+        "```python\nlium = Lium()\nlium.up()\n```\n\nMore prose with lium in it.\n\n"
+        "```bash\nlium ps --format json\n```\n\n```\nlium rm 1 --yes\n```\n"
+    )
+    blocks = _code_blocks(page, "md")
+    assert [line for line in blocks.splitlines() if line] == ["lium ls", "lium ps --format json", "lium rm 1 --yes"]
+    assert [toks for _, toks in _lium_invocations(blocks)] == [["ls"], ["ps", "--format", "json"], ["rm", "1", "--yes"]]
+    # the README's CLI Reference block comes after two ```python blocks; it is the page's largest shell block
+    readme = [toks for page, _, toks in INVOCATIONS if page == "README.md"]
+    assert ["up", "1", "--name", "my-pod", "--yes"] in readme and ["volumes", "new", "mydata", "--desc"] in readme
+    assert not any(toks[0] == "=" or toks[0].startswith("requires") for toks in readme)
+
+
+def test_a_quoted_lium_line_is_resolved_too():
+    trap = "trap 'lium rm \"$POD\" --yes >/dev/null 2>&1 || true' EXIT"
+    assert [toks for _, toks in _lium_invocations(trap)] == [["rm", "--yes"]]
 
 
 @pytest.mark.parametrize("page, line_no, tokens", INVOCATIONS, ids=[f"{p.split('/')[-1]} L{n}: lium {' '.join(t[:3])}" for p, n, t in INVOCATIONS])
@@ -142,7 +169,8 @@ def test_the_json_flag_command_list_matches_the_cli():
         resolved = _resolve(name.split())
         assert resolved and len(resolved[1]) == len(name.split()), f"`lium {name}` is not a command"
         assert "--json" in {opt for param in resolved[0].params for opt in param.opts}, f"`lium {name}` has no --json"
-    # and the other way round: every renter command with --json is on the list (provider/mine are not renter commands)
+    # and the other way round: every renter command with --json is on the list (provider/mine are not renter commands);
+    # a hidden option (an alias `--help` does not show, e.g. lium#217's `--json` on ls/ps) is not what the page documents
 
     def with_json(group, chain):
         for sub, command in sorted(group.commands.items()):
@@ -150,7 +178,7 @@ def test_the_json_flag_command_list_matches_the_cli():
                 continue
             if isinstance(command, click.Group):
                 yield from with_json(command, chain + [sub])
-            elif "--json" in {opt for param in command.params for opt in param.opts}:
+            elif "--json" in {opt for param in command.params if not getattr(param, "hidden", False) for opt in param.opts}:
                 yield " ".join(chain + [sub])
     assert sorted(named) == sorted(with_json(cli, [])), "agents.md §2 and the command tree disagree on which commands take --json"
     for absent in ("rm", "up", "ps", "ls"):

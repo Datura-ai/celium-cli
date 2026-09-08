@@ -275,7 +275,7 @@ lium scp my-pod /root/output.log ./downloads -d  # Download into ./downloads dir
 
 # Reboot pods
 lium reboot my-pod                           # Reboot a single pod
-lium reboot 1,2 --yes                        # Reboot pods 1 and 2 without confirmation
+lium reboot 1,2                              # Reboot pods 1 and 2
 lium reboot all                              # Reboot all active pods
 lium reboot my-pod --volume-id <VOLUME_ID>   # Reboot with a specific volume ID
 
@@ -294,7 +294,7 @@ lium update my-pod
 
 # Manage volumes
 lium volumes list
-lium volumes new mydata --description "My dataset"
+lium volumes new mydata --desc "My dataset"
 lium volumes rm <VOLUME_HUID>
 
 # Manage backups

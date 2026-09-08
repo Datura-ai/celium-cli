@@ -26,7 +26,7 @@ SSH: the CLI and SDK use the first of `~/.ssh/id_ed25519`, `~/.ssh/id_rsa`, `~/.
 
 Success: the JSON result is on **stdout**, exit code 0.
 
-Failure on a command that takes `--json` (`exec`, `describe`, `balance`; `fund`, `signup`, `topup currencies` and `topup create` too): stdout is empty, **stderr** holds one JSON object, the exit code is non-zero:
+Failure on a renter command that takes `--json` (`exec`, `describe`, `balance`; `fund`, `signup`, `topup currencies` and `topup create` too): stdout is empty, **stderr** holds one JSON object, the exit code is non-zero:
 
 ```json
 {"ok": false, "error": {"code": "pod_not_found", "message": "No pods match targets: train-1"}}
@@ -110,7 +110,7 @@ lium exec "$POD" --json "python -c 'import torch; print(torch.cuda.device_count(
 Background, so a long training run survives the end of the SSH session — `exec` blocks until the remote command exits and prints its output then, so start the job detached and poll its log:
 
 ```bash
-lium exec "$POD" "mkdir -p /root/logs && nohup setsid bash -lc 'cd /root/project && python train.py' > /root/logs/train.log 2>&1 < /dev/null & echo \$!"
+PID=$(lium exec "$POD" "mkdir -p /root/logs && nohup setsid bash -lc 'cd /root/project && python train.py' > /root/logs/train.log 2>&1 < /dev/null & echo \$!")
 ```
 
 The `setsid`, the `< /dev/null` and the redirection all matter: without them the process is tied to the SSH session and dies when `exec` returns.
