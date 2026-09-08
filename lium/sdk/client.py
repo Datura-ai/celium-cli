@@ -185,12 +185,17 @@ def _response_error_message(response: requests.Response) -> str:
     return str(message or "Request failed")
 
 
-def _pod_gpu_count(row: Dict[str, Any]) -> Optional[int]:
-    """The pod's own billed GPU count from a ``/pods`` row (a string in the payload), or None."""
+def _int_or_none(row: Dict[str, Any], key: str) -> Optional[int]:
+    """``int(row[key])``, or None when the key is absent, null or not a number."""
     try:
-        return int(row["gpu_count"])
+        return int(row[key])
     except (KeyError, TypeError, ValueError):
         return None
+
+
+def _pod_gpu_count(row: Dict[str, Any]) -> Optional[int]:
+    """The pod's own billed GPU count from a ``/pods`` row (a string in the payload), or None."""
+    return _int_or_none(row, "gpu_count")
 
 
 def _get_client_version() -> str:
@@ -407,6 +412,7 @@ class Lium:
             effective_download_speed_mbps=executor_dict.get("effective_download_speed_mbps"),
             max_cuda_version=executor_dict.get("max_cuda_version"),
             tier=executor_dict.get("tier"),
+            available_gpu_count=_int_or_none(executor_dict, "available_gpu_count"),
         )
 
     def list_ssh_keys(self) -> List[SSHKey]:

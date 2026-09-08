@@ -250,6 +250,19 @@ class WaitReadyAction:
         return on_poll
 
 
+def rented_gpu_count(executor: ExecutorInfo) -> int:
+    """The GPU count a rent with no ``--count`` gets: the node's free GPUs.
+
+    The rent request names no count, so the backend gives the pod every GPU that
+    is free on the node and bills for those. On a partially rented split host
+    that is fewer than ``gpu_count``, the whole host, and comparing the pod with
+    the host total would fail a correct pod. ``gpu_count`` is the fallback when
+    the API did not send ``available_gpu_count``.
+    """
+    available = getattr(executor, "available_gpu_count", None)
+    return executor.gpu_count if available is None else available
+
+
 def billed_gpu_count(pod: PodInfo) -> Optional[int]:
     """The GPU count the API bills this pod for, or None when the API did not say.
 
@@ -287,7 +300,8 @@ class VerifyGpuCountAction:
     Two checks, each independent of the other:
 
     * billed: the count the API bills the pod for versus the count requested
-      (``--count``, or the chosen node's count when ``--count`` was not given).
+      (``--count``, or the chosen node's free GPU count when ``--count`` was not
+      given — ``rented_gpu_count``).
     * visible: with ``verify_via_ssh``, the count ``nvidia-smi -L`` reports inside
       the pod versus the billed count. The connection is retried while sshd comes
       up; a command that fails (``nvidia-smi`` missing, driver not loaded) is

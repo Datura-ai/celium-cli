@@ -23,19 +23,23 @@ from lium.cli.up.actions import (
     VerifyGpuCountAction,
     billed_gpu_count,
     parse_visible_gpu_count,
+    rented_gpu_count,
 )
 from lium.cli.utils import EXIT_GENERAL_ERROR
 from lium.sdk import Config, Lium
 
 NODE_ID = "id-brave-orbit-b9"
+WHOLE_HOST = object()   # `free=` default: every GPU of the node is rentable
 
 
-def _executor(gpu_count: int) -> SimpleNamespace:
+def _executor(gpu_count: int, free: int | None | object = WHOLE_HOST) -> SimpleNamespace:
+    """A node with ``gpu_count`` GPUs; ``free`` GPUs rentable (default all; None: the API sent no count)."""
     return SimpleNamespace(
         id=NODE_ID,
         huid="brave-orbit-b9",
         gpu_type="H200",
         gpu_count=gpu_count,
+        available_gpu_count=gpu_count if free == WHOLE_HOST else free,
         price_per_hour=8.0 * gpu_count,
         price_per_gpu=8.0,
         location={"country": "United States", "country_code": "US"},
@@ -71,6 +75,7 @@ class _FakeLium:
     """Stands in for the SDK: a node, the pod it produced, and what nvidia-smi says."""
 
     node_gpus = 8
+    node_free: int | None | object = WHOLE_HOST
     billed_gpus: int | None = 8
     visible_gpus: int | None = 8   # None: nvidia-smi is not installed in the image
     exec_error: Exception | None = None
@@ -81,10 +86,10 @@ class _FakeLium:
         pass
 
     def get_executor(self, executor_id):
-        return _executor(self.node_gpus)
+        return _executor(self.node_gpus, free=self.node_free)
 
     def ls(self, **kwargs):
-        return [_executor(self.node_gpus)]
+        return [_executor(self.node_gpus, free=self.node_free)]
 
     def default_docker_template(self, executor_id):
         return SimpleNamespace(id="tpl-1", name="pytorch")
@@ -114,9 +119,10 @@ class _FakeLium:
         _FakeLium.removed.append(pod.huid)
 
 
-def _run_up(monkeypatch, *args, node_gpus=8, billed=8, visible=8, exec_error=None):
+def _run_up(monkeypatch, *args, node_gpus=8, free=WHOLE_HOST, billed=8, visible=8, exec_error=None):
     """Run `up`. `-c` cannot be combined with a node id, so it selects by --gpu filter."""
     _FakeLium.node_gpus = node_gpus
+    _FakeLium.node_free = free
     _FakeLium.billed_gpus = billed
     _FakeLium.visible_gpus = visible
     _FakeLium.exec_error = exec_error
@@ -150,12 +156,36 @@ def test_up_fails_on_a_silent_gpu_downgrade(monkeypatch):
 
 
 def test_up_without_count_compares_against_the_chosen_node(monkeypatch):
-    """No --count: the node the user chose (4 GPUs) is the request."""
+    """No --count: the node the user chose (4 GPUs, all free) is the request."""
     result = _run_up(monkeypatch, node_gpus=4, billed=2)
 
     assert result.exit_code == EXIT_GENERAL_ERROR
     assert "requested 4" in result.output
     assert "billed for 2" in result.output
+
+
+def test_up_without_count_on_a_partially_free_split_host_expects_the_free_gpus(monkeypatch):
+    """2 of the host's 8 GPUs are free: the rent takes and bills those 2, so the pod is right."""
+    result = _run_up(monkeypatch, "--strict-gpus", node_gpus=8, free=2, billed=2)
+
+    assert result.exit_code == 0, result.output
+    assert _FakeLium.removed == []
+
+
+def test_up_without_count_on_a_split_host_still_catches_a_downgrade(monkeypatch):
+    """2 free, billed for 1: fewer than the rent could take is still a mismatch."""
+    result = _run_up(monkeypatch, node_gpus=8, free=2, billed=1)
+
+    assert result.exit_code == EXIT_GENERAL_ERROR
+    assert "requested 2" in result.output
+    assert "billed for 1" in result.output
+
+
+def test_up_without_count_falls_back_to_the_host_total_when_the_api_sent_no_free_count(monkeypatch):
+    result = _run_up(monkeypatch, node_gpus=8, free=None, billed=2)
+
+    assert result.exit_code == EXIT_GENERAL_ERROR
+    assert "requested 8" in result.output
 
 
 def test_up_does_not_run_nvidia_smi_without_verify_gpus(monkeypatch):
@@ -269,6 +299,28 @@ def test_unknown_billed_count_does_not_fail_the_pod():
 
     assert result.ok is True
     assert result.data["billed"] is None
+
+
+def test_rented_count_is_the_free_gpus_not_the_host():
+    assert rented_gpu_count(_executor(8, free=2)) == 2
+    assert rented_gpu_count(_executor(8)) == 8
+    assert rented_gpu_count(_executor(8, free=None)) == 8
+
+
+def test_sdk_ls_reads_the_nodes_free_gpu_count(monkeypatch):
+    """`/executors` sends the host total in specs and the free count as `available_gpu_count`."""
+    client = Lium(Config(api_key="test"))
+    rows = [
+        {"id": NODE_ID, "machine_name": "NVIDIA H200", "price_per_gpu": 8.0, "available_gpu_count": 2,
+         "specs": {"gpu": {"count": 8, "details": [{"name": "H200"}]}}},
+        {"id": "id-other", "machine_name": "NVIDIA H200", "price_per_gpu": 8.0,
+         "specs": {"gpu": {"count": 8, "details": [{"name": "H200"}]}}},
+    ]
+    monkeypatch.setattr(client, "_request", lambda *a, **k: SimpleNamespace(json=lambda: rows))
+
+    nodes = client.ls(gpu_count=None)
+
+    assert [(n.gpu_count, n.available_gpu_count) for n in nodes] == [(8, 2), (8, None)]
 
 
 def test_sdk_ps_reads_the_pods_own_gpu_count(monkeypatch):

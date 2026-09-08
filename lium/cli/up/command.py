@@ -35,6 +35,7 @@ from .actions import (
     VerifyGpuCountAction,
     InstallJupyterAction,
     PrepareSSHAction,
+    rented_gpu_count,
 )
 
 # The whole command's budget. Rentals start in ~25 s at the median and a cold image pull takes a
@@ -501,12 +502,13 @@ def up_command(
 
     # The GPU count is checked after --ttl is scheduled: a mismatched pod that is
     # left running (no --strict-gpus) must still terminate when the caller asked.
-    # The requested count is --count, or the chosen node's count when there was none.
+    # The requested count is --count, or, when there was none, the node's free GPUs:
+    # a rent without a count takes all of them, not the host total.
     action = VerifyGpuCountAction()
     verify_ctx = {
         "lium": lium,
         "pod": pod,
-        "expected_count": count if count is not None else executor.gpu_count,
+        "expected_count": count if count is not None else rented_gpu_count(executor),
         "executor_id": executor.id,
         "verify_via_ssh": verify_gpus,
     }
