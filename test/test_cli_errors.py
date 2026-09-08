@@ -54,6 +54,9 @@ def _run_ps_raising(monkeypatch, error: Exception, args=(), env=None):
             raise error
 
     monkeypatch.setattr(ps_module, "Lium", _RaisingLium)
+    # without a ~/.lium/config.ini `lium ps` runs the interactive key setup before
+    # reaching the client; stub it so the test sees the injected error on a fresh runner
+    monkeypatch.setattr(ps_module, "ensure_config", lambda: None)
     return CliRunner().invoke(cli, ["ps", *args], env=env)
 
 
