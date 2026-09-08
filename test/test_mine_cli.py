@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import socket
+import threading
 from pathlib import Path
 
 import pytest
@@ -45,9 +46,17 @@ def test_check_ports_free_is_skipped_when_the_executor_already_runs(monkeypatch,
     `docker compose up -d` is a no-op, so the pre-check must not fail on them."""
     monkeypatch.setattr(mine, "_port_in_use", lambda port, host="0.0.0.0": True)
     monkeypatch.setattr(mine, "_listening_process", lambda port: "docker-proxy pid 4242")
-    monkeypatch.setattr(mine, "_run", lambda cmd, check=True, capture=True, cwd=None: ("abc123\ndef456\n", ""))
+    compose_calls: list[str] = []
+
+    def run(cmd, check=True, capture=True, cwd=None):
+        compose_calls.append(cmd)
+        return ("abc123\ndef456\n", "")
+
+    monkeypatch.setattr(mine, "_run", run)
 
     mine._check_ports_free({"service port": 8080, "SSH port": 2200}, tmp_path)   # no exception
+    # only containers in the running state count: a crash-looping one holds no port
+    assert compose_calls == ["docker compose ps -q --status running"]
 
     monkeypatch.setattr(mine, "_run", lambda cmd, check=True, capture=True, cwd=None: ("", ""))
     with pytest.raises(Exception, match="Port 8080 .* already in use"):
@@ -204,9 +213,21 @@ def test_validate_executor_survives_a_stdout_larger_than_the_pipe(monkeypatch) -
 
     monkeypatch.setattr(subprocess, "Popen", popen)
     seen: list[str] = []
+    outcome: list[object] = []
 
-    mine._validate_executor(on_check=seen.append)   # returns: the verdict was read behind 1 MiB of noise
+    def run() -> None:
+        try:
+            mine._validate_executor(on_check=seen.append)   # returns: the verdict was read behind 1 MiB of noise
+            outcome.append("returned")
+        except BaseException as exc:  # noqa: BLE001 — re-raised below on the test thread
+            outcome.append(exc)
 
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(timeout=60)   # without the drain thread this hangs forever on the full pipe: fail, do not hang
+    assert outcome, "hung: _validate_executor did not return within 60 s (stdout pipe never drained)"
+    if isinstance(outcome[0], BaseException):
+        raise outcome[0]
     assert seen == ["GPU Configuration"]
 
 

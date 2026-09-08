@@ -297,14 +297,16 @@ def _host_ports_from_answers(answers: dict) -> dict[str, int]:
 
 
 def _compose_project_running(executor_dir: Path) -> bool:
-    """Whether this executor's own compose project already has running containers.
+    """Whether this executor's own compose project has containers in the ``running`` state.
 
     On a re-run (`lium mine` on a host whose executor is up: the update path) the ports are
     held by the project's own ``docker-proxy``; ``docker compose up -d`` is then a no-op, so
-    the pre-check must not fail on our own listener.
+    the pre-check must not fail on our own listener. Only ``running`` counts: a container in
+    a restart loop (``restarting`` — the "address already in use" case this check exists for)
+    holds nothing, so the ports are checked as on a first run.
     """
     try:
-        out, _ = _run("docker compose ps -q", check=False, cwd=str(executor_dir))
+        out, _ = _run("docker compose ps -q --status running", check=False, cwd=str(executor_dir))
     except OSError:   # no such directory yet (first run): nothing of ours is running
         return False
     return bool(out.strip())
