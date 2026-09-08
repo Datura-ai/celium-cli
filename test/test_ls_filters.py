@@ -170,7 +170,10 @@ def test_ls_table_explains_the_star(fake_ls):
     result = CliRunner().invoke(cli, ["ls"])
 
     assert result.exit_code == 0, result.output
-    assert "★ = no other node is both faster" in result.output
+    # short fragments: Rich wraps the dim lines at the console width
+    assert "default order: cheapest $/GPU·h first" in result.output
+    assert "★ = no other node beats it" in result.output
+    assert "a 10% faster download wins outright" in result.output
 
 
 def test_compact_executor_has_country_code_and_city():

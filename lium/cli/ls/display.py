@@ -218,7 +218,8 @@ def format_tip() -> str:
     """Format tip message."""
     return (
         f"Tip: {console.get_styled('lium up <index>', 'success')} {console.get_styled('# e.g. lium up 1', 'dim')}\n"
-        f"{console.get_styled('rows are cheapest $/GPU·h first; ★ = no other node is both faster to download and cheaper; --sort picks another key', 'dim')}"
+        f"{console.get_styled('default order: cheapest $/GPU·h first; --sort picks another key', 'dim')}\n"
+        f"{console.get_styled('★ = no other node beats it: a 10% faster download wins outright, else better on price and specs (VRAM, RAM, disk, PCIe, memory bandwidth, TFLOPS, upload, US location)', 'dim')}"
     )
 
 

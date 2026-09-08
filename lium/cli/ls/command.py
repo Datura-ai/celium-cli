@@ -74,8 +74,12 @@ def ls_command(
     """List available GPU nodes.
 
     Rows are cheapest $/GPU·h first; nodes without a price come last. ★ marks
-    nodes no other node beats on download speed and price together (nodes under
-    100 Mbps are never ★). --sort picks another key.
+    nodes no other node beats: a node more than 10% faster to download wins
+    outright; at a similar download speed a node wins by being no worse, and
+    better somewhere, on price, VRAM, RAM, disk, PCIe, memory bandwidth, TFLOPS,
+    upload and US location (at the same price, bandwidth and US location count
+    before the hardware specs). Nodes under 100 Mbps download are never ★.
+    --sort picks another key.
 
     \b
     Examples:
