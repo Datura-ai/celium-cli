@@ -933,6 +933,11 @@ def wait_for_pod_ready(
     return lium_client.wait_ready(pod_id, timeout=timeout, poll_interval=None, on_poll=on_poll)
 
 
+# The old name, kept only until the open PRs that still import it (lium#141, #155, #172) land;
+# then it goes.
+wait_ready_no_timeout = wait_for_pod_ready
+
+
 def get_pytorch_template_id() -> Optional[str]:
     """Get the template ID for the newest PyTorch template."""
     
