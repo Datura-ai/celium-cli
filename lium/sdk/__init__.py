@@ -26,6 +26,7 @@ from .models import (
     Template,
     VolumeInfo,
 )
+from .result_codec import ResultEncodingError
 
 __all__ = [
     "Lium",
@@ -50,6 +51,7 @@ __all__ = [
     "LiumHostKeyError",
     "LiumInsufficientBalanceError",
     "RemoteExecutionError",
+    "ResultEncodingError",
     "machine",
     "pod_ssh_command",
 ]

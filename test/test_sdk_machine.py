@@ -2,8 +2,10 @@
 
 import subprocess
 import sys
+import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -53,6 +55,7 @@ class FakeLium:
         self.uploaded = {}
         self.pods = {}      # id -> PodInfo the fake "server" has running
         self.rented = 0
+        self.result_paths = []   # where each call's runner writes its envelope (+ ".npz" beside it)
 
     def ls(self, **kw):
         self.calls.append(("ls",))
@@ -85,6 +88,7 @@ class FakeLium:
         text = Path(local).read_text().replace("'/tmp/", f"'{self.sandbox}/")
         self.uploaded[remote] = text
         (self.sandbox / Path(remote).name).write_text(text)
+        self.result_paths.append(str(self.sandbox / (Path(remote).stem + ".json")))
 
     def exec(self, pod, *, command, env=None):
         self.calls.append(("exec", command))
@@ -187,7 +191,6 @@ def slow():
     pass
 
 
-
 def test_call_rents_cheapest_sets_ttl_bounds_run_and_cleans_up(fake, capsys):
     remote = D.machine(machine="A100", timeout=600)(double)
 
@@ -246,7 +249,7 @@ def test_cleanup_false_keeps_pod_and_its_environment(fake):
     D.machine(machine="A100", cleanup=False, quiet=True)(one)()
     assert not any(c[0] == "down" for c in fake.calls)
     rm = next(cmd for cmd in _execs(fake) if cmd.startswith("rm "))
-    assert "lium-venv" not in rm and rm.endswith(".pkl")       # call files go, the venv cache stays
+    assert "lium-venv" not in rm and rm.endswith(".json.npz")  # call files go (envelope + sidecar), the venv cache stays
 
 
 # --- one environment per requirements list, built once (DAH-3017) --------------------------------
@@ -305,34 +308,183 @@ def test_functions_defined_inside_a_scope_run(fake):
     assert nested(3, b=4) == 12
 
 
-def test_arguments_and_results_round_trip_as_pickles(fake):
+def test_arguments_are_pickled_and_the_result_comes_back_through_the_json_envelope(fake):
     @D.machine(machine="A100", quiet=True)
     def identity(*args, **kwargs):
         return args, kwargs
 
     args = ((1, 2), {1, 2}, b"\x00", Path("/x"), None)
-    assert identity(*args, k=3.5) == (args, {"k": 3.5})
+    out = identity(*args, k=3.5)
+    assert out == (args, {"k": 3.5})
+    assert type(out) is tuple and type(out[0][1]) is set and type(out[0][2]) is bytes and isinstance(out[0][3], Path)
+    runner = next(iter(fake.uploaded.values()))
+    assert "pickle.loads(base64.b64decode(" in runner            # arguments: the caller's own bytes
+    assert "def encode(" in runner and "save_arrays(" in runner   # the result: the codec, shipped verbatim
+    assert "pickle.dumps" not in runner.split("pickle.loads")[1]  # nothing the pod writes is a pickle
 
 
-def test_numpy_style_objects_round_trip(fake):
+DOCUMENTED_VALUES = [
+    None, True, 7, -2.5, float("inf"), "text", b"\x00\x01", [1, [2, [3]]], (1, "a"), {1, 2}, frozenset({"x"}),
+    {"k": 1, "n": {"m": [None]}}, {1: "int key", (2, 3): "tuple key", None: "None key"}, {"__lium__": "a user's own key"},
+    datetime(2026, 9, 8, 1, 22, tzinfo=timezone.utc), datetime(2026, 9, 8, 1, 22, 5, 123456),
+    datetime(2026, 9, 8).date(), datetime(2026, 9, 8, 13, 45, 1).time(), timedelta(days=1, seconds=2, microseconds=3),
+    Decimal("1.10"), Path("/root/out/model.pt"), uuid.UUID("12345678-1234-5678-1234-567812345678"),
+]
+
+
+def test_every_documented_stdlib_value_round_trips_with_its_type(fake):
+    @D.machine(machine="A100", quiet=True)
+    def identity(x):
+        return x
+
+    out = identity(DOCUMENTED_VALUES)
+    assert out == DOCUMENTED_VALUES
+    assert [type(v) for v in out] == [type(v) for v in DOCUMENTED_VALUES]
+    assert out[14].tzinfo is not None and out[15].tzinfo is None
+
+
+def _numpy_shapes(np):
+    return [
+        np.arange(3),                                                    # 1-D int64
+        np.ones((2, 3), dtype=np.float32),                               # 2-D float32
+        np.array(4.5),                                                   # 0-d
+        np.array([True, False]),                                         # bool
+        np.array(["a", "bc"]),                                           # unicode
+        np.array([(1, 2.0), (3, 4.0)], dtype=[("i", "i4"), ("f", "f8")]),  # structured
+        np.array(["2026-09-08", "2026-09-09"], dtype="datetime64[D]"),   # datetime64
+        np.array([1, 2], dtype="timedelta64[s]"),                        # timedelta64
+        np.zeros((0, 2)),                                                # empty
+    ]
+
+
+def test_every_documented_numpy_shape_round_trips_as_ndarray(fake):
     np = pytest.importorskip("numpy")
 
     @D.machine(machine="A100", quiet=True)
-    def double(arr):
-        return arr * 2
+    def identity(x):
+        return x
 
-    out = double(np.arange(3))
-    assert type(out).__name__ == "ndarray" and out.tolist() == [0, 2, 4]
+    out = identity({"arrays": _numpy_shapes(np), "one": np.arange(3)})
+    for got, want in zip(out["arrays"], _numpy_shapes(np)):
+        assert type(got) is np.ndarray and got.dtype == want.dtype and got.shape == want.shape
+        assert np.array_equal(got, want)
+    assert out["one"].tolist() == [0, 1, 2]
+    assert Path(fake.result_paths[-1] + ".npz").exists()   # the arrays travelled in the sidecar, not the envelope
+
+
+def test_numpy_scalars_round_trip_as_numpy_scalars(fake):
+    np = pytest.importorskip("numpy")
+
+    @D.machine(machine="A100", quiet=True)
+    def scalars():
+        import numpy as np
+        return np.float64(1.5), np.int32(7), np.bool_(True), np.str_("s"), np.datetime64("2026-09-08")
+
+    out = scalars()
+    assert [type(v) for v in out] == [np.float64, np.int32, np.bool_, np.str_, np.datetime64]
+    assert out[0] == 1.5 and out[1] == 7 and out[2] and out[3] == "s" and out[4] == np.datetime64("2026-09-08")
+
+
+def test_an_unsupported_result_type_fails_on_the_pod_naming_the_type_and_where(fake):
+    @D.machine(machine="A100", quiet=True)
+    def namespace():
+        import argparse
+        from collections import OrderedDict
+        return {"cfg": [OrderedDict(a=1)], "ns": argparse.Namespace(a=1)}
+
+    with pytest.raises(D.ResultEncodingError, match=r"the result of namespace\['cfg'\]\[0\] is a collections.OrderedDict.*return dict\(x\) instead") as info:
+        namespace()
+    assert isinstance(info.value.__cause__, D.RemoteExecutionError)
+    assert info.value.__cause__.exception_type == "ResultEncodingError"
+    assert info.value.__cause__.exit_code == 1
+    assert ("down", "pod-1") in fake.calls
+
+
+def test_an_enum_member_is_refused_rather_than_coming_back_as_an_int(fake):
+    @D.machine(machine="A100", quiet=True)
+    def status():
+        import http
+        return http.HTTPStatus.OK          # an IntEnum member: isinstance(x, int) but not a plain int
+
+    with pytest.raises(D.ResultEncodingError, match=r"the result of status is a http.HTTPStatus, which does not travel back from the pod; return plain data"):
+        status()
+
+
+def test_object_and_subclass_arrays_are_refused_on_the_pod(fake):
+    np = pytest.importorskip("numpy")
+
+    @D.machine(machine="A100", quiet=True)
+    def objects():
+        import numpy as np
+        return np.array([object()])
+
+    @D.machine(machine="A100", quiet=True)
+    def masked():
+        import numpy as np
+        return np.ma.masked_array([1, 2], mask=[0, 1])
+
+    with pytest.raises(D.ResultEncodingError, match="array of dtype object, which does not travel back"):
+        objects()
+    with pytest.raises(D.ResultEncodingError, match=r"numpy.ma.*MaskedArray.*arr.view\(numpy.ndarray\)"):
+        masked()
+    assert not any(Path(p + ".npz").exists() for p in fake.result_paths)   # nothing was written to a sidecar
+    del np
+
+
+def test_a_result_file_holding_pickle_bytes_is_refused_by_the_loader(tmp_path):
+    """The result file is written by the pod (provider hardware). A pickle in place of the JSON envelope,
+    or an .npz whose array needs pickle, must be refused — never loaded — whatever it names."""
+    import os
+    import pickle
+
+    class Gadget:
+        def __reduce__(self):
+            return (os.system, ("echo pwned > /dev/null",))
+
+    path = tmp_path / "result.json"
+    path.write_bytes(pickle.dumps({"ok": True, "result": Gadget()}, protocol=4))
+    with pytest.raises(ValueError, match="not a JSON envelope"):
+        D._load_result(str(path))
+
+    np = pytest.importorskip("numpy")
+    path.write_text('{"ok": true, "npz": true, "result": {"__lium__": "ndarray", "key": "a0"}}')
+    with open(str(path) + ".npz", "wb") as f:
+        np.savez(f, a0=np.array([Gadget()], dtype=object))          # numpy pickles object arrays on write
+    with pytest.raises(ValueError, match="allow_pickle=False"):      # and refuses them on read without pickle
+        D._load_result(str(path))
+
+    path.write_text('{"ok": true, "npz": true, "result": {"__lium__": "ndarray", "key": "missing"}}')
+    with open(str(path) + ".npz", "wb") as f:
+        np.savez(f, a0=np.arange(2))
+    with pytest.raises(ValueError, match="names array 'missing'"):
+        D._load_result(str(path))
+
+
+def test_a_pickled_result_file_from_the_pod_is_a_remote_error_not_a_crash(fake):
+    import pickle
+
+    real_download = fake.download
+
+    def poisoned(pod, *, remote, local):
+        real_download(pod, remote=remote, local=local)
+        if remote.endswith(".json"):
+            Path(local).write_bytes(pickle.dumps({"ok": True, "result": 1}, protocol=4))
+
+    fake.download = poisoned
+    with pytest.raises(D.RemoteExecutionError, match="could not be loaded locally: the result file is not a JSON envelope"):
+        D.machine(machine="A100", quiet=True)(one)()
+    assert ("down", "pod-1") in fake.calls
 
 
 def test_decorators_and_annotations_are_stripped_from_the_shipped_source(fake):
     @D.machine(machine="A100", quiet=True)
-    def annotated(x: "np.ndarray", y: int = 1) -> "np.ndarray":
+    def annotated(x: "np.ndarray", y: int = 1) -> "np.ndarray":  # noqa: F821 — the point: names nothing this module imports
         return x + y
 
     assert annotated(1) == 2
     shipped = next(iter(fake.uploaded.values()))
-    assert "np.ndarray" not in shipped and "@D.machine" not in shipped and "@" not in shipped.split("def annotated")[0].split("import")[-1]
+    body = shipped.split("def annotated")[1]
+    assert "np.ndarray" not in body and "@D.machine" not in shipped and "@" not in shipped.split("def annotated")[0].split("import")[-1]
 
 
 def test_async_functions_are_awaited(fake):
@@ -368,36 +520,42 @@ def test_remote_sys_exit_does_not_exit_the_caller(fake):
         quits()
 
 
-def test_a_result_pickle_that_names_a_gadget_is_refused_not_executed(tmp_path):
-    """The result file is written by the pod (provider hardware): a pickle naming os.system, builtins.eval
-    or any class outside the allow-list must stop at find_class, never run here."""
-    import os
-    import pickle
+def test_builtin_exceptions_arrive_typed_whatever_their_args(fake):
+    """The runner ships type/module/message/traceback for every exception and the args only when they are
+    plain data; the loader rebuilds any builtin Exception subclass from those args, else from the message."""
+    @D.machine(machine="A100", quiet=True)
+    def stops():
+        raise StopIteration("done")                      # no Error/Exception suffix
 
-    class Gadget:
-        def __reduce__(self):
-            return (os.system, ("echo pwned > /dev/null",))
+    @D.machine(machine="A100", quiet=True)
+    def odd_key():
+        import argparse
+        raise KeyError(argparse.Namespace(a=1))          # args that are not plain data
 
-    path = tmp_path / "result.pkl"
-    path.write_bytes(pickle.dumps({"ok": True, "result": Gadget()}, protocol=4))
+    @D.machine(machine="A100", quiet=True)
+    def os_error():
+        raise FileNotFoundError(2, "No such file")        # two plain args, an errno subclass
 
-    with pytest.raises(pickle.UnpicklingError, match="posix.system|nt.system|os.system"):
-        D._load_result(str(path))
+    with pytest.raises(StopIteration, match="done") as info:
+        stops()
+    assert info.value.__cause__.exception_type == "StopIteration"
+    with pytest.raises(KeyError, match="Namespace") as info:
+        odd_key()
+    assert info.value.args == ("Namespace(a=1)",) and info.value.__cause__.exception_type == "KeyError"
+    with pytest.raises(FileNotFoundError) as info:
+        os_error()
+    assert (info.value.errno, info.value.strerror) == (2, "No such file")
 
-    path.write_bytes(pickle.dumps({"ok": True, "result": [1, "two", {"3": (4.0, None)}, Path("/x"), {5}]}, protocol=4))
-    assert D._load_result(str(path))["result"][3] == Path("/x")
 
-    # a class from a module the caller did not name: refused; named through extra_modules: reconstructed
-    import fractions
-
-    path.write_bytes(pickle.dumps({"ok": True, "result": fractions.Fraction(1, 3)}, protocol=4))
-    assert D._load_result(str(path))["result"] == fractions.Fraction(1, 3)     # stdlib value type, allowed
-    import argparse
-
-    path.write_bytes(pickle.dumps({"ok": True, "result": argparse.Namespace(a=1)}, protocol=4))
-    with pytest.raises(pickle.UnpicklingError, match="argparse.Namespace"):
-        D._load_result(str(path))
-    assert D._load_result(str(path), extra_modules=["argparse"])["result"].a == 1
+def test_a_builtin_the_loader_cannot_construct_stays_a_remote_error():
+    payload = {"ok": False, "module": "builtins", "type": "UnicodeDecodeError", "message": "bad bytes",
+               "traceback": "tb", "args": None}
+    assert D._builtin_exception(payload) is None                      # needs 5 args; neither the message nor None fits
+    payload["args"] = ["utf-8", b"\xff", 0, 1, "invalid start byte"]
+    assert isinstance(D._builtin_exception(payload), UnicodeDecodeError)
+    assert D._builtin_exception({"module": "builtins", "type": "SystemExit", "message": "3", "args": [3]}) is None
+    assert D._builtin_exception({"module": "builtins", "type": "eval", "message": "", "args": None}) is None
+    assert D._builtin_exception({"module": "decimal", "type": "InvalidOperation", "message": "", "args": None}) is None
 
 
 def test_a_remote_exception_of_a_custom_type_is_a_remote_error_with_its_name(fake):
@@ -412,12 +570,12 @@ def test_a_remote_exception_of_a_custom_type_is_a_remote_error_with_its_name(fak
     assert info.value.exception_type == "InvalidOperation"
 
 
-def test_unpicklable_result_is_a_remote_error_not_a_crash(fake):
+def test_a_generator_result_is_refused_on_the_pod_with_its_type(fake):
     @D.machine(machine="A100", quiet=True)
     def gen():
         return (i for i in range(3))
 
-    with pytest.raises(D.RemoteExecutionError, match="result of gen cannot be pickled"):
+    with pytest.raises(D.ResultEncodingError, match="the result of gen is a generator, which does not travel back"):
         gen()
 
 
@@ -609,6 +767,23 @@ def test_map_with_keep_warm_leaves_the_pod(fake):
     assert not any(c[0] == "down" for c in fake.calls)
 
 
+def test_map_on_a_pod_found_by_name_leaves_it_as_found(fake, capsys):
+    """`.map()` with keep_warm=0 closes the pod it held — unless that pod was found by name from an
+    earlier run: not rented here, so not removed here, and its removal time is put back."""
+    warm = _pod("pod-9")
+    warm.name = f"lium-fn-{D._warm_key('1xA100', None)}"
+    warm.executor = EXECUTORS[2]
+    warm.removal_scheduled_at = "2099-01-01T00:00:00Z"
+    fake.pods["pod-9"] = warm
+
+    assert D.machine(machine="A100")(double).map([1, 2]) == [2, 4]
+    assert _rents(fake) == []
+    assert not any(c[0] == "down" for c in fake.calls) and "pod-9" in fake.pods
+    assert [c for c in fake.calls if c[0] == "schedule_termination"][-1][2] == "2099-01-01T00:00:00Z"
+    assert D._WARM == {}
+    assert "was found warm, not rented here; left as found" in capsys.readouterr().err
+
+
 def test_remote_and_local_aliases(fake):
     f = D.machine(machine="A100", quiet=True)(double)
     assert f.remote(5) == 10 and len(_rents(fake)) == 1
@@ -634,7 +809,6 @@ def test_env_var_forces_local(fake, monkeypatch):
 
 
 def test_atexit_removes_held_pods_but_leaves_keep_warm_ones(fake, capsys):
-    held = D.machine(machine="A100", quiet=True)(double)
     D._WARM["held"] = D._Warm(fake, fake.pods.setdefault("pod-h", _pod("pod-h")), EXECUTORS[2], 0)
     D._WARM["warm"] = D._Warm(fake, fake.pods.setdefault("pod-w", _pod("pod-w")), EXECUTORS[2], 120)
 

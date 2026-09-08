@@ -49,8 +49,14 @@ what happens to the caller.
 ``keep_warm=300`` keeps the pod five minutes for the next call or the next run of the
 script; ``infer.map(prompts)`` runs every item on one pod; ``infer.local(...)`` runs the
 function in this process (``local=True`` / ``LIUM_MACHINE_LOCAL=1`` does so for every
-call); ``infer.close()`` removes a warm pod. Arguments and results are pickled (the result through a restricted unpickler: plain types, stdlib value types, numpy, the function's own module); only the
-function's own ``def`` is sent, so import inside it. A remote exception is re-raised with
+call); ``infer.close()`` removes a warm pod. Arguments travel as a pickle; the
+result comes back as a JSON envelope plus an ``.npz`` sidecar for numpy arrays, read with
+``allow_pickle=False`` — nothing the pod writes is unpickled on your machine. What round-trips:
+``None``/``bool``/``int``/``float``/``str``/``bytes``, ``list``/``tuple``/``set``/``frozenset``/``dict``
+of those, ``datetime``/``date``/``time``/``timedelta``, ``Decimal``, ``pathlib.Path``, ``uuid.UUID``,
+``numpy.ndarray`` (any dtype without Python objects) and numpy scalars; anything else is a
+``lium.ResultEncodingError`` on the pod naming the type (return ``.tolist()``, ``dict(x)``,
+``x.value`` instead). Only the function's own ``def`` is sent, so import inside it. A remote exception is re-raised with
 its type, with ``lium.RemoteExecutionError`` (remote traceback, exit code, output) as its
 cause. Progress lines go to stderr (``quiet=True`` to silence them).
 

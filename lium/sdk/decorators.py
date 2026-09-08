@@ -3,6 +3,7 @@
 import ast
 import atexit
 import base64
+import builtins
 import hashlib
 import inspect
 import math
@@ -19,9 +20,11 @@ from datetime import datetime, timedelta, timezone
 from functools import wraps
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
+from . import result_codec
 from .client import Lium
 from .exceptions import LiumError, RemoteExecutionError
 from .models import ExecutorInfo
+from .result_codec import ResultEncodingError
 
 # How long the pod may outlive the call before the server removes it on its own.
 # It covers the boot wait, the result download and a caller that dies mid-call.
@@ -154,7 +157,18 @@ def _check_portable(func) -> None:
         )
 
 
+def _codec_source() -> str:
+    """``lium/sdk/result_codec.py`` as text: the pod runs the same encoder the caller decodes with."""
+    try:
+        return inspect.getsource(result_codec)
+    except (OSError, TypeError) as exc:
+        raise LiumError(f"Cannot read lium.sdk.result_codec's source to ship it to the pod: {exc}") from exc
+
+
 def _runner_script(source: str, func_name: str, is_async: bool, args, kwargs, result_path: str) -> str:
+    """The script the pod runs. Arguments travel as a pickle — the caller's own bytes, loaded on the
+    caller's own pod. The result travels back as a JSON envelope plus an ``.npz`` sidecar for numpy
+    arrays (``result_codec``); nothing the pod writes is unpickled here."""
     try:
         blob = base64.b64encode(pickle.dumps((args, kwargs), protocol=4)).decode()
     except Exception as exc:  # noqa: BLE001 — pickle raises many types
@@ -165,76 +179,72 @@ def _runner_script(source: str, func_name: str, is_async: bool, args, kwargs, re
     return f'''#!/usr/bin/env python3
 import asyncio, base64, pickle, sys, traceback
 
+{_codec_source()}
+
 {source}
 
-payload = {{'ok': False, 'type': 'RuntimeError', 'message': 'runner did not finish', 'traceback': ''}}
+payload = {{'ok': False, 'type': 'RuntimeError', 'module': 'builtins', 'message': 'runner did not finish',
+           'traceback': '', 'args': None}}
+arrays = {{}}
 try:
     args, kwargs = pickle.loads(base64.b64decode({blob!r}))
-    payload = {{'ok': True, 'result': {call}}}
+    result = {call}
+    payload = {{'ok': True, 'result': encode(result, arrays, 'the result of {func_name}')}}
 except BaseException as e:
-    # the exception object itself travels only when its class is a builtin: the caller's restricted
-    # unpickler reconstructs nothing else, and the type/message/traceback below must still arrive
-    payload = {{'ok': False, 'exc': e if type(e).__module__ == 'builtins' else None,
-               'type': type(e).__name__, 'message': str(e), 'traceback': traceback.format_exc()}}
+    # type/message/traceback always arrive; the args only when they are plain data (encode_exception_args)
+    arrays = {{}}
+    payload = {{'ok': False, 'type': type(e).__name__, 'module': type(e).__module__, 'message': str(e),
+               'traceback': traceback.format_exc(), 'args': encode_exception_args(e.args)}}
 finally:
-    try:
-        blob = pickle.dumps(payload, protocol=4)
-    except Exception as e:
-        what = 'result' if payload['ok'] else 'exception'
-        payload = {{'ok': False, 'exc': None, 'type': 'PicklingError',
-                   'message': f'the {{what}} of {func_name} cannot be pickled: {{e}}', 'traceback': payload.get('traceback', '')}}
-        blob = pickle.dumps(payload, protocol=4)
-    with open({result_path!r}, 'wb') as f:
-        f.write(blob)
+    payload['npz'] = bool(arrays)
+    if arrays:
+        save_arrays({result_path + ".npz"!r}, arrays)
+    with open({result_path!r}, 'w', encoding='utf-8') as f:
+        f.write(dumps(payload))
     if not payload['ok']:
         sys.exit(1)
 '''
 
 
-# What a result pickle from the pod may reconstruct. The pod runs on provider hardware, so whoever
-# controls the node controls the bytes: an unrestricted pickle.load would let them run code here.
-# Allowed are plain data types, the stdlib value types a result commonly carries, numpy, and the
-# decorated function's own module (its dataclasses); everything else names its class and stops.
-_SAFE_BUILTINS = frozenset({
-    "set", "frozenset", "bytes", "bytearray", "complex", "range", "slice", "object", "NoneType",
-    "int", "float", "str", "bool", "list", "tuple", "dict",
-})
-_SAFE_MODULES = frozenset({
-    "collections", "datetime", "decimal", "fractions", "pathlib", "uuid", "enum", "ipaddress",
-    "numpy", "numpy.core.multiarray", "numpy._core.multiarray", "numpy.core.numeric", "numpy._core.numeric",
-    "numpy.dtypes", "numpy.core", "numpy._core",
-})
-
-
-class _ResultUnpickler(pickle.Unpickler):
-    """``pickle.Unpickler`` whose ``find_class`` only resolves the allow-list above.
-
-    ``pickle`` resolves every class or callable a stream names through ``find_class``; refusing
-    anything outside the list is what stops ``os.system`` / ``builtins.eval`` gadgets, the way the
-    stdlib's own "Restricting Globals" recipe does.
-    """
-
-    def __init__(self, file, *, extra_modules: Sequence[str] = ()):
-        super().__init__(file)
-        self._extra = frozenset(extra_modules)
-
-    def find_class(self, module: str, name: str):
-        if module == "builtins":
-            if name in _SAFE_BUILTINS or (name.endswith(("Error", "Exception", "Exit", "Interrupt", "Warning"))
-                                          and isinstance(getattr(__import__("builtins"), name, None), type)):
-                return super().find_class(module, name)
-        elif module in _SAFE_MODULES or module in self._extra or module.split(".")[0] in self._extra:
-            return super().find_class(module, name)
-        raise pickle.UnpicklingError(
-            f"result pickle names {module}.{name}, which is not allowed here (plain data, numpy and "
-            f"the function's own module are); return plain Python types instead"
-        )
-
-
-def _load_result(path: str, *, extra_modules: Sequence[str] = ()) -> Dict[str, Any]:
-    """The pod's result payload, unpickled through :class:`_ResultUnpickler`."""
+def _read_envelope(path: str) -> Dict[str, Any]:
+    """The JSON envelope the pod wrote; anything else (a pickle, a truncated file) is a ``ValueError``."""
     with open(path, "rb") as f:
-        return _ResultUnpickler(f, extra_modules=extra_modules).load()
+        return result_codec.loads(f.read())
+
+
+def _decode_payload(envelope: Dict[str, Any], npz_path: str) -> Dict[str, Any]:
+    """The envelope with its values decoded; arrays come from ``npz_path`` via ``np.load(allow_pickle=False)``."""
+    arrays = result_codec.load_arrays(npz_path) if envelope.get("npz") else {}
+    payload = dict(envelope)
+    if payload.get("ok"):
+        payload["result"] = result_codec.decode(payload.get("result"), arrays)
+    elif payload.get("args") is not None:
+        payload["args"] = result_codec.decode(payload["args"], {})
+    return payload
+
+
+def _load_result(path: str) -> Dict[str, Any]:
+    """The pod's result payload from ``path`` (and ``path + '.npz'`` when it holds arrays)."""
+    return _decode_payload(_read_envelope(path), path + ".npz")
+
+
+def _builtin_exception(payload: Dict[str, Any]) -> Optional[Exception]:
+    """The remote exception rebuilt here — when its class is a builtin ``Exception`` subclass (never
+    ``SystemExit``/``KeyboardInterrupt``) that can be constructed from the shipped args, or from the
+    message when the args were not plain data. Anything else stays a :class:`RemoteExecutionError`."""
+    if payload.get("module") != "builtins":
+        return None
+    cls = getattr(builtins, payload.get("type", ""), None)
+    if not (isinstance(cls, type) and issubclass(cls, Exception)):
+        return None
+    candidates = [tuple(payload["args"])] if payload.get("args") is not None else []
+    candidates.append((payload.get("message", ""),))
+    for args in candidates:
+        try:
+            return cls(*args)
+        except Exception:  # noqa: BLE001 — a builtin with a fixed signature (UnicodeDecodeError) and other args
+            continue
+    return None
 
 
 def _venv_path(reqs: Sequence[str]) -> str:
@@ -299,8 +309,10 @@ def _raise_remote(payload: Optional[Dict[str, Any]], func_name: str, exec_result
         f"{payload['type']}: {payload['message']}\n\nRemote traceback:\n{payload.get('traceback', '')}",
         exception_type=payload["type"], remote_traceback=payload.get("traceback", ""), **common,
     )
-    exc = payload.get("exc")
-    if isinstance(exc, Exception):  # never re-raise a remote SystemExit/KeyboardInterrupt here
+    if payload["type"] == "ResultEncodingError":  # raised by the codec on the pod: the result does not travel
+        raise ResultEncodingError(payload["message"]) from cause
+    exc = _builtin_exception(payload)
+    if exc is not None:
         raise exc from cause
     raise cause
 
@@ -396,19 +408,25 @@ def machine(
     ``f.local(*a)`` (run the original here), ``f.map(iterable)`` (run every item on one
     pod, rented once) and ``f.close()`` (remove the pod kept by ``keep_warm``).
 
-    Arguments and the return value travel as pickles. Arguments are your own bytes and
-    are loaded on the pod as they are. The result comes back from provider hardware, so
-    it is loaded through a restricted unpickler: plain Python types, the stdlib value
-    types (``pathlib``, ``datetime``, ``decimal``, ``uuid``, ``collections``, ``enum``),
-    numpy arrays and classes from the decorated function's own module reconstruct;
-    anything else raises :class:`RemoteExecutionError` naming the class (return
-    ``.tolist()`` / a dict instead). A remote exception is re-raised here when its type
-    is a builtin; other types come back as :class:`RemoteExecutionError`.
+    Arguments travel as a pickle: your own bytes, loaded on your own pod as they are. The
+    result comes back from provider hardware, so nothing it contains is unpickled here:
+    it travels as a JSON envelope plus an ``.npz`` sidecar for numpy arrays, read with
+    ``allow_pickle=False``. What round-trips, exactly: ``None``, ``bool``, ``int``,
+    ``float``, ``str``, ``bytes``; ``list``, ``tuple``, ``set``, ``frozenset`` and
+    ``dict`` of those, nested; ``datetime``/``date``/``time``/``timedelta``, ``Decimal``,
+    ``pathlib.Path``, ``uuid.UUID``; ``numpy.ndarray`` (any dtype without Python objects,
+    any shape) and numpy scalars. Anything else — a dataclass, an ``Enum``, an
+    ``OrderedDict``, a tensor, an ndarray subclass — raises :class:`ResultEncodingError`
+    on the pod, naming the type and its place in the result, and is re-raised here
+    (return ``.tolist()``, ``dict(x)``, ``x.value`` instead).
     Only the function's own ``def`` is sent: import what it needs inside the body and
     pass everything else as arguments. Whatever the function prints is relayed to this
     process's stdout/stderr while it runs. An exception raised on the pod is re-raised
-    here with the same type; its ``__cause__`` is a :class:`RemoteExecutionError`
-    carrying the remote traceback, exit code and captured output.
+    here with the same type when that type is a builtin (``except ValueError`` works;
+    its args come along when they are plain data, else its message); other types come
+    back as :class:`RemoteExecutionError`. Either way the ``__cause__`` is a
+    :class:`RemoteExecutionError` carrying the remote traceback, exit code and captured
+    output.
 
     Args:
         machine: ``"<count>x<gpu>"`` or ``"<gpu>"`` — e.g. ``"1xH200"``, ``"RTX4090"``,
@@ -451,7 +469,7 @@ def machine(
                 return func(*args, **kwargs)
             call_id = uuid.uuid4().hex[:8]
             remote_runner = f"/tmp/lium-{call_id}.py"
-            remote_result = f"/tmp/lium-{call_id}.pkl"
+            remote_result = f"/tmp/lium-{call_id}.json"   # + ".npz" beside it when the result holds arrays
             runner_script = _runner_script(func_source, func.__name__, is_async, args, kwargs, remote_result)
 
             # Initialize SDK
@@ -542,23 +560,30 @@ def machine(
                         payload = None
                         with tempfile.NamedTemporaryFile(delete=False) as f:
                             result_file = f.name
+                        npz_file = result_file + ".npz"
                         try:
                             sdk.download(pod_info, remote=remote_result, local=result_file)
-                            # the pod wrote these bytes: only plain data, numpy and the function's own
-                            # module may be reconstructed here (_ResultUnpickler)
-                            payload = _load_result(result_file, extra_modules=[func.__module__])
                         except (OSError, IOError):
                             payload = None  # the runner never got to write it
-                        except Exception as exc:  # noqa: BLE001 — unpickling: a refused class, numpy missing locally
-                            raise RemoteExecutionError(
-                                f"the result of {func.__name__} could not be unpickled locally: {exc}. "
-                                "Return plain Python types (str(), .tolist(), .cpu().numpy()) or install "
-                                "the missing package here",
-                                exit_code=exec_result.get("exit_code"),
-                            ) from exc
+                        else:
+                            try:
+                                # the pod wrote these bytes: a JSON envelope, and arrays in an .npz read
+                                # without pickle (result_codec) — nothing from the pod is unpickled here
+                                envelope = _read_envelope(result_file)
+                                if envelope.get("npz"):
+                                    sdk.download(pod_info, remote=remote_result + ".npz", local=npz_file)
+                                payload = _decode_payload(envelope, npz_file)
+                            except Exception as exc:  # noqa: BLE001 — not an envelope, a pickled .npz, numpy missing locally
+                                raise RemoteExecutionError(
+                                    f"the result of {func.__name__} could not be loaded locally: {exc}. "
+                                    "Return plain Python types (str(), .tolist(), .cpu().numpy()) or install "
+                                    "the missing package here",
+                                    exit_code=exec_result.get("exit_code"),
+                                ) from exc
                         finally:
-                            if os.path.exists(result_file):
-                                os.unlink(result_file)
+                            for path in (result_file, npz_file):
+                                if os.path.exists(path):
+                                    os.unlink(path)
 
                         if payload and payload.get('ok'):
                             elapsed = time.time() - started
@@ -572,7 +597,7 @@ def machine(
                         # Remove this call's files when the pod stays alive (the venv stays: it is the cache)
                         if keep or warm or not cleanup:
                             try:
-                                sdk.exec(pod_info, command=f"rm -f {remote_runner} {remote_result}")
+                                sdk.exec(pod_info, command=f"rm -f {remote_runner} {remote_result} {remote_result}.npz")
                             except Exception as exc:  # noqa: BLE001 — best-effort cleanup; the call's result is already in hand
                                 say(f"could not remove this call's files on the pod ({exc}); they are under /tmp, the venv cache stays")
 
@@ -609,7 +634,10 @@ def machine(
                         say("warning: could not remove the pod; it is scheduled for removal server-side")
 
         def close():
-            """Remove the pod kept warm for this machine spec (no-op when there is none)."""
+            """Remove the pod kept warm for this machine spec (no-op when there is none).
+
+            An explicit close removes a found pod too: the pod the previous run of this script
+            left warm is the user's, and asking for it to go is their call."""
             warm = _WARM.pop(key, None)
             if warm:
                 warm.sdk.down(_pod_ref(warm.pod))
@@ -623,7 +651,14 @@ def machine(
             finally:
                 holding[0] -= 1
                 if holding[0] == 0 and not keep_warm and cleanup:
-                    close()
+                    warm = _WARM.get(key)
+                    if warm and not warm.owned:
+                        # found by name from an earlier run: not ours to remove. The last item's call
+                        # already put its removal time back (Step 8); just stop holding it.
+                        _WARM.pop(key, None)
+                        _say(quiet, func.__name__, f"pod {warm.pod.huid} was found warm, not rented here; left as found")
+                    else:
+                        close()
 
         wrapper.remote = wrapper
         wrapper.local = func
