@@ -1,11 +1,11 @@
 # Lium for agents and scripts
 
-One page for an LLM agent (or any unattended script) that has to rent a GPU pod, run work on it, collect the results and give the pod back, without a human at the keyboard. Everything here is a shell command plus `jq`, or the Python SDK; nothing needs a terminal. Every flag and command on this page exists in this version of the CLI (`test/test_agent_docs.py` checks each one against the command tree); check `lium <command> --help` for anything not covered here.
+One page for an LLM agent (or any unattended script) that has to rent a GPU pod, run work on it, collect the results and give the pod back, without a human at the keyboard. Everything here is a shell command plus `jq`, or the Python SDK; nothing needs a terminal. Every `lium …` line on this page, and the list of `--json` commands in §2, is resolved against this version's command tree by `test/test_agent_docs.py`; check `lium <command> --help` for anything not covered here.
 
 The rules of the road:
 
 1. **Authenticate from the environment.** `LIUM_API_KEY` wins over `~/.lium/config.ini`. Never run `lium init` from an agent.
-2. **Ask for JSON.** `--format json` on `ls`/`ps`, `--json` on `exec`/`describe`/`balance`: the result is on stdout, errors are one JSON object on stderr, the exit code says whether it worked.
+2. **Ask for JSON.** `--format json` on `ls`/`ps`, `--json` on `exec`/`describe`/`balance`: the result is on stdout and the exit code says whether it worked. On a `--json` command an error is one JSON object on stderr; on `ls`/`ps --format json` it is plain text (§2).
 3. **Never let a command wait for a human.** Pass `--yes` to anything that would confirm (`up`, `rm`); `reboot` never asks.
 4. **Always give a pod a lifetime** (`--ttl`) and always remove it when finished, including on failure.
 
@@ -26,7 +26,7 @@ SSH: the CLI and SDK use the first of `~/.ssh/id_ed25519`, `~/.ssh/id_rsa`, `~/.
 
 Success: the JSON result is on **stdout**, exit code 0.
 
-Failure on a command that takes `--json` (`exec`, `describe`, `balance`; `fund`, `signup` and `topup currencies` too): stdout is empty, **stderr** holds one JSON object, the exit code is non-zero:
+Failure on a command that takes `--json` (`exec`, `describe`, `balance`; `fund`, `signup`, `topup currencies` and `topup create` too): stdout is empty, **stderr** holds one JSON object, the exit code is non-zero:
 
 ```json
 {"ok": false, "error": {"code": "pod_not_found", "message": "No pods match targets: train-1"}}

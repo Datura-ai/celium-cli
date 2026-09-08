@@ -142,6 +142,17 @@ def test_the_json_flag_command_list_matches_the_cli():
         resolved = _resolve(name.split())
         assert resolved and len(resolved[1]) == len(name.split()), f"`lium {name}` is not a command"
         assert "--json" in {opt for param in resolved[0].params for opt in param.opts}, f"`lium {name}` has no --json"
+    # and the other way round: every renter command with --json is on the list (provider/mine are not renter commands)
+
+    def with_json(group, chain):
+        for sub, command in sorted(group.commands.items()):
+            if sub in ("provider", "mine") or getattr(command, "hidden", False):
+                continue
+            if isinstance(command, click.Group):
+                yield from with_json(command, chain + [sub])
+            elif "--json" in {opt for param in command.params for opt in param.opts}:
+                yield " ".join(chain + [sub])
+    assert sorted(named) == sorted(with_json(cli, [])), "agents.md §2 and the command tree disagree on which commands take --json"
     for absent in ("rm", "up", "ps", "ls"):
         assert absent not in named, f"`lium {absent}` has no --json (ls/ps use --format json)"
 
