@@ -380,6 +380,7 @@ def _run_ps_raising(monkeypatch, error: Exception):
             raise error
 
     monkeypatch.setattr(ps_module, "Lium", _RaisingLium)
+    monkeypatch.setattr(ps_module, "ensure_config", lambda: None)
     return CliRunner().invoke(cli, ["ps"])
 
 
@@ -401,6 +402,7 @@ def test_other_api_failures_exit_with_the_api_code(monkeypatch):
 def test_ps_named_target_that_matches_nothing_fails(monkeypatch, extra_args):
     """Asking for one pod by name and getting none is a miss in every format."""
     monkeypatch.setattr(ps_module, "Lium", _FakeLium)
+    monkeypatch.setattr(ps_module, "ensure_config", lambda: None)
 
     result = CliRunner().invoke(cli, ["ps", "no-such-pod-zz", *extra_args])
 
@@ -682,6 +684,7 @@ def test_ps_empty_account_is_not_a_failure(monkeypatch):
             return []
 
     monkeypatch.setattr(ps_module, "Lium", _EmptyLium)
+    monkeypatch.setattr(ps_module, "ensure_config", lambda: None)
 
     result = CliRunner().invoke(cli, ["ps"])
 
