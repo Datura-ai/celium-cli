@@ -1,5 +1,8 @@
 from typing import Optional, Dict, List
+import re
 import time
+
+import paramiko
 
 from lium.cli.actions import ActionResult
 from lium.sdk import ExecutorInfo, Template, PodInfo, Lium
@@ -195,30 +198,34 @@ class WaitReadyAction:
 
 
 def billed_gpu_count(pod: PodInfo) -> Optional[int]:
-    """The GPU count the API bills the pod for, or None when the API did not say.
+    """The GPU count the API bills this pod for, or None when the API did not say.
 
-    ``ExecutorInfo.gpu_count`` defaults to 1 when the executor payload carries no
-    ``specs.gpu.count``, so the raw attribute cannot tell "one GPU" from "unknown".
-    Only a count the API actually sent is worth comparing against.
+    This is the pod row's own ``gpu_count`` from ``/pods``. The nested executor
+    describes the whole host, so its count is the wrong side of the comparison
+    for a GPU-split rental: a pod holding 2 of the host's 8 GPUs is billed for 2.
     """
-    executor = getattr(pod, "executor", None)
-    if executor is None:
+    count = getattr(pod, "gpu_count", None)
+    if count is None:
         return None
-    specs = getattr(executor, "specs", None) or {}
-    if (specs.get("gpu") or {}).get("count") is None:
+    try:
+        return int(count)
+    except (TypeError, ValueError):
         return None
-    return executor.gpu_count
+
+
+VISIBLE_GPU_COUNT_COMMAND = "nvidia-smi -L"
+_GPU_LINE = re.compile(r"^GPU \d+:", re.MULTILINE)
+
+# sshd inside a pod that just turned RUNNING may not be listening yet: the first
+# connection is retried for about this long before the check is given up.
+SSH_RETRY_SECONDS = 90
+SSH_RETRY_INTERVAL = 5
+SSH_RETRY_ERRORS = (OSError, EOFError, paramiko.SSHException)
 
 
 def parse_visible_gpu_count(stdout: str) -> Optional[int]:
-    """The integer ``nvidia-smi -L | wc -l`` printed, or None if it printed none."""
-    for token in (stdout or "").split():
-        if token.isdigit():
-            return int(token)
-    return None
-
-
-VISIBLE_GPU_COUNT_COMMAND = "nvidia-smi -L | wc -l"
+    """How many ``GPU n:`` lines ``nvidia-smi -L`` printed, or None if it printed none."""
+    return len(_GPU_LINE.findall(stdout or "")) or None
 
 
 class VerifyGpuCountAction:
@@ -226,10 +233,12 @@ class VerifyGpuCountAction:
 
     Two checks, each independent of the other:
 
-    * billed: the count the API reports for the pod versus the count requested
+    * billed: the count the API bills the pod for versus the count requested
       (``--count``, or the chosen node's count when ``--count`` was not given).
-    * visible: with ``verify_via_ssh``, the count ``nvidia-smi`` reports inside
-      the pod versus the billed count.
+    * visible: with ``verify_via_ssh``, the count ``nvidia-smi -L`` reports inside
+      the pod versus the billed count. The connection is retried while sshd comes
+      up; a command that fails (``nvidia-smi`` missing, driver not loaded) is
+      "could not check", never a mismatch.
 
     ``ok`` is False when either check found a mismatch or the SSH check could not
     run. ``data["mismatch"]`` is True only for an actual mismatch, so a caller can
@@ -242,6 +251,8 @@ class VerifyGpuCountAction:
         expected: Optional[int] = ctx.get("expected_count")
         executor_id: Optional[str] = ctx.get("executor_id")
         verify_via_ssh: bool = bool(ctx.get("verify_via_ssh"))
+        retry_seconds: float = ctx.get("ssh_retry_seconds", SSH_RETRY_SECONDS)
+        sleep = ctx.get("sleep", time.sleep)
 
         billed = billed_gpu_count(pod)
         visible: Optional[int] = None
@@ -267,11 +278,41 @@ class VerifyGpuCountAction:
         if not verify_via_ssh:
             return ActionResult(ok=True, data=data)
 
-        try:
-            result = lium.exec(pod, command=VISIBLE_GPU_COUNT_COMMAND)
-        except Exception as exc:
+        result = None
+        last_error: Optional[BaseException] = None
+        attempts = max(1, int(retry_seconds // SSH_RETRY_INTERVAL) + 1)
+        for attempt in range(attempts):
+            try:
+                result = lium.exec(pod, command=VISIBLE_GPU_COUNT_COMMAND)
+                break
+            except SSH_RETRY_ERRORS as exc:
+                last_error = exc
+                if attempt + 1 < attempts:
+                    sleep(SSH_RETRY_INTERVAL)
+            except Exception as exc:
+                return ActionResult(
+                    ok=False, data=data, error=f"Could not verify GPU count over SSH: {exc}"
+                )
+        if result is None:
             return ActionResult(
-                ok=False, data=data, error=f"Could not verify GPU count over SSH: {exc}"
+                ok=False,
+                data=data,
+                error=(
+                    f"Could not verify GPU count over SSH: no connection after {retry_seconds:g}s "
+                    f"({last_error})"
+                ),
+            )
+
+        exit_code = result.get("exit_code", 0)
+        if exit_code not in (0, None) or result.get("success") is False:
+            detail = (result.get("stderr") or result.get("stdout") or "").strip().splitlines()
+            return ActionResult(
+                ok=False,
+                data=data,
+                error=(
+                    f"Could not verify GPU count over SSH: '{VISIBLE_GPU_COUNT_COMMAND}' exited "
+                    f"{exit_code}" + (f" ({detail[0].strip()})" if detail else "")
+                ),
             )
 
         visible = parse_visible_gpu_count(str(result.get("stdout") or ""))
@@ -282,7 +323,7 @@ class VerifyGpuCountAction:
                 data=data,
                 error=(
                     "Could not verify GPU count over SSH: "
-                    f"'{VISIBLE_GPU_COUNT_COMMAND}' printed no number"
+                    f"'{VISIBLE_GPU_COUNT_COMMAND}' listed no GPU"
                 ),
             )
 

@@ -3,21 +3,29 @@
 Two failure modes were observed on real rentals: a pod comes up RUNNING with a
 smaller GPU count than ``--count`` asked for, and a pod is billed for N GPUs
 while ``nvidia-smi`` inside it sees fewer. Both used to exit 0 and connect.
+
+The billed side of the comparison is the pod's own ``gpu_count`` from ``/pods``,
+never the host's: for a GPU-split rental the nested executor still describes
+the whole machine.
 """
 
 from types import SimpleNamespace
 
+import paramiko
 import pytest
 from click.testing import CliRunner
 
 from lium.cli.cli import cli
 from lium.cli.up import command as up_module
 from lium.cli.up.actions import (
+    SSH_RETRY_INTERVAL,
+    VISIBLE_GPU_COUNT_COMMAND,
     VerifyGpuCountAction,
     billed_gpu_count,
     parse_visible_gpu_count,
 )
 from lium.cli.utils import EXIT_GENERAL_ERROR
+from lium.sdk import Config, Lium
 
 NODE_ID = "id-brave-orbit-b9"
 
@@ -41,11 +49,8 @@ def _executor(gpu_count: int) -> SimpleNamespace:
     )
 
 
-def _pod(billed_gpus: int | None) -> SimpleNamespace:
-    """A RUNNING pod. ``None`` stands for an API payload without a GPU count."""
-    executor = _executor(billed_gpus if billed_gpus is not None else 1)
-    if billed_gpus is None:
-        executor.specs = {}
+def _pod(billed_gpus: int | None, host_gpus: int = 8) -> SimpleNamespace:
+    """A RUNNING pod billed for ``billed_gpus`` (None: the API sent no count) on a ``host_gpus`` node."""
     return SimpleNamespace(
         id="pod-uuid-1234",
         huid="eager-wolf-aa",
@@ -53,8 +58,13 @@ def _pod(billed_gpus: int | None) -> SimpleNamespace:
         status="RUNNING",
         ssh_cmd="ssh root@203.0.113.10 -p 20022",
         ports={"22": 20022},
-        executor=executor,
+        executor=_executor(host_gpus),
+        gpu_count=billed_gpus,
     )
+
+
+def _nvidia_smi_output(count: int) -> str:
+    return "".join(f"GPU {i}: NVIDIA H200 (UUID: GPU-{i:08d}-0000-0000-0000-000000000000)\n" for i in range(count))
 
 
 class _FakeLium:
@@ -62,7 +72,7 @@ class _FakeLium:
 
     node_gpus = 8
     billed_gpus: int | None = 8
-    visible_gpus: int | None = 8
+    visible_gpus: int | None = 8   # None: nvidia-smi is not installed in the image
     exec_error: Exception | None = None
     removed: list[str] = []
     exec_commands: list[str] = []
@@ -86,14 +96,15 @@ class _FakeLium:
         return {"id": "pod-uuid-1234", "name": "brave-orbit-b9"}
 
     def ps(self):
-        return [_pod(self.billed_gpus)]
+        return [_pod(self.billed_gpus, host_gpus=self.node_gpus)]
 
     def exec(self, pod, command=None, env=None):
         _FakeLium.exec_commands.append(command)
         if self.exec_error:
             raise self.exec_error
-        stdout = "" if self.visible_gpus is None else f"{self.visible_gpus}\n"
-        return {"success": True, "exit_code": 0, "stdout": stdout, "stderr": ""}
+        if self.visible_gpus is None:
+            return {"success": False, "exit_code": 127, "stdout": "", "stderr": "bash: nvidia-smi: command not found\n"}
+        return {"success": True, "exit_code": 0, "stdout": _nvidia_smi_output(self.visible_gpus), "stderr": ""}
 
     def rm(self, pod):
         _FakeLium.removed.append(pod.huid)
@@ -158,7 +169,7 @@ def test_verify_gpus_fails_on_a_phantom_gpu(monkeypatch):
     assert "billed for 4" in result.output
     assert "nvidia-smi reports 2" in result.output
     assert NODE_ID in result.output
-    assert _FakeLium.exec_commands == ["nvidia-smi -L | wc -l"]
+    assert _FakeLium.exec_commands == ["nvidia-smi -L"]
     assert _FakeLium.removed == []
 
 
@@ -190,11 +201,23 @@ def test_strict_gpus_keeps_a_pod_it_could_not_check(monkeypatch):
     result = _run_up(
         monkeypatch,
         "-c", "4", "--verify-gpus", "--strict-gpus",
-        node_gpus=4, billed=4, exec_error=RuntimeError("connection refused"),
+        node_gpus=4, billed=4, exec_error=RuntimeError("no SSH key configured"),
     )
 
     assert result.exit_code == EXIT_GENERAL_ERROR
     assert "Could not verify GPU count" in result.output
+    assert _FakeLium.removed == []
+
+
+def test_strict_gpus_keeps_a_pod_whose_image_has_no_nvidia_smi(monkeypatch):
+    """`nvidia-smi: command not found` is "could not check"; the pod is billed correctly and stays."""
+    result = _run_up(
+        monkeypatch, "-c", "4", "--verify-gpus", "--strict-gpus", node_gpus=4, billed=4, visible=None
+    )
+
+    assert result.exit_code == EXIT_GENERAL_ERROR
+    assert "exited 127" in result.output
+    assert "command not found" in result.output
     assert _FakeLium.removed == []
 
 
@@ -205,11 +228,34 @@ def test_strict_gpus_keeps_a_matching_pod(monkeypatch):
     assert _FakeLium.removed == []
 
 
-def test_billed_count_is_unknown_when_the_api_sent_none():
-    """ExecutorInfo defaults gpu_count to 1; that default must not read as a downgrade."""
-    assert billed_gpu_count(_pod(None)) is None
-    assert billed_gpu_count(_pod(8)) == 8
-    assert billed_gpu_count(SimpleNamespace(executor=None)) is None
+# --- the billed side is the pod's count, not the host's -----------------------------------------
+
+
+def test_billed_count_is_the_pods_own_not_the_hosts():
+    """A split rental: 2 of the host's 8 GPUs. The pod is billed for 2."""
+    assert billed_gpu_count(_pod(2, host_gpus=8)) == 2
+    assert billed_gpu_count(_pod("2", host_gpus=8)) == 2
+    assert billed_gpu_count(_pod(None, host_gpus=8)) is None
+    assert billed_gpu_count(SimpleNamespace(executor=_executor(8))) is None
+
+
+def test_split_rental_matches_when_the_pod_has_what_was_asked():
+    result = VerifyGpuCountAction().execute({
+        "lium": None, "pod": _pod(2, host_gpus=8), "expected_count": 2, "executor_id": NODE_ID,
+    })
+
+    assert result.ok is True, result.error
+    assert result.data["billed"] == 2
+
+
+def test_split_rental_fewer_than_asked_is_a_mismatch():
+    result = VerifyGpuCountAction().execute({
+        "lium": None, "pod": _pod(2, host_gpus=8), "expected_count": 8, "executor_id": NODE_ID,
+    })
+
+    assert result.ok is False
+    assert result.data["mismatch"] is True
+    assert "requested 8, pod is billed for 2" in result.error
 
 
 def test_unknown_billed_count_does_not_fail_the_pod():
@@ -221,19 +267,51 @@ def test_unknown_billed_count_does_not_fail_the_pod():
     assert result.data["billed"] is None
 
 
+def test_sdk_ps_reads_the_pods_own_gpu_count(monkeypatch):
+    """`/pods` sends the pod's count as a string next to the whole-host executor record."""
+    client = Lium(Config(api_key="test"))
+    rows = [
+        {"id": "pod-1", "pod_name": "a", "status": "RUNNING", "gpu_count": "2", "price": "1.0",
+         "executor": {"id": NODE_ID, "machine_name": "NVIDIA H200", "specs": {"gpu": {"count": 8, "details": [{"name": "H200"}]}}}},
+        {"id": "pod-2", "pod_name": "b", "status": "RUNNING",
+         "executor": {"id": NODE_ID, "machine_name": "NVIDIA H200", "specs": {"gpu": {"count": 8, "details": [{"name": "H200"}]}}}},
+        {"id": "pod-3", "pod_name": "c", "status": "RUNNING", "gpu_count": "n/a"},
+    ]
+    monkeypatch.setattr(client, "_request", lambda *a, **k: SimpleNamespace(json=lambda: rows))
+
+    pods = client.ps()
+
+    assert [p.gpu_count for p in pods] == [2, None, None]
+    assert pods[0].executor.gpu_count == 8   # the host, untouched
+
+
+# --- nvidia-smi -L is read by exit code and GPU lines, not by counting output lines -------------
+
+
 @pytest.mark.parametrize(
     "stdout, expected",
-    [("8\n", 8), ("       2\n", 2), ("", None), ("bash: nvidia-smi: command not found\n", None)],
+    [
+        (_nvidia_smi_output(8), 8),
+        ("GPU 0: NVIDIA GeForce RTX 4090 (UUID: GPU-1)\n", 1),
+        ("", None),
+        ("bash: nvidia-smi: command not found\n", None),
+        ("No devices were found\n", None),
+    ],
 )
 def test_parse_visible_gpu_count(stdout, expected):
     assert parse_visible_gpu_count(stdout) == expected
 
 
-def test_verify_reports_an_unparseable_nvidia_smi_result_without_a_mismatch():
-    """No number is "could not check", not "wrong count" — strict mode must not remove."""
+def test_verify_command_is_nvidia_smi_alone():
+    """Piping into `wc -l` made a missing nvidia-smi read as 0 GPUs — a "mismatch" strict mode acted on."""
+    assert VISIBLE_GPU_COUNT_COMMAND == "nvidia-smi -L"
+
+
+def test_verify_reports_a_failed_nvidia_smi_without_a_mismatch():
+    """A non-zero exit is "could not check", not "wrong count" — strict mode must not remove."""
     class _NoSmi:
         def exec(self, pod, command=None, env=None):
-            return {"stdout": "nvidia-smi: command not found\n", "exit_code": 127}
+            return {"stdout": "", "stderr": "nvidia-smi: command not found\n", "exit_code": 127, "success": False}
 
     result = VerifyGpuCountAction().execute({
         "lium": _NoSmi(), "pod": _pod(4), "expected_count": 4,
@@ -242,3 +320,85 @@ def test_verify_reports_an_unparseable_nvidia_smi_result_without_a_mismatch():
 
     assert result.ok is False
     assert result.data["mismatch"] is False
+    assert "exited 127" in result.error
+
+
+def test_verify_reports_an_empty_listing_without_a_mismatch():
+    class _Empty:
+        def exec(self, pod, command=None, env=None):
+            return {"stdout": "", "stderr": "", "exit_code": 0, "success": True}
+
+    result = VerifyGpuCountAction().execute({
+        "lium": _Empty(), "pod": _pod(4), "expected_count": 4,
+        "executor_id": NODE_ID, "verify_via_ssh": True,
+    })
+
+    assert result.ok is False
+    assert result.data["mismatch"] is False
+    assert "listed no GPU" in result.error
+
+
+# --- sshd may not be listening yet when the pod turns RUNNING ------------------------------------
+
+
+class _LateSshd:
+    """Refuses the first ``refusals`` connections, then answers like a healthy 4-GPU pod."""
+
+    def __init__(self, refusals: int, error: Exception | None = None):
+        self.refusals = refusals
+        self.error = error or paramiko.ssh_exception.NoValidConnectionsError(
+            {("203.0.113.10", 20022): ConnectionRefusedError(111, "Connection refused")}
+        )
+        self.calls = 0
+
+    def exec(self, pod, command=None, env=None):
+        self.calls += 1
+        if self.calls <= self.refusals:
+            raise self.error
+        return {"stdout": _nvidia_smi_output(4), "stderr": "", "exit_code": 0, "success": True}
+
+
+def test_verify_retries_the_ssh_connection_while_sshd_comes_up():
+    lium = _LateSshd(refusals=2)
+    naps: list[float] = []
+
+    result = VerifyGpuCountAction().execute({
+        "lium": lium, "pod": _pod(4), "expected_count": 4, "executor_id": NODE_ID,
+        "verify_via_ssh": True, "sleep": naps.append,
+    })
+
+    assert result.ok is True, result.error
+    assert result.data["visible"] == 4
+    assert lium.calls == 3
+    assert naps == [SSH_RETRY_INTERVAL, SSH_RETRY_INTERVAL]
+
+
+def test_verify_gives_up_after_the_retry_window_without_a_mismatch():
+    lium = _LateSshd(refusals=100, error=OSError("connection timed out"))
+    naps: list[float] = []
+
+    result = VerifyGpuCountAction().execute({
+        "lium": lium, "pod": _pod(4), "expected_count": 4, "executor_id": NODE_ID,
+        "verify_via_ssh": True, "ssh_retry_seconds": 3 * SSH_RETRY_INTERVAL, "sleep": naps.append,
+    })
+
+    assert result.ok is False
+    assert result.data["mismatch"] is False
+    assert "no connection after 15s" in result.error
+    assert lium.calls == 4
+    assert len(naps) == 3
+
+
+def test_verify_does_not_retry_a_configuration_error():
+    lium = _LateSshd(refusals=100, error=ValueError("No SSH key configured"))
+    naps: list[float] = []
+
+    result = VerifyGpuCountAction().execute({
+        "lium": lium, "pod": _pod(4), "expected_count": 4, "executor_id": NODE_ID,
+        "verify_via_ssh": True, "sleep": naps.append,
+    })
+
+    assert result.ok is False
+    assert result.data["mismatch"] is False
+    assert lium.calls == 1
+    assert naps == []

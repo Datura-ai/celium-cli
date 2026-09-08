@@ -47,7 +47,8 @@ from .actions import (
 )
 @click.option(
     "--strict-gpus", "strict_gpus", is_flag=True,
-    help="Remove the pod automatically when its GPU count does not match what was requested or billed",
+    help="Remove the pod automatically when its GPU count does not match what was requested or billed "
+         "(a pod that could not be checked over SSH is kept)",
 )
 @click.option("--restore-backup", "restore_backup_id", help="Backup ID to restore after the pod starts")
 @click.option("--restore-to", "restore_path", help="New or empty subdirectory for the startup restore")
