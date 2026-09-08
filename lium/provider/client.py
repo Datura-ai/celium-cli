@@ -272,7 +272,10 @@ class ProviderClient:
             # Without the ss58 the only listing available is the portal's global one, which
             # would count every provider's nodes as ours (the same refusal `node list` and
             # `billing list` make with ARG_INVALID).
-            warnings.append("nodes: hotkey not resolvable, pass --miner-hotkey")
+            warnings.append(
+                f"nodes: the ss58 address of hotkey {self.hotkey!r} is not resolvable (no local wallet), "
+                "so the node count is skipped; `lium provider node list --miner-hotkey <ss58>` lists them"
+            )
         elif out.portal_session_active:
             try:
                 from lium.provider._routes import EXECUTORS

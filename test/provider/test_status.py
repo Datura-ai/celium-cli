@@ -122,7 +122,9 @@ def test_status_does_not_fall_back_to_the_global_node_list_when_the_hotkey_is_un
     assert snapshot.portal_session_active is True
     assert snapshot.node_count is None and snapshot.nodes == []   # unknown, not "everyone's nodes"
     assert not any(path == "/executors" for path, _ in portal.gets)
-    assert any("hotkey not resolvable" in w for w in snapshot.warnings)
+    warning = next(w for w in snapshot.warnings if w.startswith("nodes:"))
+    assert "is not resolvable" in warning and "node list --miner-hotkey <ss58>" in warning
+    assert "--miner-hotkey" not in warning.split("`")[0]   # `provider status` itself has no such flag
 
 
 def test_status_extracts_provider_id_from_flat_whoami_shape(
