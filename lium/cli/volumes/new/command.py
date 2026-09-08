@@ -11,7 +11,7 @@ from .actions import CreateVolumeAction
 
 @click.command("new")
 @click.argument("name")
-@click.option("--desc", "-d", help="Volume description")
+@click.option("--description", "--desc", "-d", "desc", help="Volume description")
 @handle_errors
 def volumes_new_command(name: str, desc: Optional[str]):
     """Create a new volume."""
