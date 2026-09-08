@@ -125,7 +125,7 @@ The `lium` CLI exposes the full pod lifecycle. Run `lium --help` to see everythi
 - `lium init` - Initialize configuration (API key, SSH keys)
 - `lium ls [GPU_TYPE]` - List available nodes
 - `lium up [NODE_ID]` - Create a pod (use node ID or filters like `--gpu`, `--count`, `--country`)
-- `lium ps` - List active pods; the `#` column is the row number `rm`/`ssh`/`exec`/`scp` accept, valid only while the row still holds the same pod and for 10 minutes. Use the huid in scripts.
+- `lium ps` - List active pods; the `#` column is the row number `rm`/`ssh`/`exec`/`scp` accept in the same shell, for 10 minutes, and only while the pod shown on that row is still listed. Use the huid in scripts.
 - `lium describe <POD>` - Full manifest of one pod: ports, GPU, template, billing (add `--json` for machine-readable output)
 - `lium ssh <POD>` - SSH into a pod
 - `lium exec <POD> <COMMAND>` - Execute command on pod

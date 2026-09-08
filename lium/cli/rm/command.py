@@ -143,10 +143,11 @@ def rm_command(
 
     \b
     TARGETS: comma-separated pod huids, names or ids (eager-wolf-aa,my-pod).
-    A row number from your last 'lium ps' (1, 2) is accepted only while that
-    row still holds the same pod and for 10 minutes after the listing; the
-    pod list is account-wide and changes as pods come and go. Use --name-only
-    or LIUM_NO_POD_INDEX=1 to refuse numbers altogether.
+    A row number from your last 'lium ps' in this shell (1, 2) stands for the
+    pod that listing showed there; it is accepted only while that pod is still
+    listed and for 10 minutes after the listing. The pod list is account-wide
+    and changes as pods come and go. Use --name-only or LIUM_NO_POD_INDEX=1 to
+    refuse numbers altogether.
 
     \b
     Removal is irreversible. Exits non-zero when nothing matched TARGETS, so a

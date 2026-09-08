@@ -178,7 +178,7 @@ def exec_command(
     \b
     TARGETS: Pod identifiers - can be:
       - Pod huid, name or ID (eager-wolf-aa) — the stable form for scripts
-      - Row number of your last 'lium ps' (1, 2) — refused if that row changed or the listing is >10 min old
+      - Row number of your last 'lium ps' in this shell (1, 2) — refused if that pod is gone or the listing is >10 min old
       - Comma-separated (1,2,eager-wolf-aa)
       - All pods (all)
     

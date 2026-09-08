@@ -31,9 +31,9 @@ def ps_command(pod_id: Optional[str], output_format: str):
 
     \b
     The # column (and "index" in --format json) is the row number that rm, ssh,
-    exec and scp accept in place of a pod huid. Those commands only honour it
-    while the row still holds the same pod as this listing and for 10 minutes
-    after it; the huid is the stable identifier for scripts.
+    exec and scp accept in place of a pod huid. It stands for the pod shown on
+    that row, is honoured only in this shell, for 10 minutes and while that pod
+    is still listed; the huid is the stable identifier for scripts.
     """
 
     ensure_config()
