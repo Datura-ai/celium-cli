@@ -13,12 +13,18 @@ from lium.cli.utils import (
     CliFailure,
     EXIT_CONFIGURATION_ERROR,
     EXIT_GENERAL_ERROR,
-    _emit_json_error,
     handle_errors,
 )
 from lium.cli.settings import config
 from lium.provider.chain_stack import missing_chain_stack_message
 from . import validation
+
+# A signed transfer may have reached the chain even though the command failed;
+# the generic "re-run" hint would send the TAO twice.
+TRANSFER_FAILED_HINT = (
+    "Do not re-send yet: the transfer was signed and submitted. Check the wallet and "
+    "'lium balance' (credits can take a few minutes) before funding again"
+)
 from .actions import (
     LoadWalletAction,
     UnlockColdkeyAction,
@@ -128,7 +134,9 @@ def _legacy_tao_fund(wallet: Optional[str], amount: Optional[str], yes: bool) ->
     result = action.execute(ctx)
 
     if not result.ok:
-        raise CliFailure("transfer_failed", f"Transfer failed: {result.error}", EXIT_GENERAL_ERROR)
+        raise CliFailure(
+            "transfer_failed", f"Transfer failed: {result.error}", EXIT_GENERAL_ERROR, hint=TRANSFER_FAILED_HINT
+        )
 
     ui.info("Done.")
 
@@ -321,9 +329,9 @@ def _alpha_fund(
         # callers (and CI) detect it — unlike the pre-flight guard aborts above
         # (insufficient/no/ambiguous stake), which print and exit 0.
         if result.data.get("transfer_attempted"):
-            if json_output:
-                _emit_json_error("transfer_failed", result.error)  # exits non-zero
-            raise click.ClickException(result.error)
+            # CliFailure goes through handle_errors, so --json and LIUM_OUTPUT=json
+            # both get the envelope and text mode gets the hint.
+            raise CliFailure("transfer_failed", result.error, EXIT_GENERAL_ERROR, hint=TRANSFER_FAILED_HINT)
         raise LiumError(result.error)
 
     fee_modeled = result.data.get("fee_modeled", fee_modeled)

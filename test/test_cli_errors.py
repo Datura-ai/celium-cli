@@ -27,6 +27,7 @@ from lium.cli.utils import (
     default_hint,
     error_envelope,
 )
+from lium.sdk import client as utils_client_module
 from lium.sdk import (
     LiumAuthError,
     LiumError,
@@ -153,6 +154,46 @@ def test_every_sdk_error_maps_to_a_code_and_exit_status(monkeypatch, error, code
     assert json.loads(result.stderr)["error"]["code"] == code
 
 
+@pytest.mark.parametrize("detail, required, available", [
+    ("Insufficient balance. This node costs $2.00/hour, so renting it requires at least $0.50 "
+     "(15 minutes of runtime). Your balance is $0.12.", 0.5, 0.12),
+    ("Insufficient balance", None, None),
+])
+def test_a_403_for_lack_of_funds_is_an_insufficient_balance_error(detail, required, available):
+    from lium.sdk.client import permission_error
+
+    error = permission_error(detail)
+
+    assert isinstance(error, LiumInsufficientBalanceError)
+    assert (error.required, error.available) == (required, available)
+    assert str(error) == f"Permission denied: {detail}"
+
+
+def test_any_other_403_stays_a_plain_permission_error():
+    from lium.sdk.client import permission_error
+
+    error = permission_error("User is not verified")
+
+    assert type(error) is LiumPermissionError
+
+
+def test_a_403_response_is_classified_through_request(monkeypatch):
+    """End to end: the API's 403 body reaches the CLI as insufficient_balance."""
+    from types import SimpleNamespace
+
+    from lium.sdk import Config, Lium
+
+    body = {"detail": "Insufficient balance. This node costs $2.00/hour, so renting it requires at least $0.50 "
+                      "(15 minutes of runtime). Your balance is $0.12."}
+    response = SimpleNamespace(ok=False, status_code=403, text=json.dumps(body), json=lambda: body)
+    monkeypatch.setattr(utils_client_module.requests, "request", lambda *a, **k: response)
+
+    with pytest.raises(LiumInsufficientBalanceError) as caught:
+        Lium(Config(api_key="k"))._request("GET", "/pods")
+
+    assert (caught.value.required, caught.value.available) == (0.5, 0.12)
+
+
 def test_insufficient_balance_is_still_a_permission_error():
     """Callers that catch the parent must keep working."""
     error = LiumInsufficientBalanceError("Insufficient balance", required=4.0, available=1.0)
@@ -186,6 +227,32 @@ def test_text_mode_does_not_repeat_a_hint_the_message_already_carries(monkeypatc
     result = CliRunner().invoke(cli, ["ps"])
 
     assert result.output.lower().count("re-run with --yes") == 1
+
+
+# --- LIUM_DEBUG ---------------------------------------------------------------------
+
+def test_debug_prints_the_traceback_on_stderr(monkeypatch):
+    result = _run_ps_raising(monkeypatch, RuntimeError("boom"), env={"LIUM_DEBUG": "1"})
+
+    assert result.exit_code == EXIT_GENERAL_ERROR
+    assert "Traceback (most recent call last)" in result.output
+    assert "RuntimeError: boom" in result.output
+
+
+def test_debug_keeps_the_json_envelope_parseable(monkeypatch):
+    result = _run_ps_raising(
+        monkeypatch, LiumServerError("Server error: 502"), ["--format", "json"], env={"LIUM_DEBUG": "1"}
+    )
+
+    assert result.stdout == ""
+    assert "Traceback" in result.stderr
+    assert json.loads(result.stderr.strip().splitlines()[-1])["error"]["code"] == "server_error"
+
+
+def test_without_debug_there_is_no_traceback(monkeypatch):
+    result = _run_ps_raising(monkeypatch, RuntimeError("boom"))
+
+    assert "Traceback" not in result.output
 
 
 # --- the documentation mirrors the code ------------------------------------------------
