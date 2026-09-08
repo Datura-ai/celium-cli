@@ -7,7 +7,7 @@ pod, so it either retried (and paid for another pod) or gave up on a pod that
 was fine. `lium up` had no bound at all and hung on a PENDING node.
 """
 
-from itertools import chain, repeat
+from itertools import chain
 from types import SimpleNamespace
 
 import pytest
@@ -116,9 +116,8 @@ def test_wait_ready_raises_when_a_seen_pod_disappears():
 
 
 def test_wait_ready_raises_for_a_pod_that_is_never_listed(monkeypatch):
-    """The audit case: wait_ready('00000000-…', timeout=20) burned 21.5 s and returned None."""
-    # the clock keeps answering after the last poll: the error path reads it too (pod_failure_cause → HTTP)
-    clock = chain([0, 0, 10, 20], repeat(20))
+    """A wrong id is reported after 20 s of empty listings, with a long budget still open."""
+    clock = iter([0, 0, 10, 20])
     monkeypatch.setattr("lium.sdk.client.time.time", lambda: next(clock))
     client = _Client([[]])
 
@@ -128,11 +127,39 @@ def test_wait_ready_raises_for_a_pod_that_is_never_listed(monkeypatch):
     assert client.calls == 3
     assert "after 3 checks over 20 s" in str(failure.value)
     assert failure.value.pod is None and failure.value.status is None
+    assert client.event_requests == 1
+
+
+def test_wait_ready_raises_for_a_never_listed_pod_when_the_budget_ends_with_the_grace(monkeypatch):
+    """The audit case: wait_ready('00000000-…', timeout=20) burned 21.5 s and returned None.
+
+    The timeout check runs before the grace check; when both are 20 s the wrong id must still
+    be an error, not a "still starting" None."""
+    clock = iter([0, 0, 10, 20])
+    monkeypatch.setattr("lium.sdk.client.time.time", lambda: next(clock))
+    client = _Client([[]])
+
+    with pytest.raises(PodStartError) as failure:
+        client.wait_ready("00000000-0000-0000-0000-000000000000", timeout=20, poll_interval=10)
+
+    assert client.calls == 2
+    assert "after 2 checks over 20 s" in str(failure.value)
+    assert failure.value.pod is None
+
+
+def test_wait_ready_returns_none_for_a_never_listed_pod_inside_a_short_budget(monkeypatch):
+    """Under 20 s nothing is known: a budget shorter than the grace is a timeout, as before."""
+    clock = iter([0, 0, 5, 10])
+    monkeypatch.setattr("lium.sdk.client.time.time", lambda: next(clock))
+    client = _Client([[]])
+
+    assert client.wait_ready("pod-1", timeout=10, poll_interval=5) is None
+    assert client.event_requests == 0
 
 
 def test_wait_ready_gives_a_never_listed_pod_twenty_seconds_not_three_polls(monkeypatch):
     """At the 2 s schedule a poll count of 3 would fail the wait 4 s in; the grace is a time budget."""
-    clock = chain([0], range(0, 21, 2), repeat(20))
+    clock = chain([0], range(0, 21, 2))
     monkeypatch.setattr("lium.sdk.client.time.time", lambda: next(clock))
     client = _Client([[]])
 
