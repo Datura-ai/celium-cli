@@ -145,7 +145,10 @@ The `lium` CLI exposes the full pod lifecycle. Run `lium --help` to see everythi
 - `lium reboot <POD>` - Reboot a pod
 - `lium audit [--pod POD] [--since 24h] [--key ID]` - Who did what to the account's pods, and when: every rent, reboot, edit and delete with the session or API key that requested it (add `--json` for machine-readable output)
 - `lium update <POD>` - Install Jupyter on a pod
-- `lium templates [SEARCH]` - List available Docker templates
+- `lium templates [SEARCH]` - List available Docker templates (add `--format json` for ids and image details)
+- `lium balance` - Show the account balance (add `--format json` for machine-readable output)
+
+`ls`, `ps`, `templates`, `balance` and `describe` all accept `--format json` (and `--json`) and print a JSON error envelope on stderr when the command fails, so the same flag works across commands in scripts.
 - `lium fund` - Fund account with TAO from Bittensor wallet
 
 ### Volume Commands

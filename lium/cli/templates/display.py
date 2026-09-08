@@ -17,6 +17,19 @@ def status_icon(status: str) -> str:
         return ui.styled("?", 'dim')
 
 
+def compact_template(template: Template) -> dict:
+    """JSON view of a template; carries the id that `lium up --template_id` needs."""
+    return {
+        "id": template.id,
+        "huid": template.huid,
+        "name": template.name,
+        "docker_image": template.docker_image,
+        "docker_image_tag": template.docker_image_tag,
+        "category": template.category,
+        "status": template.status,
+    }
+
+
 def build_templates_table(templates: List[Template]) -> tuple[Table, str]:
     header = f"{Text('Templates', style='bold')}  ({len(templates)} shown)"
 
@@ -29,6 +42,7 @@ def build_templates_table(templates: List[Template]) -> tuple[Table, str]:
         padding=(0, 1),
     )
 
+    table.add_column("ID", justify="left", width=36, no_wrap=True)
     table.add_column("Name", justify="left", ratio=3, min_width=20, overflow="fold")
     table.add_column("Image", justify="left", ratio=4, min_width=25, overflow="fold")
     table.add_column("Tag", justify="left", ratio=3, min_width=20, overflow="fold")
@@ -37,6 +51,7 @@ def build_templates_table(templates: List[Template]) -> tuple[Table, str]:
 
     for t in templates:
         table.add_row(
+            ui.styled(t.id or '—', 'dim'),
             t.name or '—',
             ui.styled(f"{t.docker_image or '—'}", 'id'),
             t.docker_image_tag or "latest",

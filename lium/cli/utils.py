@@ -314,6 +314,24 @@ def _emit_json_error(code: str, message: str, exit_code: int = EXIT_GENERAL_ERRO
     raise SystemExit(exit_code)
 
 
+def resolve_output_format(output_format: Optional[str], json_output: bool) -> str:
+    """The format a command should render: ``--json`` is an alias for ``--format json``.
+
+    Commands grew two spellings for the same thing (``describe --json`` versus
+    ``ps --format json``), and a caller who learned one kept trying it on the
+    other. Both are accepted; the ``--format`` value wins only when no alias
+    was given.
+    """
+    if json_output:
+        return "json"
+    return output_format or "table"
+
+
+def _wants_json(kwargs: dict) -> bool:
+    """Whether the command was invoked for a machine reader, under either spelling."""
+    return bool(kwargs.get("json_output")) or kwargs.get("output_format") == "json"
+
+
 def handle_errors(func):
     """Decorator to handle CLI errors gracefully.
 
@@ -325,13 +343,14 @@ def handle_errors(func):
     exiting 0 tells it the command worked.
 
     When the wrapped command was invoked with ``--json`` (a ``json_output``
-    flag), errors are rendered as a JSON envelope on stderr, so machine
-    consumers get parseable output instead of Rich-formatted text on stdout.
-    Otherwise the human-readable rendering is preserved.
+    flag) or ``--format json`` (an ``output_format`` option), errors are
+    rendered as a JSON envelope on stderr, so machine consumers get parseable
+    output instead of Rich-formatted text on stdout. Otherwise the
+    human-readable rendering is preserved.
     """
     @wraps(func)
     def wrapper(*args, **kwargs):
-        json_output = bool(kwargs.get("json_output"))
+        json_output = _wants_json(kwargs)
         try:
             return func(*args, **kwargs)
         except (click.ClickException, click.Abort):
