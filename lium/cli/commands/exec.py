@@ -13,6 +13,7 @@ import click
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from lium.sdk import Lium, PodInfo
+from lium.sdk.client import ENV_NAME
 from ..utils import (
     EXIT_CONFIGURATION_ERROR,
     EXIT_GENERAL_ERROR,
@@ -116,6 +117,12 @@ def parse_environment_variables(env: Tuple[str, ...]) -> dict[str, str]:
                 EXIT_CONFIGURATION_ERROR,
             )
         key, value = env_var.split("=", 1)
+        if not ENV_NAME.fullmatch(key):
+            raise CliFailure(
+                "invalid_env",
+                f"Invalid env name {key!r} (letters, digits and underscores; not starting with a digit)",
+                EXIT_CONFIGURATION_ERROR,
+            )
         env_dict[key] = value
     return env_dict
 

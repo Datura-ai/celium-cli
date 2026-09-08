@@ -52,6 +52,9 @@ from .utils import expand_gpu_shorthand, extract_gpu_type, generate_huid, with_r
 
 load_dotenv()
 
+# A POSIX shell identifier: what ``export`` accepts on the pod.
+ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")  # checked with fullmatch: `$` would let a trailing newline through
+
 # Public API key for the pay API (pay-tao-api-v2). Single source of truth so the
 # literal is not re-typed across every pay-API call site.
 _PAY_API_KEY = "6RhXQ788J9BdnqeLua8z7ZSkXBDahclxhwjMB17qW1M"
@@ -1222,8 +1225,21 @@ class Lium:
     @staticmethod
     def _env_exports(env: Dict[str, str]) -> str:
         """``export NAME=value`` statements for ``env``, shell-quoted so each value
-        reaches the pod byte-for-byte (spaces, quotes, ``$``, newlines)."""
-        return " && ".join(f"export {name}={shlex.quote(str(value))}" for name, value in env.items())
+        reaches the pod byte-for-byte (spaces, quotes, ``$``, newlines).
+
+        Names must be valid shell identifiers (DAH-2894); anything else raises
+        :class:`ValueError` here rather than failing with an opaque
+        ``export: not a valid identifier`` on the pod.
+        """
+        exports = []
+        for name, value in env.items():
+            if not ENV_NAME.fullmatch(name):
+                raise ValueError(
+                    f"Invalid environment variable name {name!r}: use letters, digits and "
+                    "underscores, not starting with a digit"
+                )
+            exports.append(f"export {name}={shlex.quote(str(value))}")
+        return " && ".join(exports)
 
     # Read the exports from stdin and evaluate them in the remote shell. Nothing
     # here names a value, so the pod's argv never carries one.
@@ -1262,14 +1278,21 @@ class Lium:
 
         Returns:
             Dict containing stdout, stderr, exit_code, and success flag.
+
+        Raises:
+            ValueError: an ``env`` name is not a shell identifier. Raised before
+                the connection is opened, so nothing reaches the pod.
         """
-        if env:
+        # Build (and so name-check) the exports first: once ``eval "$(cat)" && cmd``
+        # has been sent, a failure here would leave ``cmd`` running with no env.
+        exports = self._env_exports(env) if env else ""
+        if exports:
             command = f"{self._ENV_FROM_STDIN} && {command}"
 
         with self.ssh_connection(pod) as client:
             stdin, stdout, stderr = client.exec_command(command)
-            if env:
-                stdin.write(self._env_exports(env).encode("utf-8"))
+            if exports:
+                stdin.write(exports.encode("utf-8"))
             # Send EOF: a remote command that reads stdin waits forever otherwise,
             # and this call has no stdin to give it.
             stdin.close()
@@ -1335,15 +1358,27 @@ class Lium:
             max_workers: Maximum number of SSH workers to spawn.
 
         Returns:
-            List of result dictionaries mirroring :meth:`exec`.
+            List of result dictionaries mirroring :meth:`exec`, each with the pod
+            id under ``"pod"``. When SSH fails for a pod its entry is
+            ``{"pod": <id>, "error": <message>, "success": False}`` — same key,
+            same type as the successful entries, so callers can index results
+            by pod id without checking which shape they got.
+
+        Raises:
+            ValueError: an ``env`` name is not a shell identifier. Checked once,
+                before any pod is contacted — a caller's mistake is not one
+                failure entry per pod.
         """
+        if env:
+            self._env_exports(env)  # the name check; exec() builds the exports again per pod
+
         def exec_single(pod: PodInfo):
             try:
                 result = self.exec(pod, command=command, env=env)
                 result["pod"] = pod.id
                 return result
             except Exception as e:
-                return {"pod": pod, "error": str(e), "success": False}
+                return {"pod": pod.id, "error": str(e), "success": False}
 
         with ThreadPoolExecutor(max_workers=min(max_workers, len(pods))) as executor:
             return list(executor.map(exec_single, pods))
