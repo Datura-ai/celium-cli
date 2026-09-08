@@ -54,6 +54,8 @@ load_dotenv()
 
 # A POSIX shell identifier: what ``export`` accepts on the pod.
 ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")  # checked with fullmatch: `$` would let a trailing newline through
+# HTTP methods that are safe to repeat after a lost response; see ``Lium._request``.
+IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 # Public API key for the pay API (pay-tao-api-v2). Single source of truth so the
 # literal is not re-typed across every pay-API call site.
@@ -242,22 +244,34 @@ class Lium:
         endpoint: str,
         base_url: Optional[str] = None,
         headers: Optional[Dict[str, str]] = None,
-        retry: bool = True,
+        retry: Optional[bool] = None,
         **kwargs,
     ) -> requests.Response:
         """Make API request with error handling.
 
-        Transient failures (429, 5xx, network errors) are retried unless
-        ``retry`` is False. A call that creates something must pass ``False``:
-        a timed-out POST may well have succeeded server-side, and repeating it
-        blindly creates a duplicate.
+        Transient failures (429, 5xx, network errors) are retried up to three
+        times for idempotent methods (``GET``, ``HEAD``, ``OPTIONS``). Anything
+        that mutates (``POST``, ``PUT``, ``PATCH``, ``DELETE``) is repeated only
+        after a 429: the server answered instead of running the request, so
+        sending it again cannot duplicate anything. A 5xx or a lost connection
+        is not repeated for them — a timed-out POST may well have succeeded
+        server-side, and repeating it blindly creates a second template, volume,
+        backup or pod; a repeated DELETE turns a completed removal into "not
+        found". ``retry=True`` retries every transient failure, ``retry=False``
+        sends exactly once, whatever the method.
         """
-        if retry:
+        if retry is True or (retry is None and method.upper() in IDEMPOTENT_METHODS):
             return self._request_with_retry(method, endpoint, base_url=base_url, headers=headers, **kwargs)
-        return self._request_once(method, endpoint, base_url=base_url, headers=headers, **kwargs)
+        if retry is False:
+            return self._request_once(method, endpoint, base_url=base_url, headers=headers, **kwargs)
+        return self._request_backing_off_rate_limits(method, endpoint, base_url=base_url, headers=headers, **kwargs)
 
     @with_retry()
     def _request_with_retry(self, method: str, endpoint: str, **kwargs) -> requests.Response:
+        return self._request_once(method, endpoint, **kwargs)
+
+    @with_retry(exceptions=(LiumRateLimitError,))
+    def _request_backing_off_rate_limits(self, method: str, endpoint: str, **kwargs) -> requests.Response:
         return self._request_once(method, endpoint, **kwargs)
 
     def _request_once(
@@ -2167,7 +2181,9 @@ class Lium:
 
     def backup_cancel(self, backup_id: str) -> Dict[str, Any]:
         """Request cancellation of an active backup while retaining its history."""
-        return self._request("POST", f"/backup-logs/{backup_id}/cancel").json()
+        # Idempotent payload: a repeat after the first cancel took is answered with an error, never a
+        # second action, so a 5xx or a lost response is retried.
+        return self._request("POST", f"/backup-logs/{quote(str(backup_id), safe='')}/cancel", retry=True).json()
 
     def backup_log_delete(self, backup_id: str) -> Dict[str, Any]:
         """Delete the stored data for a completed backup and retain its audit row."""
@@ -2243,7 +2259,9 @@ class Lium:
 
     def restore_cancel(self, restore_id: str) -> Dict[str, Any]:
         """Request cancellation of an active restore."""
-        return self._request("POST", f"/restore-logs/{restore_id}/cancel").json()
+        # Idempotent payload: a repeat after the first cancel took is answered with an error, never a
+        # second action, so a 5xx or a lost response is retried.
+        return self._request("POST", f"/restore-logs/{quote(str(restore_id), safe='')}/cancel", retry=True).json()
 
     def get_deployment_estimate(self, executor_id: str, template_id: str) -> dict:
         """Estimate deployment time for a template on a node.
@@ -2390,7 +2408,9 @@ class Lium:
             Response from the schedule termination API
         """
         payload = {"removal_scheduled_at": termination_time}
-        return self._request("POST", f"/pods/{pod.id}/schedule-removal", json=payload).json()
+        # Idempotent payload: the same removal time twice is one schedule, so a 5xx or a lost response
+        # is retried — one blip after `lium up --ttl` must not leave the pod without its auto-stop.
+        return self._request("POST", f"/pods/{quote(str(pod.id), safe='')}/schedule-removal", json=payload, retry=True).json()
 
     def cancel_scheduled_termination(self, pod: PodInfo) -> Dict[str, Any]:
         """Cancel a scheduled termination for a pod.
