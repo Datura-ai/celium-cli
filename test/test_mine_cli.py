@@ -103,10 +103,16 @@ def test_start_executor_timeout_includes_compose_diagnostics(monkeypatch, tmp_pa
             return "abc123\n", ""
         if cmd.startswith("docker inspect"):
             return "unhealthy\n", ""
-        if cmd == "docker compose ps":
+        if cmd == "docker compose ps -a":
             return "executor-executor-runner-1  Restarting (1)\n", ""
-        if cmd.startswith("docker compose logs"):
+        if cmd == "docker compose -f docker-compose.app.yml ps -a":
+            return "executor-executor-1  Created\n", ""
+        if cmd == "docker compose logs --no-color --tail 30 executor-runner":
             return "failed to bind host port 0.0.0.0:8080/tcp: address already in use\n", ""
+        if cmd == "docker compose -f docker-compose.app.yml logs --no-color --tail 30 executor":
+            return "", "executor-executor-1 exited with code 1\n"
+        if cmd.startswith("docker compose") and "logs" in cmd:
+            return "", f"no such service: {cmd.split()[-1]}\n"   # what compose says for a service the file lacks
         return "", ""
 
     monkeypatch.setattr(mine, "_run", fake_run)
@@ -119,9 +125,15 @@ def test_start_executor_timeout_includes_compose_diagnostics(monkeypatch, tmp_pa
         mine._start_executor(tmp_path, wait_secs=5)
     msg = str(exc.value)
     assert "timed out after 5s" in msg
-    assert "Restarting (1)" in msg
-    assert "address already in use" in msg
-    assert any(c.startswith("docker compose logs") for c in calls)
+    assert "Restarting (1)" in msg and "Created" in msg
+    assert "address already in use" in msg and "exited with code 1" in msg
+    assert "no such service" not in msg
+    # each compose file is asked for the service it declares (`executor` lives in docker-compose.app.yml)
+    assert [c for c in calls if "logs" in c] == [
+        "docker compose logs --no-color --tail 30 executor-runner",
+        "docker compose -f docker-compose.app.yml logs --no-color --tail 30 executor",
+    ]
+    assert [c for c in calls if c.endswith("ps -a")] == ["docker compose ps -a", "docker compose -f docker-compose.app.yml ps -a"]
 
 
 def test_provider_add_command_and_note() -> None:
@@ -220,14 +232,14 @@ def test_validate_executor_survives_a_stdout_larger_than_the_pipe(monkeypatch) -
         try:
             mine._validate_executor(on_check=seen.append)   # returns: the verdict was read behind 1 MiB of noise
             outcome.append("returned")
-        except BaseException as exc:  # noqa: BLE001 — re-raised below on the test thread
+        except Exception as exc:  # noqa: BLE001 — re-raised below on the test thread
             outcome.append(exc)
 
     worker = threading.Thread(target=run, daemon=True)
     worker.start()
     worker.join(timeout=60)   # without the drain thread this hangs forever on the full pipe: fail, do not hang
     assert outcome, "hung: _validate_executor did not return within 60 s (stdout pipe never drained)"
-    if isinstance(outcome[0], BaseException):
+    if isinstance(outcome[0], Exception):
         raise outcome[0]
     assert seen == ["GPU Configuration"]
 

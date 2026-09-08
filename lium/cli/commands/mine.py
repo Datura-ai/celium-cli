@@ -303,9 +303,10 @@ def _compose_project_running(executor_dir: Path) -> bool:
     held by the project's own ``docker-proxy``; ``docker compose up -d`` is then a no-op, so
     the pre-check must not fail on our own listener. The question is asked of the ``executor``
     service alone (``docker-compose.app.yml``, the file the health wait reads too): the project's
-    ``watchtower`` sidecar is always running, and a crash-looping executor (``restarting`` on
-    "address already in use" — the case this check exists for) is not ``running`` at the moment
-    of the query, so the ports are then checked as on a first run.
+    ``watchtower`` sidecar is always running, and an executor whose port bind failed ("address
+    already in use" — the case this check exists for) is left ``created``, not ``running`` (its
+    start never succeeded, so no restart policy applies; the runner is what restarts), so the
+    ports are then checked as on a first run.
     """
     try:
         out, _ = _run("docker compose -f docker-compose.app.yml ps -q --status running executor",
@@ -338,25 +339,34 @@ def _check_ports_free(ports: dict[str, int], executor_dir: Optional[Path] = None
         )
 
 
-def _compose_diagnostics(executor_dir: Path, tail: int = 30) -> str:
-    """``docker compose ps`` + the last log lines of the executor services.
+# the executor project is two compose files: the default one declares `executor-runner` (and `watchtower`),
+# `docker-compose.app.yml` declares `executor`, which the runner starts. Compose checks a named service against
+# the file it loaded (`no such service` otherwise), so each file is asked for its own service.
+_COMPOSE_SERVICES = (("", "executor-runner"), ("-f docker-compose.app.yml ", "executor"))
 
-    Used when the health check times out so the actual failure (port
-    conflict, image pull error, bad .env) is on screen instead of only
-    'timed out'.
+
+def _compose_diagnostics(executor_dir: Path, tail: int = 30) -> str:
+    """``docker compose ps -a`` of both files + the last log lines of ``executor-runner`` and ``executor``.
+
+    ``-a`` because an executor whose port bind failed is left ``created`` (its start never
+    succeeded, so no restart policy applies) and plain ``ps`` would not list it. Used when the
+    health check times out so the actual failure (port conflict, image pull error, bad .env) is
+    on screen instead of only 'timed out'.
     """
     parts = []
-    ps, _ = _run("docker compose ps", check=False, cwd=str(executor_dir))
-    if ps.strip():
-        parts.append("--- docker compose ps ---\n" + ps.strip())
-    logs, err = _run(
-        f"docker compose logs --no-color --tail {tail} executor executor-runner",
-        check=False,
-        cwd=str(executor_dir),
-    )
-    text = (logs or "") + (err or "")
-    if text.strip():
-        parts.append(f"--- last {tail} log lines (executor, executor-runner) ---\n" + text.strip()[-4000:])
+    for file_opt, _service in _COMPOSE_SERVICES:
+        ps, _ = _run(f"docker compose {file_opt}ps -a", check=False, cwd=str(executor_dir))
+        if ps.strip():
+            parts.append(f"--- docker compose {file_opt}ps -a ---\n" + ps.strip())
+    for file_opt, service in _COMPOSE_SERVICES:
+        logs, err = _run(
+            f"docker compose {file_opt}logs --no-color --tail {tail} {service}",
+            check=False,
+            cwd=str(executor_dir),
+        )
+        text = (logs or "") + (err or "")
+        if text.strip():
+            parts.append(f"--- last {tail} log lines ({service}) ---\n" + text.strip()[-4000:])
     return "\n".join(parts)
 
 
