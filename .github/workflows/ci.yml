@@ -1,18 +1,10 @@
 name: CI - Build Verification
 
 on:
+  # No `paths:` filter: `ci-ok` is to be a required status check, and a check that never
+  # reports blocks the merge button (a docs-only PR would sit unmergeable). Which heavy
+  # build jobs run for a given change is decided per job, not here.
   pull_request:
-    paths:
-    - 'lium/**'
-    - 'pyproject.toml'
-    - 'uv.lock'
-    - 'lium.spec'
-    - 'lium_entry.py'
-    - 'Dockerfile.build'
-    - 'scripts/install.sh'
-    - 'test/test_release_binary_targets.py'
-    - '.github/workflows/ci.yml'
-    - '.github/workflows/release.yml'
   workflow_dispatch:
 
 concurrency:
@@ -20,6 +12,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  test:
+    # the suite (39 files under test/) was never run by CI; only the binary-target
+    # matrix test was. Same install the macOS build already does, minus pyinstaller.
+    name: pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: astral-sh/setup-uv@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+        enable-cache: true
+
+    - name: Install
+      run: uv sync --frozen --extra dev --extra provider
+
+    # the runner has no ~/.lium and no LIUM_API_KEY, like a fresh laptop: a test that
+    # needs either fails here instead of passing on the author's machine only
+    - name: Run the test suite
+      run: uv run pytest test/ -q -p no:cacheprovider --durations=10
+
   build-python:
     name: Build Python distribution
     runs-on: ubuntu-latest
@@ -161,3 +181,15 @@ jobs:
           dist/${{ matrix.asset_name }}.tar.gz
           dist/${{ matrix.asset_name }}
         retention-days: 7
+
+  ci-ok:
+    # the one context to require in the ruleset (lium requires none today). The binary
+    # builds stay informational: a Debian mirror outage must not block every merge.
+    name: ci-ok
+    needs: [test, build-python, validate-binary-targets]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {}   # aggregator only: reads job results, needs no token scopes (CodeQL actions/missing-workflow-permissions)
+    steps:
+    - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      run: exit 1
