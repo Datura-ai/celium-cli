@@ -7,6 +7,7 @@ pod, so it either retried (and paid for another pod) or gave up on a pod that
 was fine. `lium up` had no bound at all and hung on a PENDING node.
 """
 
+from itertools import chain, repeat
 from types import SimpleNamespace
 
 import pytest
@@ -105,15 +106,42 @@ def test_wait_ready_raises_when_a_seen_pod_disappears():
     assert failure.value.history == ["PENDING"]
 
 
-def test_wait_ready_raises_for_a_pod_that_is_never_listed():
+def test_wait_ready_raises_for_a_pod_that_is_never_listed(monkeypatch):
     """The audit case: wait_ready('00000000-…', timeout=20) burned 21.5 s and returned None."""
+    # the clock keeps answering after the last poll: the error path reads it too (pod_failure_cause → HTTP)
+    clock = chain([0, 0, 10, 20], repeat(20))
+    monkeypatch.setattr("lium.sdk.client.time.time", lambda: next(clock))
     client = _Client([[]])
 
     with pytest.raises(PodStartError) as failure:
-        client.wait_ready("00000000-0000-0000-0000-000000000000", timeout=600, poll_interval=1)
+        client.wait_ready("00000000-0000-0000-0000-000000000000", timeout=600, poll_interval=10)
 
-    assert client.calls == Lium.MISSING_POLLS_BEFORE_ERROR
+    assert client.calls == 3
+    assert "after 3 checks over 20 s" in str(failure.value)
     assert failure.value.pod is None and failure.value.status is None
+
+
+def test_wait_ready_gives_a_never_listed_pod_twenty_seconds_not_three_polls(monkeypatch):
+    """At the 2 s schedule a poll count of 3 would fail the wait 4 s in; the grace is a time budget."""
+    clock = chain([0], range(0, 21, 2), repeat(20))
+    monkeypatch.setattr("lium.sdk.client.time.time", lambda: next(clock))
+    client = _Client([[]])
+
+    with pytest.raises(PodStartError) as failure:
+        client.wait_ready("pod-1", timeout=600)
+
+    assert client.calls == 11
+    assert "after 11 checks over 20 s" in str(failure.value)
+
+
+def test_wait_ready_survives_a_listing_hiccup_on_a_pod_not_yet_seen(monkeypatch):
+    """Three empty listings in the first 6 s are a hiccup, not a missing pod (arhangel66, lium#172)."""
+    clock = iter([0, 0, 2, 4, 6])
+    monkeypatch.setattr("lium.sdk.client.time.time", lambda: next(clock))
+    client = _Client([[], [], [], [_pod("RUNNING")]])
+
+    assert client.wait_ready("pod-1", timeout=600).status == "RUNNING"
+    assert client.calls == 4
 
 
 def test_wait_ready_still_returns_none_when_a_slow_pod_outlives_the_timeout(monkeypatch):

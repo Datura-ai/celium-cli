@@ -1340,9 +1340,11 @@ class Lium:
             "DELETING",
         }
     )
-    # How many consecutive ``ps`` calls may omit a pod that was never listed
-    # before it is declared missing (a wrong id, or a rent the backend dropped).
-    MISSING_POLLS_BEFORE_ERROR = 3
+    # How long a pod that was never listed may stay out of ``ps`` before it is declared
+    # missing (a wrong id, or a rent the backend dropped). A time budget, not a poll count:
+    # at the 2 s schedule a count of 3 gave a pod ~4 s to appear instead of the ~20 s it had
+    # at 10 s, so one listing hiccup would have failed ``lium up`` on a pod already billing.
+    MISSING_GRACE_SECONDS = 20
     # DAH-3002: the backend marks a cached-template pod RUNNING at p50 22.5 s after the rent
     # (7 d to 6 Sep 2026); polled every 10 s the caller learnt it 0–10 s late. Poll every
     # 2 s while a normal start is still plausible, then fall back to the old 10 s.
@@ -1423,8 +1425,8 @@ class Lium:
         Raises:
             PodStartError: The pod reached a terminal status (``FAILED``,
                 ``CREATION_FAILED``, ``STOPPED``, …), vanished from the pod list
-                after being seen, or was never listed in
-                :attr:`MISSING_POLLS_BEFORE_ERROR` polls. The error carries the
+                after being seen, or was still not listed
+                :attr:`MISSING_GRACE_SECONDS` seconds after the first poll. The error carries the
                 last ``PodInfo``, its status, the status history and the cause
                 the backend recorded (``cause``), so a caller can tell a dead pod
                 from a slow one and clean up instead of retrying.
@@ -1458,10 +1460,12 @@ class Lium:
                         pod_id=pod_id, pod=last_seen, status=history[-1] if history else None,
                         history=history, cause=self.pod_failure_cause(pod_id),
                     )
-                if missing_polls >= self.MISSING_POLLS_BEFORE_ERROR:
+                if elapsed >= self.MISSING_GRACE_SECONDS:
+                    cause = self.pod_failure_cause(pod_id)
                     raise PodStartError(
-                        f"Pod {pod_id} is not in the pod list after {missing_polls} checks",
-                        pod_id=pod_id, cause=self.pod_failure_cause(pod_id),
+                        f"Pod {pod_id} is not in the pod list after {missing_polls} checks over {elapsed:.0f} s"
+                        + (f"; cause: {cause}" if cause else ""),
+                        pod_id=pod_id, cause=cause,
                     )
                 time.sleep(self.poll_delay(elapsed, poll_interval))
                 continue
