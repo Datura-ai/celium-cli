@@ -144,7 +144,7 @@ def collect_identity(lium_factory=None) -> Identity:
 
     try:
         identity.ssh_key_registered = ssh_key_is_registered(lium, material)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - listing keys is optional; the warning below is the report
         identity.warnings.append(f"Could not list registered SSH keys: {exc}")
 
     return identity

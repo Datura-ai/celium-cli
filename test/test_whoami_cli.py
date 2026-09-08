@@ -15,27 +15,10 @@ from lium.cli.cli import cli
 from lium.cli.whoami import identity as identity_module
 from lium.cli.whoami.identity import collect_identity
 from lium.cli.utils import EXIT_API_ERROR, EXIT_CONFIGURATION_ERROR, EXIT_PERMISSION_DENIED
-from lium.sdk import ExecutorInfo, LiumAuthError, LiumPermissionError, PodInfo, SSHKey
+from lium.sdk import LiumAuthError, LiumPermissionError, SSHKey
 
 KEY = "sk_abcdef0123456789wxyz"
 PUB = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample"
-
-
-def _executor(gpu_type="H100", max_cuda=12.8, gpu_name=""):
-    return ExecutorInfo(
-        id="ex-1", huid="node-1", machine_name="m", gpu_type=gpu_type, gpu_count=1,
-        price_per_hour=2.0, price_per_gpu=2.0, location={}, status="active", docker_in_docker=False,
-        ip="1.2.3.4", max_cuda_version=max_cuda,
-        specs={"gpu": {"details": [{"name": gpu_name or gpu_type}]}},
-    )
-
-
-def _pod(status="RUNNING", ssh_cmd="ssh root@1.2.3.4 -p 20299", executor=None, template=None):
-    return PodInfo(
-        id="pod-1", name="train", huid="swift-fox-c8", status=status, ssh_cmd=ssh_cmd, ports={},
-        created_at="", updated_at="", executor=executor, template=template or {},
-        removal_scheduled_at=None, jupyter_installation_status=None, jupyter_url=None,
-    )
 
 
 @pytest.fixture
@@ -66,9 +49,6 @@ class _FakeLium:
 
     def list_ssh_keys(self):
         return list(self.registered)
-
-    def ps(self):
-        return []
 
 
 @pytest.fixture
@@ -192,7 +172,7 @@ def test_whoami_without_a_key_exits_configuration_error(monkeypatch, local_setup
     assert result.exit_code == EXIT_CONFIGURATION_ERROR
     assert result.stdout == ""
     envelope = json.loads(result.stderr)
-    assert envelope["ok"] is False and envelope["error"]["code"] == "api_key_missing"
+    assert envelope["ok"] is False and envelope["error"]["code"] == "no_api_key"
     assert envelope["data"]["api_key_fingerprint"] == "none"
 
 

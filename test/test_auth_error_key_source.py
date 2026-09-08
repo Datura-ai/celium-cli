@@ -149,6 +149,9 @@ def test_a_403_without_a_balance_word_gets_no_balance_detail(monkeypatch):
 
 
 def test_logs_401_names_the_key(monkeypatch):
+    # logs() goes through _request like every other call, so the 401 is decided by the
+    # same requests.request patch as the tests above; the response is a context manager
+    # because a streamed response is closed on the error path.
     class _Unauthorized(_Response):
         def __enter__(self):
             return self
@@ -156,8 +159,10 @@ def test_logs_401_names_the_key(monkeypatch):
         def __exit__(self, *exc_info):
             return False
 
-    monkeypatch.setattr("lium.sdk.client.requests.get", lambda *a, **kw: _Unauthorized(401))
-    client = Lium(Config(api_key=ENV_KEY, api_key_source="env:LIUM_API_KEY"))
+        def close(self):
+            return None
+
+    client = _client_receiving(monkeypatch, _Unauthorized(401))
 
     with pytest.raises(LiumAuthError, match="from env:LIUM_API_KEY"):
         list(client.logs("pod-1"))

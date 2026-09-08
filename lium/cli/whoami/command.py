@@ -52,7 +52,7 @@ def render(identity: Identity) -> None:
 def failure_for(identity: Identity) -> Optional[CliFailure]:
     """Why `whoami` exits non-zero for this identity, or None. The identity rides along as ``data``."""
     if not identity.has_api_key:
-        return CliFailure("api_key_missing", "No API key configured", EXIT_CONFIGURATION_ERROR, data=identity.to_dict())
+        return CliFailure("no_api_key", "No API key configured", EXIT_CONFIGURATION_ERROR, data=identity.to_dict())
     if identity.api_exception is not None:
         # a 401/403/5xx the API answered with: the same code, exit status and hint as any other command
         return sdk_error_failure(identity.api_exception, data=identity.to_dict())
