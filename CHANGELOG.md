@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `Lium.rsync` accepts `bwlimit`, `exclude`, `delete`, `progress` and `download`, and resumes interrupted transfers (`--partial --inplace`) by default.
+- `Lium.cp(src_pod, src_path, dst_pod, dst_path)` copies files directly between two pods over SSH using a one-off key that is granted for the copy and revoked afterwards.
+- `lium rsync` gains `--bwlimit`, `--exclude` (repeatable), `--delete` and `--progress`.
+- `lium cp SRC_POD:PATH DST_POD:PATH [--bwlimit] [--exclude] [--delete] [--json]` for pod-to-pod copies.
+
+### Changed
+- `Lium.rsync` failures include rsync's stderr (or the exit code when there is none).
+
 ## [0.4.3] - 2025-10-23
 
 ### Added

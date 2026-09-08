@@ -149,7 +149,8 @@ The `lium` CLI exposes the full pod lifecycle. Run `lium --help` to see everythi
 - `lium logs <POD>` - Stream a pod's container logs
 - `lium port-forward <POD> <PORT>` - Forward a local port to a pod port
 - `lium scp <POD> <LOCAL_FILE> [REMOTE_PATH]` - Copy files to pods (add `-d` to download from pods)
-- `lium rsync <POD> <LOCAL_DIR> [REMOTE_PATH]` - Sync directories to pods
+- `lium rsync <POD> <LOCAL_DIR> [REMOTE_PATH]` - Sync directories to pods (`--bwlimit`, `--exclude`, `--delete`, `--progress`; resumes on re-run)
+- `lium cp <SRC_POD>:<PATH> <DST_POD>:<PATH>` - Copy files from one pod to another over SSH
 - `lium rm <POD>` - Remove/stop a pod (`--name-only` to refuse `lium ps` row numbers in scripts)
 - `lium reboot <POD>` - Reboot a pod
 - `lium audit [--pod POD] [--since 24h] [--key ID]` - Who did what to the account's pods, and when: every rent, reboot, edit and delete with the session or API key that requested it (add `--json` for machine-readable output)
@@ -300,6 +301,12 @@ lium rsync my-pod ./project                    # Sync to /root/project
 lium rsync 1 ./data /root/datasets/           # Sync to specific directory
 lium rsync all ./models                       # Sync to all pods
 lium rsync 1,2,3 ./code /root/workspace/      # Sync to multiple pods
+lium rsync my-pod ./ckpt /workspace/ckpt --bwlimit 20000 --exclude '*.tmp' --progress
+                                              # Throttled, filtered, with progress; re-run to resume
+
+# Copy between pods directly (data never passes through your machine)
+lium cp dev-pod:/workspace/src train-pod:/workspace/
+lium cp 1:/workspace/ckpt/ 2:/workspace/ckpt/ --exclude '*.tmp'
 
 # Remove multiple pods
 lium rm my-pod-1 my-pod-2
