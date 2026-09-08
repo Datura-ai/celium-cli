@@ -5,6 +5,8 @@ on:
   # reports blocks the merge button (a docs-only PR would sit unmergeable). Which heavy
   # build jobs run for a given change is decided per job, not here.
   pull_request:
+  # `gh workflow run ci.yml --ref <branch>` runs the whole workflow on the branch head with the full
+  # binary matrix — the on-demand path for a PR whose diff does not touch a packaging input.
   workflow_dispatch:
 
 concurrency:
@@ -40,8 +42,43 @@ jobs:
     - name: Run the test suite
       run: uv run pytest test/ -q -p no:cacheprovider --durations=10
 
+  packaging:
+    # Did this change touch anything that changes how the binaries are packaged? The two macOS jobs bill at
+    # GitHub's 10x macOS rate and the arm64 Docker build repeats the amd64 one, so those three run only when a
+    # packaging input moved or on a manual dispatch. The amd64 Docker build, the wheel and the target-matrix
+    # test run on every push.
+    name: Packaging inputs changed?
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      full-matrix: ${{ steps.check.outputs.full-matrix }}
+      linux-matrix: ${{ steps.check.outputs.linux-matrix }}
+    steps:
+    - id: check
+      env:
+        GH_TOKEN: ${{ github.token }}
+        EVENT: ${{ github.event_name }}
+        PR: ${{ github.event.pull_request.number }}
+      run: |
+        amd64='{"runner":"ubuntu-latest","platform":"linux/amd64","asset_name":"lium-linux-amd64"}'
+        arm64='{"runner":"ubuntu-24.04-arm","platform":"linux/arm64","asset_name":"lium-linux-arm64"}'
+        full() { echo "full-matrix=true" >> "$GITHUB_OUTPUT"; echo "linux-matrix=[$amd64,$arm64]" >> "$GITHUB_OUTPUT"; }
+        amd_only() { echo "full-matrix=false" >> "$GITHUB_OUTPUT"; echo "linux-matrix=[$amd64]" >> "$GITHUB_OUTPUT"; }
+        # only a pull_request has a file list to inspect; any other event (a manual dispatch) builds everything
+        if [[ "$EVENT" != "pull_request" ]]; then full; exit 0; fi
+        files="$(gh api --paginate "repos/${{ github.repository }}/pulls/$PR/files" -q '.[].filename')"
+        printf '%s\n' "$files"
+        if printf '%s\n' "$files" | grep -Eq '^(pyproject\.toml|uv\.lock|lium\.spec|lium_entry\.py|Dockerfile\.build|scripts/install\.sh|\.github/workflows/(ci|release)\.yml)$'; then
+          full
+        else
+          amd_only
+        fi
+
   build-python:
     name: Build Python distribution
+    needs: packaging
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -70,6 +107,7 @@ jobs:
 
   validate-binary-targets:
     name: Validate binary target matrix
+    needs: packaging
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -89,16 +127,13 @@ jobs:
 
   build-linux-binary:
     name: Build Linux binary (${{ matrix.asset_name }})
+    needs: packaging
+    # amd64 on every push, drafts included: the cheap smoke that catches an import or PyInstaller break. arm64
+    # joins the matrix only when `packaging` says so.
     strategy:
       fail-fast: false
       matrix:
-        include:
-        - runner: ubuntu-latest
-          platform: linux/amd64
-          asset_name: lium-linux-amd64
-        - runner: ubuntu-24.04-arm
-          platform: linux/arm64
-          asset_name: lium-linux-arm64
+        include: ${{ fromJSON(needs.packaging.outputs.linux-matrix) }}
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -132,6 +167,9 @@ jobs:
 
   build-macos-binary:
     name: Build macOS binary (${{ matrix.asset_name }})
+    needs: packaging
+    # the two macOS jobs are the expensive ones (10x minutes): only when packaging inputs changed
+    if: needs.packaging.outputs.full-matrix == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -185,8 +223,11 @@ jobs:
   ci-ok:
     # the one context to require in the ruleset (lium requires none today). The binary
     # builds stay informational: a Debian mirror outage must not block every merge.
+    # `packaging` is in the list because a skipped job counts as passing: if the inputs
+    # check fails, the wheel and the target test are skipped and only `packaging`'s own
+    # failure makes this job red.
     name: ci-ok
-    needs: [test, build-python, validate-binary-targets]
+    needs: [packaging, test, build-python, validate-binary-targets]
     if: always()
     runs-on: ubuntu-latest
     permissions: {}   # aggregator only: reads job results, needs no token scopes (CodeQL actions/missing-workflow-permissions)
