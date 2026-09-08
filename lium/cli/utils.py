@@ -919,18 +919,23 @@ def parse_targets(targets: str, all_pods: List[PodInfo], *, allow_index: Optiona
     return [match.pod for match in resolve_targets(targets, all_pods, allow_index=allow_index)]
 
 
-def wait_ready_no_timeout(lium_client, pod_id: str):
-    """Wait indefinitely for pod to be ready (RUNNING with SSH)."""
-    import time
-    
-    while True:
-        fresh_pods = lium_client.ps()
-        pod = next((p for p in fresh_pods if p.id == pod_id), None)
-        
-        if pod and pod.status.upper() == "RUNNING" and pod.ssh_cmd:
-            return pod
-        
-        time.sleep(10)  # Check every 10 seconds
+def wait_for_pod_ready(
+    lium_client, pod_id: str, timeout: Optional[int] = None, on_poll: Optional[Callable[..., None]] = None
+) -> Optional[PodInfo]:
+    """Wait for a pod to be ready (RUNNING with SSH); without ``timeout`` there is no time limit.
+
+    Delegates to :meth:`Lium.wait_ready`, so a pod that fails or disappears
+    raises ``PodStartError`` instead of being polled forever. Returns ``None``
+    only when ``timeout`` is given and the pod is still starting when it runs out.
+    ``on_poll`` is forwarded so the caller can show progress between polls.
+    """
+    # poll_interval=None: 2 s for the first 90 s, then 10 s (DAH-3002, Lium.poll_delay).
+    return lium_client.wait_ready(pod_id, timeout=timeout, poll_interval=None, on_poll=on_poll)
+
+
+# The old name, kept only until the open PRs that still import it (lium#141, #155, #172) land;
+# then it goes.
+wait_ready_no_timeout = wait_for_pod_ready
 
 
 def get_pytorch_template_id() -> Optional[str]:

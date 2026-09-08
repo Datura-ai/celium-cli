@@ -98,6 +98,10 @@ class _FakeLium:
     def ps(self):
         return [_pod(self.billed_gpus, host_gpus=self.node_gpus)]
 
+    def wait_ready(self, pod, *, timeout=None, poll_interval=None, on_poll=None):
+        # the CLI waits through Lium.wait_ready (DAH-2558); the pod here is ready on the first look
+        return self.ps()[0]
+
     def exec(self, pod, command=None, env=None):
         _FakeLium.exec_commands.append(command)
         if self.exec_error:

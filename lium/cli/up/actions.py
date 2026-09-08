@@ -1,4 +1,4 @@
-from typing import Optional, Dict, List
+from typing import Callable, Dict, List, Optional
 import re
 import time
 
@@ -10,7 +10,7 @@ from lium.cli.utils import (
     calculate_pareto_frontier,
     resolve_executor_indices,
     get_pytorch_template_id,
-    wait_ready_no_timeout,
+    wait_for_pod_ready,
 )
 
 
@@ -188,13 +188,66 @@ class RentPodAction:
 
 
 class WaitReadyAction:
+    """Wait for the rented pod. ``ctx["timeout"]`` (seconds) bounds the wait; None is unbounded.
+
+    Propagates ``PodStartError`` from the SDK: a pod that FAILED or vanished is
+    not a pod worth waiting for, and the caller must be told which pod it is
+    still paying for. A timeout is reported as ``ok=False`` with the same intent.
+    """
+
+    # A line every this many seconds while nothing changes; every status change prints one too.
+    PROGRESS_EVERY_SECONDS = 30
 
     def execute(self, ctx: dict) -> ActionResult:
         lium: Lium = ctx["lium"]
         pod_id: str = ctx["pod_id"]
+        timeout: Optional[int] = ctx.get("timeout")
+        report = ctx.get("report")
 
-        pod = wait_ready_no_timeout(lium, pod_id)
+        last_seen: dict = {"pod": None}
+        pod = wait_for_pod_ready(
+            lium, pod_id, timeout=timeout, on_poll=self._progress(report, last_seen) if report else None
+        )
+        if pod is None:
+            error = f"Pod {pod_id} was still starting after {timeout}s"
+            # DAH-3005: the backend's own estimate tells a slow-but-coming pod from a stuck one.
+            # It travels in ``data`` too, so the command can put it in its own message.
+            hint = last_seen["pod"].eta_hint() if last_seen["pod"] is not None else None
+            if hint:
+                error += f" (backend: {hint})"
+            return ActionResult(ok=False, data={"eta_hint": hint}, error=error)
         return ActionResult(ok=True, data={"pod": pod})
+
+    def _progress(
+        self, report: Optional[Callable[[str], None]], last_seen: Optional[dict] = None
+    ) -> Optional[Callable[[Optional[PodInfo], str, float], None]]:
+        """An on_poll callback that says what the pod is doing, without repeating itself every poll.
+
+        A silent wait is what turned a slow rent into a killed command: nothing tells the caller
+        (or an agent behind a pipe, where the spinner is not drawn) whether the pod is PENDING,
+        pulling an image, or already gone. DAH-3005: the line carries the backend's estimate and
+        creation phase when it sends them, and is printed again whenever the phase moves.
+        """
+        if report is None:
+            return None
+        last = {"status": None, "phase": None, "at": 0.0}
+
+        def on_poll(pod: Optional[PodInfo], status: str, elapsed: float) -> None:
+            if last_seen is not None and pod is not None:
+                last_seen["pod"] = pod
+            phase = pod.phase if pod is not None else None
+            changed = status != last["status"] or phase != last["phase"]
+            if not changed and elapsed - last["at"] < self.PROGRESS_EVERY_SECONDS:
+                return
+            last["status"], last["phase"], last["at"] = status, phase, elapsed
+            label = pod.huid if pod is not None else "pod"
+            line = f"waiting for {label}… {status} ({int(elapsed)} s)"
+            hint = pod.eta_hint() if pod is not None else None
+            if hint:
+                line += f" · {hint}"
+            report(line)
+
+        return on_poll
 
 
 def billed_gpu_count(pod: PodInfo) -> Optional[int]:
