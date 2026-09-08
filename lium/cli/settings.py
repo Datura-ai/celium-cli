@@ -142,7 +142,7 @@ class ConfigManager:
         try:
             from lium.sdk import Lium
             client = Lium()
-            templates = client.list_templates()
+            templates = client.templates()
             
             if not templates:
                 console.warning("No templates available")
