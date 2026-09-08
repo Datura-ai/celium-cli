@@ -1376,7 +1376,8 @@ class Lium:
             data = self._request("GET", f"/pods/{quote(str(pod_id), safe='')}/events", retry=False).json()
         except LiumNotFoundError:
             return []
-        return data if isinstance(data, list) else []
+        # dict entries only: pod_failure_cause reads them on a failure path and must not raise there
+        return [e for e in data if isinstance(e, dict)] if isinstance(data, list) else []
 
     def pod_failure_cause(self, pod_id: str) -> Optional[str]:
         """What the backend recorded as the reason the pod failed or was closed, or ``None``.

@@ -10,6 +10,7 @@ cause the backend had recorded. Builds on the PodStartError/--ready-timeout work
 
 from __future__ import annotations
 
+from itertools import chain, repeat
 from types import SimpleNamespace
 
 import pytest
@@ -160,10 +161,15 @@ def test_pod_failure_cause_prefers_the_latest_readable_event():
     assert client.pod_failure_cause("pod-1") == CREATE_FAILED_EVENT["error"]
 
 
-def test_a_slow_pod_still_times_out_to_none_without_reading_events():
+def test_a_slow_pod_still_times_out_to_none_without_reading_events(monkeypatch):
+    # three polls see PENDING before the 30 s budget ends: a slow pod is None, not an error, and
+    # the events route is never read (that is the failure path's lookup)
+    clock = chain([0, 0, 10, 20, 40], repeat(40))
+    monkeypatch.setattr("lium.sdk.client.time.time", lambda: next(clock))
     client = _Client([[_pod("PENDING", None)]], events_error=AssertionError("must not be called"))
 
-    assert client.wait_ready("pod-1", timeout=0) is None
+    assert client.wait_ready("pod-1", timeout=30, poll_interval=10) is None
+    assert client.event_requests == 0
 
 
 # --- CLI: progress lines --------------------------------------------------------------------------
