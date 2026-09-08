@@ -6,7 +6,9 @@ excluded country, an excluded executor (by id or by huid), no GPU, over the pric
 
 import importlib.util
 import sys
+import warnings
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,7 +17,7 @@ CONFTEST = Path(__file__).resolve().parent.parent / "e2e" / "conftest.py"
 
 def _load(monkeypatch, **env):
     """A fresh import of e2e/conftest.py with the given E2E_* variables (it reads them at import)."""
-    for name in ("E2E_EXCLUDE_COUNTRIES", "E2E_EXCLUDE_EXECUTORS", "E2E_MAX_PRICE"):
+    for name in ("E2E_EXCLUDE_COUNTRIES", "E2E_EXCLUDE_EXECUTORS", "E2E_MAX_PRICE", "E2E_KEEP_POD"):
         monkeypatch.delenv(name, raising=False)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
@@ -52,6 +54,129 @@ def test_the_country_exclusion_is_on_by_default_and_an_explicit_empty_value_lift
     conftest = _load(monkeypatch, E2E_EXCLUDE_COUNTRIES="")
     assert conftest.EXCLUDE_COUNTRIES == set()
     assert conftest.rentable(1, 0.30, "Belarus", "abc-123", "eager-comet-56") is True
+
+
+def _failed(nodeid="e2e/test_renter_journey.py::test_exec_propagates_exit_codes_and_streams"):
+    return SimpleNamespace(failed=True, nodeid=nodeid)
+
+
+def test_keep_pod_needs_both_the_flag_and_a_failed_step(monkeypatch):
+    conftest = _load(monkeypatch)                       # E2E_KEEP_POD unset: a failure changes nothing
+    conftest.pytest_runtest_logreport(_failed())
+    assert conftest.FAILED_STEPS == [_failed().nodeid]
+    assert conftest.keep_pod() is False
+
+    conftest = _load(monkeypatch, E2E_KEEP_POD="1")     # the flag alone: the journey still removes its pod
+    conftest.pytest_runtest_logreport(SimpleNamespace(failed=False, nodeid="e2e/test_renter_journey.py::test_up_rents_exactly_one_pod"))
+    assert conftest.keep_pod() is False
+    conftest.pytest_runtest_logreport(_failed())
+    assert conftest.keep_pod() is True
+
+
+class _RecordingSession:
+    """conftest.Session's surface the `rental` fixture uses: `lium(...)` (rm / ps) and `log`. `ps` answers with the
+    pods in `listed` (by name) until an `rm` for one of them arrives."""
+
+    def __init__(self, listed: tuple[str, ...] = ()):
+        self.calls: list[tuple[str, ...]] = []
+        self.log: list[dict] = []
+        self.listed = set(listed)
+
+    def lium(self, *args, **_):
+        self.calls.append(args)
+        if args[0] == "rm":
+            self.listed.discard(args[1])
+        return SimpleNamespace(rc=0, out="[]", err="", json=lambda: [{"name": n} for n in self.listed])
+
+
+def _run_rental_fixture(conftest, fail_before_teardown: bool, recorded: bool = True) -> _RecordingSession:
+    """Drive the `rental` fixture's generator as pytest would: set up, rent a pod, (fail a step,) tear down.
+    `recorded=False` is the `up` that rented but never returned (killed by its timeout, or exited non-zero)."""
+    fixture_fn = getattr(conftest.rental, "__wrapped__", conftest.rental)
+    session = _RecordingSession()
+    gen = fixture_fn(session)
+    rental = next(gen)
+    session.setup_calls = list(session.calls)   # what ran before the tests: the stale sweep, or nothing
+    rental.up_called_at = 1.0
+    session.listed.add(rental.name)   # the API lists the pod whether or not the test recorded it
+    if recorded:
+        rental.pod = {"id": "pod-1", "name": rental.name}
+    if fail_before_teardown:
+        conftest.pytest_runtest_logreport(_failed())
+    with pytest.raises(StopIteration):
+        next(gen)
+    return session
+
+
+@pytest.mark.parametrize(
+    "keep_flag, failed, rm_expected",
+    [
+        ({}, True, True),                    # default: a failed run still removes its pod (3c47ae4's behaviour)
+        ({"E2E_KEEP_POD": "1"}, False, True),   # the flag with a green run: nothing to look at, the pod goes
+        ({"E2E_KEEP_POD": "1"}, True, False),   # the flag and a failed step: no rm, a note in the log
+    ],
+)
+def test_the_rental_finalizer_keeps_the_pod_only_for_a_failed_run_under_keep_pod(monkeypatch, keep_flag, failed, rm_expected):
+    conftest = _load(monkeypatch, **keep_flag)
+    session = _run_rental_fixture(conftest, fail_before_teardown=failed)
+    rm_calls = [c for c in session.calls if c[0] == "rm"]
+    assert bool(rm_calls) is rm_expected, session.calls
+    if not rm_expected:
+        assert any("kept after a failed step" in note.get("note", "") for note in session.log), session.log
+
+
+def test_a_pod_the_up_step_never_recorded_is_still_removed(monkeypatch):
+    """`lium up` killed by the step's 300 s timeout, or exiting non-zero after renting (a GPU-count mismatch), leaves a
+    pod `rental.pod` never saw; the finalizer removes by name whenever an `up` was attempted."""
+    session = _run_rental_fixture(_load(monkeypatch), fail_before_teardown=True, recorded=False)
+    assert [c for c in session.calls if c[0] == "rm"], session.calls
+    # and it sends no rm when the API no longer lists the pod (the rm step already removed it)
+    conftest = _load(monkeypatch)
+    fixture_fn = getattr(conftest.rental, "__wrapped__", conftest.rental)
+    session = _RecordingSession()
+    gen = fixture_fn(session)
+    rental = next(gen)
+    rental.up_called_at = 1.0
+    with pytest.raises(StopIteration):
+        next(gen)
+    assert [c for c in session.calls if c[0] == "rm"] == [], session.calls
+
+
+def test_under_keep_pod_a_pod_whose_up_never_returned_gets_a_scheduled_removal(monkeypatch):
+    """`lium up` sets --ttl only once the pod is RUNNING; an `up` killed by its timeout leaves a rented pod without
+    one. Kept for a look under E2E_KEEP_POD=1, it still gets the 30 minutes: `lium rm <name> --in 30m -y`."""
+    session = _run_rental_fixture(_load(monkeypatch, E2E_KEEP_POD="1"), fail_before_teardown=True, recorded=False)
+    rm_calls = [c for c in session.calls if c[0] == "rm"]
+    assert len(rm_calls) == 1 and rm_calls[0][2:] == ("--in", "30m", "-y"), session.calls
+    assert any("removal scheduled in 30m" in n.get("note", "") for n in session.log), session.log
+    # a recorded pod (its `up` returned, the TTL is set) is left alone
+    session = _run_rental_fixture(_load(monkeypatch, E2E_KEEP_POD="1"), fail_before_teardown=True, recorded=True)
+    assert [c for c in session.calls if c[0] == "rm"] == [], session.calls
+
+
+def test_under_keep_pod_the_stale_sweep_does_not_run(monkeypatch):
+    # a human re-running with E2E_KEEP_POD=1 may be looking at a pod older than 30 min: it is not swept
+    session = _run_rental_fixture(_load(monkeypatch, E2E_KEEP_POD="1"), fail_before_teardown=False)
+    assert session.setup_calls == []
+    swept_by_default = _run_rental_fixture(_load(monkeypatch), fail_before_teardown=False)
+    assert swept_by_default.setup_calls == [("ps", "--format", "json")]
+
+
+def test_the_rm_step_is_skipped_under_keep_pod_after_a_failure(monkeypatch):
+    """The ordered `rm` test used to run whatever had failed before it — the reason E2E_KEEP_POD=1 kept nothing."""
+    conftest = _load(monkeypatch, E2E_KEEP_POD="1")
+    monkeypatch.setitem(sys.modules, "conftest", conftest)   # the journey module does `from conftest import …`
+    spec = importlib.util.spec_from_file_location("e2e_renter_journey_under_test", CONFTEST.parent / "test_renter_journey.py")
+    journey = importlib.util.module_from_spec(spec)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", pytest.PytestUnknownMarkWarning)   # its `timeout` mark is pytest-timeout's, an e2e-only dependency
+        spec.loader.exec_module(journey)
+    session = _RecordingSession()
+    rental = conftest.Rental(name="e2e-000000-001", pod={"id": "pod-1"})
+    conftest.pytest_runtest_logreport(_failed())
+    with pytest.raises(pytest.skip.Exception, match="E2E_KEEP_POD=1 and an earlier step failed"):
+        journey.test_rm_removes_the_pod_and_the_final_charge_matches_the_clock(session, rental)
+    assert session.calls == []   # no rm was sent
 
 
 def test_the_ci_job_states_the_same_exclusion_as_the_default(monkeypatch):

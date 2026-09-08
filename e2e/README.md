@@ -1,7 +1,7 @@
 # e2e — this checkout's CLI and SDK against a live Lium API
 
 The renter's first hour, asserted: `balance --json` → `ls --format json` (stable fields, `--gpu` filter) → `up`
-(exactly one pod) → `ps` until `RUNNING` with an `ssh_cmd` → `describe --json` → `exec` (exit code 7 comes back
+(exactly one pod; `up` itself waits for `RUNNING` with an `ssh_cmd`, 540 s budget) → `ps` agrees → `describe --json` → `exec` (exit code 7 comes back
 as exit 7 and in the JSON; `nvidia-smi -L` lists at least the GPUs billed) → `scp` up and down, byte-exact →
 billing moves while the pod runs → `rm` → gone from `ps` → the final charge fits the wall clock at the node's
 price (per-second, no 15-minute floor). The error contract agents depend on: wrong key exit 3 with a JSON
@@ -22,7 +22,8 @@ it is excluded or fixed.
 ```sh
 E2E_API_KEY=<key of a funded account> ./e2e/run.sh              # staging.lium.io by default
 E2E_API_URL=http://localhost:8000/api E2E_API_KEY=… ./e2e/run.sh # the lium-platform e2e stack (its seeded key)
-SUITES=renter ./e2e/run.sh                                     # one journey; E2E_KEEP_POD=1 keeps the pod on failure
+SUITES=renter ./e2e/run.sh                                     # one journey
+E2E_KEEP_POD=1 SUITES=renter ./e2e/run.sh                      # a failed step keeps the pod (no rm, no sweep; the 30-min TTL stands, or is scheduled when `up` never returned)
 ```
 
 On macOS the per-step time limit needs GNU `timeout` (`brew install coreutils` provides it as `gtimeout`); without it
@@ -43,7 +44,7 @@ Runs on every PR from this repo that touches `lium/**`, `e2e/**`, `pyproject.tom
 `e2e-inputs` job reads the PR's file list — the workflow itself has no `paths:` filter since #169, so that `ci-ok`
 always reports; a README- or `test/`-only PR does not rent anything), on `workflow_dispatch`, and once a day
 (`schedule`, e2e-live only — the suite and the build jobs skip on the cron) so API drift shows up without a push.
-`ci-ok`, the required check, does not depend on `e2e-live`: a live suite red on a platform defect (B-119) or an empty
+`ci-ok` (the check meant to be required; lium requires none today) does not depend on `e2e-live`: a live suite red on a platform defect (B-119) or an empty
 listing must not block every merge; the sticky comment is its verdict. Needs the repository secret **`LIUM_E2E_API_KEY`** (the key of a funded account on the target API) and the
 variable `LIUM_E2E_API_URL` (staging when unset). Today the variable is `https://lium.io/api` and the key belongs to
 a dedicated test account funded with $200, which covers about 6,000 runs at $0.03. Fork PRs have no secrets →

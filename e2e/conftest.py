@@ -10,7 +10,11 @@ Target (env):
                 CLI shows the ISO code when the listing has no country name). An explicit empty value lifts it.
   E2E_EXCLUDE_EXECUTORS  comma-separated executor ids or huids never rented (a node known to be defective — B-119's
                 brave-shark-ff billed 2 GPUs and exposed 1 — would otherwise be the cheapest pick on every run).
-  E2E_KEEP_POD  =1 leaves the pod up on failure for a human to look at (never in CI).
+  E2E_KEEP_POD  =1 leaves the pod up on failure for a human to look at (never in CI): once a step has failed, no
+                removal this run would do runs — the `rental`/`sdk_pod` finalizers, the renter journey's `rm` step
+                (skipped) and the stale-pod sweep at the start; the pod's own 30-min TTL still applies — or, when
+                `up` itself never returned (it sets the TTL only once the pod is RUNNING), the fixture schedules a
+                30-min removal instead. With no failure the journey removes its pod as usual.
 
 Every command runs with HOME set to a temp dir, so `up` mints its SSH key there and the first-run shell-completion
 hook edits a shell rc nobody uses (L-65: never the runner's ~/.lium). The key travels only as LIUM_API_KEY.
@@ -36,6 +40,18 @@ EXCLUDE_COUNTRIES = {c.strip().lower() for c in os.environ.get("E2E_EXCLUDE_COUN
 EXCLUDE_EXECUTORS = {e.strip().lower() for e in os.environ.get("E2E_EXCLUDE_EXECUTORS", "").split(",") if e.strip()}
 KEEP_POD = os.environ.get("E2E_KEEP_POD", "") == "1"
 ARTIFACTS = Path(os.environ.get("E2E_ARTIFACTS", Path(__file__).parent / "artifacts"))
+
+FAILED_STEPS: list[str] = []   # node ids of the steps that failed so far in this process (setup, call or teardown)
+
+
+def pytest_runtest_logreport(report) -> None:
+    if report.failed:
+        FAILED_STEPS.append(report.nodeid)
+
+
+def keep_pod() -> bool:
+    """E2E_KEEP_POD=1 and a step has failed: every removal this run would do is skipped."""
+    return KEEP_POD and bool(FAILED_STEPS)
 
 
 def rentable(gpu_count: int | str | None, price_per_hour: float | str | None, country: str | None,
@@ -157,15 +173,33 @@ def rm_pods_named(session: Session, prefix: str, older_than_s: float = 0) -> int
 
 @pytest.fixture(scope="session")
 def rental(session: Session) -> Rental:
-    # a previous run that died mid-way may have left a pod; anything of ours older than 30 min goes first
-    swept = rm_pods_named(session, "e2e-", older_than_s=30 * 60)
-    if swept:
-        session.log.append({"note": f"swept {swept} stale e2e- pod(s)"})
+    # a previous run that died mid-way may have left a pod; anything of ours older than 30 min goes first —
+    # unless a human asked to keep pods: the one they are looking at may be exactly that old
+    if KEEP_POD:
+        session.log.append({"note": "E2E_KEEP_POD=1: stale e2e- pods not swept"})
+    else:
+        swept = rm_pods_named(session, "e2e-", older_than_s=30 * 60)
+        if swept:
+            session.log.append({"note": f"swept {swept} stale e2e- pod(s)"})
     r = Rental(name=f"e2e-{time.strftime('%H%M%S')}-{os.getpid() % 1000:03d}")
     yield r
-    if r.pod and not KEEP_POD:
-        for _ in range(3):
-            res = session.lium("rm", r.name, "-y", timeout=120)
-            if res.rc == 0 or not any(p.get("name") == r.name for p in ps(session)):
-                break
-            time.sleep(5)
+    if not (r.pod or r.up_called_at):
+        return   # nothing was rented (the read-only steps skipped or failed before `up`)
+    if keep_pod():
+        if r.pod:
+            session.log.append({"note": f"E2E_KEEP_POD=1: {r.name} kept after a failed step (its 30-min TTL still applies)"})
+        elif any(p.get("name") == r.name for p in ps(session)):
+            # `up` never returned (killed by its timeout, or exited non-zero after renting): `lium up` schedules
+            # --ttl only once the pod is RUNNING, so this pod has none — give it the same 30 minutes
+            session.lium("rm", r.name, "--in", "30m", "-y", timeout=120)
+            session.log.append({"note": f"E2E_KEEP_POD=1: {r.name} kept after `up` did not return; no TTL was set, removal scheduled in 30m"})
+        return
+    # keyed on the name, not on `r.pod`: an `up` killed by its 300 s timeout, or one that exited non-zero after
+    # renting (a GPU-count mismatch since #120), leaves a pod the test never recorded — and, killed before RUNNING,
+    # one without its --ttl
+    for _ in range(3):
+        if not any(p.get("name") == r.name for p in ps(session)):
+            break
+        if session.lium("rm", r.name, "-y", timeout=120).rc == 0:
+            break
+        time.sleep(5)

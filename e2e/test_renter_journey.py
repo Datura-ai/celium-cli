@@ -9,11 +9,12 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import time
 
 import pytest
 
-from conftest import API_URL, MAX_PRICE, Rental, Session, ps, rentable
+from conftest import API_URL, MAX_PRICE, Rental, Session, keep_pod, ps, rentable
 
 pytestmark = pytest.mark.timeout(600)
 
@@ -104,7 +105,14 @@ def test_up_rents_exactly_one_pod(session: Session, rental: Rental):
     if (rental.balance_before or 0) <= 0.01:
         pytest.skip("the e2e account has no balance — fund it before the rent tests can run")
     rental.up_called_at = time.monotonic()
-    r = session.lium("up", rental.executor_id, "--name", rental.name, "--ttl", "30m", "-y", "--no-ssh", timeout=300)
+    # `lium up` itself blocks until the pod is RUNNING with an ssh_cmd (wait_ready_no_timeout, no deadline of its
+    # own) and schedules --ttl only then, so this call's timeout is the suite's RUNNING budget: 540 s, under the
+    # module's 600 s pytest-timeout (timeout_method = thread exits the process with no finalizer). A killed `up`
+    # leaves a pod without a TTL; the rental fixture removes it by name.
+    try:
+        r = session.lium("up", rental.executor_id, "--name", rental.name, "--ttl", "30m", "-y", "--no-ssh", timeout=540)
+    except subprocess.TimeoutExpired:
+        pytest.fail(f"lium up {rental.name} did not return within 540 s (a rented pod has no TTL yet; the fixture removes it by name)")
     assert r.rc == 0, r
     mine = [p for p in ps(session) if p.get("name") == rental.name]
     assert len(mine) == 1, f"pods named {rental.name}: {len(mine)} (a retried POST must never rent twice)"
@@ -116,9 +124,9 @@ def test_up_rents_exactly_one_pod(session: Session, rental: Rental):
 def test_pod_reaches_running_with_ssh(session: Session, rental: Rental):
     if not rental.pod:
         pytest.skip("no pod")
-    # 540 s, under the module's 600 s pytest-timeout: with timeout_method = thread the plugin exits the process
-    # and no finalizer runs, so the informative assertion below must fire first.
-    deadline = time.monotonic() + 540
+    # `up` has already waited for RUNNING + ssh_cmd (see above), so this is the `ps` consistency check: the listing
+    # must show what `up` saw; 60 s covers a lagging listing, not the boot.
+    deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         mine = [p for p in ps(session) if p.get("name") == rental.name]
         assert mine, "the pod vanished while pending"
@@ -128,7 +136,7 @@ def test_pod_reaches_running_with_ssh(session: Session, rental: Rental):
             break
         assert rental.pod.get("status") not in ("FAILED", "STOPPED"), rental.pod
         time.sleep(5)
-    assert rental.running_at, f"not RUNNING after 600s: {rental.pod}"
+    assert rental.running_at, f"`up` returned 0 but ps does not list {rental.name} as RUNNING with an ssh_cmd after 60s: {rental.pod}"
     assert re.match(r"^ssh\s+\S+@\S+\s+-p\s+\d+", rental.pod["ssh_cmd"]), rental.pod["ssh_cmd"]
 
 
@@ -206,6 +214,9 @@ def test_billing_moves_while_the_pod_runs(session: Session, rental: Rental):
 def test_rm_removes_the_pod_and_the_final_charge_matches_the_clock(session: Session, rental: Rental):
     if not rental.pod:
         pytest.skip("no pod")
+    if keep_pod():
+        # the ordered rm used to run here whatever had failed before it, so E2E_KEEP_POD=1 kept nothing
+        pytest.skip(f"E2E_KEEP_POD=1 and an earlier step failed: {rental.name} is kept for a look (30-min TTL)")
     r = session.lium("rm", rental.name, "-y", timeout=120)
     assert r.rc == 0, r
     deadline = time.monotonic() + 120

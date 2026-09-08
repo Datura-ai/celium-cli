@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import API_KEY, API_URL, MAX_PRICE, rentable
+from conftest import API_KEY, API_URL, MAX_PRICE, keep_pod, rentable
 
 pytestmark = pytest.mark.timeout(900)
 
@@ -37,7 +37,7 @@ def lium(session, tmp_path_factory):  # `session` only for the skip when no key 
 def sdk_pod(lium):
     state = {"pod": None, "name": f"e2e-sdk-{time.strftime('%H%M%S')}"}
     yield state
-    if state["pod"] is not None:
+    if state["pod"] is not None and not keep_pod():   # E2E_KEEP_POD=1 after a failure: the pod stays for a look
         try:
             # state["pod"] is the dict `up` returned or the PodInfo wait_ready returned; down() needs the id either way
             pod_id = state["pod"]["id"] if isinstance(state["pod"], dict) else state["pod"].id
@@ -58,10 +58,17 @@ def test_sdk_balance_and_ls(lium):
         assert hasattr(first, attr), f"ExecutorInfo lost .{attr}"
 
 
+def _country(node) -> str | None:
+    loc = node.location or {}
+    return loc.get("country") or loc.get("country_code") or loc.get("iso_code")
+
+
 def test_sdk_up_wait_exec_upload_download_rm(lium, sdk_pod, tmp_path):
     if lium.balance() <= 0.01:
         pytest.skip("the e2e account has no balance")
-    nodes = [n for n in lium.ls() if rentable(n.gpu_count, n.price_per_hour, (n.location or {}).get("country"), n.id, n.huid)]
+    # the same country rule as the CLI journey: `ls --format json` falls back to the ISO code when a listing has no
+    # country name (lium/cli/ls/display.py), which is why RU/BY are in the default exclusion
+    nodes = [n for n in lium.ls() if rentable(n.gpu_count, n.price_per_hour, _country(n), n.id, n.huid)]
     if not nodes:
         pytest.skip(f"no rentable node with ≥1 GPU at ≤ ${MAX_PRICE}/h listed right now (E2E_EXCLUDE_* applied)")
     node = min(nodes, key=lambda n: float(n.price_per_hour))
