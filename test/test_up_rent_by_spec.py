@@ -179,6 +179,30 @@ def test_up_says_when_the_confirmed_node_was_taken_and_another_rented(monkeypatc
     assert "thrifty-node-bb was taken meanwhile; rented second-node-cc (1×RTX4090) at $0.30/h instead" in output
 
 
+def test_up_names_the_gpus_rented_not_the_nodes_total_on_a_split(monkeypatch):
+    """The server may rent one GPU of an 8-GPU node; the price shown is for that one GPU, so
+    the count next to it is the rental's, not the node's."""
+    big = _executor("eight-node-dd", 0.30, gpu_count=8)
+
+    class _SplitLium(_SpecLium):
+        rented_executor = big
+
+        def rent(self, **kwargs):
+            self.rents.append(kwargs)
+            if kwargs.get("dry_run"):
+                return RentResult(executor=big, price_per_hour=0.30, gpu_count=1, template_id="tpl-default",
+                                  candidates=2, dry_run=True, server_side=True)
+            return RentResult(executor=big, price_per_hour=0.30, gpu_count=1, template_id="tpl-default",
+                              pod={"id": "pod-uuid-1", "name": kwargs["name"]}, attempts=1, server_side=True)
+
+    result = _run_up(monkeypatch, _SplitLium)
+
+    assert result.exit_code == 0, result.output
+    output = " ".join(result.output.split())
+    assert "Selected eight-node-dd (1×RTX4090, Germany) at $0.30/h" in output
+    assert "8×" not in output
+
+
 def test_help_states_who_picks():
     result = CliRunner().invoke(up_module.up_command, ["--help"])
 

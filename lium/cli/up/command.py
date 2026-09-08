@@ -229,6 +229,9 @@ def up_command(
     # What the rental bills: the server's figure when it picked (a split of a larger node
     # costs price_per_gpu × count, not the node's total), else the node's total $/h.
     price_per_hour = result.data.get("price_per_hour") or executor.price_per_hour
+    # The GPUs the rental gets, next to what they cost: on the spec path the server may rent a
+    # split of a larger node, so the node's own count would overstate it.
+    gpu_count = result.data.get("gpu_count") or executor.gpu_count
     spec = result.data.get("spec")
     if result.data.get("auto_selected"):
         # Name the pick and its total $/h before anything is billed: with -y the
@@ -236,7 +239,7 @@ def up_command(
         country = (executor.location or {}).get("country") or (executor.location or {}).get("country_code")
         ui.info(
             f"Selected {ui.styled(executor.huid, 'id')} "
-            f"({executor.gpu_count}×{executor.gpu_type}{', ' + country if country else ''}) "
+            f"({gpu_count}×{executor.gpu_type}{', ' + country if country else ''}) "
             f"at ${price_per_hour:.2f}/h — cheapest of {result.data['candidates']} "
             f"{'matching' if spec else 'optimal'} node(s)"
         )
@@ -313,7 +316,7 @@ def up_command(
     if not yes:
         confirm_msg = (
             f"Acquire pod on {executor.huid} "
-            f"({executor.gpu_count}×{executor.gpu_type}) "
+            f"({gpu_count}×{executor.gpu_type}) "
             f"at ${price_per_hour:.2f}/h?"
         )
         if restore_backup_id:
@@ -360,7 +363,7 @@ def up_command(
         # next candidate at or below the confirmed $/GPU·h.
         ui.info(
             f"{ui.styled(executor.huid, 'id')} was taken meanwhile; rented "
-            f"{ui.styled(rented.huid, 'id')} ({rented.gpu_count}×{rented.gpu_type}) "
+            f"{ui.styled(rented.huid, 'id')} ({result.data.get('gpu_count') or rented.gpu_count}×{rented.gpu_type}) "
             f"at ${result.data['price_per_hour']:.2f}/h instead"
         )
     executor = rented
