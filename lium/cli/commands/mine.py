@@ -351,8 +351,12 @@ def _validate_executor(extra_args=None):
 _MINE_STATUS_PROG = "lium mine status"
 
 
-def _mine_status(args: list) -> int:
+def _mine_status(args: list, hotkey: Optional[str] = None) -> int:
     """Run `lium provider node status <args>`; `--json` may come after the node id here.
+
+    ``hotkey`` is what `--hotkey`/`-k` was set to on the `lium mine` line: click gives it to `mine` wherever
+    it is typed, so for `status` it is passed on as the provider group's `--hotkey` (the wallet hotkey name
+    the portal is signed in with) — the flag the ARG_INVALID message asks for then means what it says.
 
     Help and usage errors are rendered under the name the user typed: click would otherwise compose
     ``lium mine status node status`` from the provider group's path.
@@ -365,6 +369,8 @@ def _mine_status(args: list) -> int:
         click.echo(status_node.get_help(own_ctx))
         return 0
     group_args = ["--json"] if "--json" in args else []
+    if hotkey:
+        group_args += ["--hotkey", hotkey]
     sub_args = [a for a in args if a != "--json"]
     try:
         code = provider_command.main(
@@ -397,9 +403,10 @@ def _mine_status(args: list) -> int:
 def mine_command(ctx, hotkey, dir_, branch, auto, verbose, help_):
     if ctx.args and ctx.args[0] == "status":
         # `lium mine` is the provider's first command; `lium mine status <node>` is where they look
-        # next, so it is the same command as `lium provider node status` (auth from
-        # LIUM_PROVIDER_HOTKEY / ~/.lium/config.ini). Extra args are otherwise the validator's.
-        raise SystemExit(_mine_status(ctx.args[1:] + (["--help"] if help_ else [])))
+        # next, so it is the same command as `lium provider node status` (auth from `--hotkey`/`-k`
+        # anywhere on the line, else LIUM_PROVIDER_HOTKEY / ~/.lium/config.ini). Extra args are
+        # otherwise the validator's.
+        raise SystemExit(_mine_status(ctx.args[1:] + (["--help"] if help_ else []), hotkey=hotkey))
     if help_:
         click.echo(ctx.get_help())
         raise SystemExit(0)   # not ctx.exit(): handle_errors would report click's Exit as an unexpected error

@@ -184,6 +184,23 @@ def test_mine_status_is_the_same_command(patched_client, monkeypatch):
     assert result.output.splitlines()[0].startswith("idle · last run failed (VERIFYX_FAILED_NETWORK_SPEED_TOO_SLOW)")
 
 
+@pytest.mark.parametrize("flag", ["--hotkey", "-k"])
+def test_mine_status_hotkey_flag_means_the_provider_hotkey(patched_client, monkeypatch, flag):
+    """`lium mine status e-1 --hotkey hk1`: click hands `--hotkey`/`-k` to `mine` (its own option) wherever it is
+    typed, so `status` passes it on as the provider group's `--hotkey`; the flag the ARG_INVALID message asks
+    for works at that position. Without it and without the env/config it is still ARG_INVALID."""
+    monkeypatch.delenv("LIUM_PROVIDER_HOTKEY", raising=False)
+    portal = patched_client(IDLE_FAILED)
+
+    result = CliRunner().invoke(cli, ["mine", "status", "e-1", flag, "hk1"])
+    assert result.exit_code == 0, result.output
+    assert portal.gets == ["/executors/e-1/verification"]
+    assert result.output.splitlines()[0].startswith("idle · last run failed")
+
+    result = CliRunner().invoke(cli, ["mine", "status", "e-1"])
+    assert result.exit_code == 1 and "ARG_INVALID" in result.output and "--hotkey" in result.output
+
+
 def test_mine_status_help_and_usage_carry_the_typed_name(patched_client, monkeypatch):
     """`lium mine status --help` is the status command's help, not `lium mine`'s; a missing node id is a
     usage error under `lium mine status`, not click's composed `lium mine status node status`."""
