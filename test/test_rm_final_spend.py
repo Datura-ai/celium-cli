@@ -74,6 +74,16 @@ def test_uptime_is_spelled_like_ps_json():
     assert display.pod_spend(_pod(), now=NOW)["uptime"] == ps_display.format_duration(92 * 60)
 
 
+def test_a_pending_pod_has_spent_nothing():
+    """The same rule as `lium spend`: PENDING has not started billing, whatever its age."""
+    pod = _pod()
+    pod.status = "PENDING"
+
+    spend = display.pod_spend(pod, now=NOW)
+
+    assert (spend["spent_usd"], spend["price_per_hour"], spend["uptime"]) == (0.0, 0.58, "1.5h")
+
+
 def test_pod_spend_marks_what_it_cannot_know():
     assert display.pod_spend(_pod(price=None), now=NOW)["spent_usd"] is None
     assert display.pod_spend(_pod(price=0.0), now=NOW)["price_per_hour"] is None

@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from lium.sdk import PodInfo
 from lium.cli.ps.display import _parse_timestamp, format_duration
+from lium.cli.spend.report import NOT_YET_BILLING
 
 
 def pod_spend(pod: PodInfo, now: Optional[datetime] = None) -> Dict[str, Any]:
@@ -20,12 +21,19 @@ def pod_spend(pod: PodInfo, now: Optional[datetime] = None) -> Dict[str, Any]:
     hours = None
     if dt_created:
         hours = max(0.0, ((now or datetime.now(timezone.utc)) - dt_created).total_seconds() / 3600)
+    if hours is None or price is None:
+        spent = None
+    elif getattr(pod, "status", None) in NOT_YET_BILLING:
+        # the same rule as `lium spend`: a pod that never left PENDING has not billed
+        spent = 0.0
+    else:
+        spent = round(hours * price, 2)
 
     return {
         "uptime": format_duration(hours * 3600) if hours is not None else None,
         "uptime_hours": round(hours, 2) if hours is not None else None,
         "price_per_hour": price,
-        "spent_usd": round(hours * price, 2) if hours is not None and price is not None else None,
+        "spent_usd": spent,
         "spent_is_estimate": True,
     }
 

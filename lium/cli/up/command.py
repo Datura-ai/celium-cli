@@ -617,10 +617,16 @@ def up_command(
         # differently from a stuck pod — and with its removal time, when there is one.
         hint = result.data.get("eta_hint")
         backend = f" (backend: {hint})" if hint else ""
+        # A --budget cap is scheduled only once the pod is ready (below), so say when it was not;
+        # --ttl/--until were scheduled at the rent and _termination_note covers them.
+        budget_not_scheduled = (
+            " The --budget cap was NOT scheduled; it is set once the pod is ready."
+            if budget_usd is not None else ""
+        )
         raise CliFailure(
             "pod_not_ready",
             f"Pod {pod_name} (id: {pod_id}) is still starting after {wait_timeout}s and is billing{backend}."
-            f"{_termination_note(termination_time, termination_scheduled, pod_name)} "
+            f"{_termination_note(termination_time, termination_scheduled, pod_name)}{budget_not_scheduled} "
             f"Wait with 'lium ps', or remove it with 'lium rm {pod_name}'.",
             EXIT_GENERAL_ERROR,
         )

@@ -6,7 +6,8 @@ reboot state) and nothing while it is PENDING; the API reports the price and
 is price × wall time since creation for a pod that is billing — an estimate
 that counts the start-up minutes and ignores restarts and price changes — and
 $0 for a PENDING pod, which has not started billing. `lium up --budget` and
-`lium rm` count from the same `created_at`, so the three figures agree.
+`lium rm` count from the same `created_at` and `rm` applies the same PENDING
+rule; `ps`'s Spent column is main's price × age for every status (unchanged here).
 """
 
 from dataclasses import asdict, dataclass
