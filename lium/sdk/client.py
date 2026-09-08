@@ -395,6 +395,8 @@ def _int_or_none(row: Dict[str, Any], key: str) -> Optional[int]:
 def _pod_gpu_count(row: Dict[str, Any]) -> Optional[int]:
     """The pod's own billed GPU count from a ``/pods`` row (a string in the payload), or None."""
     return _int_or_none(row, "gpu_count")
+
+
 def _error_context(response: requests.Response) -> dict:
     """code/hint/request_id from the API's error envelope (``error: {...}``) and the
     ``X-Request-Id`` header, for the exception's attributes. Empty when absent (older servers)."""
