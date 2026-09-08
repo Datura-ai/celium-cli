@@ -114,14 +114,17 @@ def _home_prefixes() -> List[str]:
     except (RuntimeError, KeyError):
         return []
     if len(home.rstrip("/\\")) < 2:
-        return []
-    return [home, home.replace("\\", "\\\\")] if "\\" in home else [home]
+        return []   # `/` would turn every absolute path into `~…`
+    if "\\" in home:
+        return [home, home.replace("\\", "\\\\"), home.replace("\\", "/")]
+    return [home]
 
 
 def scrub_text(text: str) -> str:
     for home in _home_prefixes():
-        # the prefix as a path: `/root/.lium` and `/root` go, `/rootfs` stays
-        text = re.sub(re.escape(home) + r"(?![A-Za-z0-9_-])", "~", text)
+        # the prefix as a path: `/root/.lium` and `/root` go, `/rootfs` stays; a drive path is case-insensitive
+        flags = re.IGNORECASE if re.match(r"[A-Za-z]:", home) else 0
+        text = re.sub(re.escape(home) + r"(?![A-Za-z0-9_-])", "~", text, flags=flags)
     for pattern, placeholder in _SCRUB:
         text = pattern.sub(placeholder, text)
     return text

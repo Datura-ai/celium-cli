@@ -4,6 +4,8 @@ Off by default, on only by the user's hand, and when on it sends the crash and t
 command name — not the arguments, not the machine, not the account.
 """
 
+from pathlib import PurePosixPath, PureWindowsPath
+
 import click
 import pytest
 import sentry_sdk
@@ -224,16 +226,23 @@ def test_windows_home_directories_are_scrubbed_too():
 
 def test_the_running_users_home_is_scrubbed_whatever_it_is_called(monkeypatch):
     """A custom Unix home (`/srv/users/alice`) or `/root` is not under /Users or /home, so the spelling
-    patterns miss it; `Path.home()` itself is cut out as a path prefix (arhangel66 on #212)."""
-    monkeypatch.setenv("HOME", "/srv/users/alice")
+    patterns miss it; `Path.home()` itself is cut out as a path prefix (arhangel66 on #212). `Path.home`
+    is patched, not `HOME`: on Windows it reads `USERPROFILE`."""
+    monkeypatch.setattr(telemetry.Path, "home", lambda: PurePosixPath("/srv/users/alice"))
     text = "[Errno 13] Permission denied: '/srv/users/alice/.lium/config.ini' (home /srv/users/alice)"
     assert telemetry.scrub_text(text) == "[Errno 13] Permission denied: '~/.lium/config.ini' (home ~)"
 
-    monkeypatch.setenv("HOME", "/root")
+    monkeypatch.setattr(telemetry.Path, "home", lambda: PurePosixPath("/root"))
     assert telemetry.scrub_text("/root/.lium/config.ini, /rootfs/etc and /root") == "~/.lium/config.ini, /rootfs/etc and ~"
 
-    monkeypatch.setenv("HOME", "/")   # a one-character home would turn every path into ~…
-    assert telemetry.scrub_text("/etc/hosts") == "/etc/hosts"
+    # a one-character home is not a name; without the guard '/.lium/config.ini' would read '~.lium/config.ini'
+    monkeypatch.setattr(telemetry.Path, "home", lambda: PurePosixPath("/"))
+    assert telemetry.scrub_text("[Errno 13] Permission denied: '/.lium/config.ini'") == "[Errno 13] Permission denied: '/.lium/config.ini'"
+
+    # a Windows profile outside Users: any case, backslashes single or doubled by a repr, or forward slashes
+    monkeypatch.setattr(telemetry.Path, "home", lambda: PureWindowsPath(r"D:\Profiles\Renter Two"))
+    text = r"d:\profiles\renter two\x, D:/Profiles/Renter Two/.lium and 'D:\\Profiles\\Renter Two\\y'"
+    assert telemetry.scrub_text(text) == r"~\x, ~/.lium and '~\\y'"
 
 
 def test_a_windows_path_inside_a_real_oserror_message_is_scrubbed(events):
