@@ -328,3 +328,48 @@ def test_resolve_restore_id_searches_active_pods(monkeypatch):
 
     assert client.resolve_restore_id("9b6c8d90") == restore_id
     assert client.resolve_restore_id("9B6C8D90") == restore_id
+
+
+def test_ps_uses_the_pod_gpu_count_for_a_split_rental(monkeypatch):
+    """1 GPU rented of a 3×RTX 3090 node: the nested executor still says 3 GPUs; the pod says 1."""
+    payload = [{
+        "id": "d7b3e3b2-0f7c-4f7e-9c3c-0b3f1a2e9a01", "pod_name": "sx-ctl", "status": "RUNNING",
+        "gpu_count": "1", "gpu_name": "NVIDIA GeForce RTX 3090", "price": 0.18,
+        "ssh_connect_cmd": "ssh root@pod.invalid -p 2222", "ports_mapping": {"22": 2222},
+        "created_at": "2026-09-07T01:51:40", "updated_at": "2026-09-07T01:52:00", "template": {"name": "Pytorch"},
+        "executor": {
+            "id": "e0a7c1e2-6c2e-4d3d-9d8b-0f1a2b3c4d5e", "machine_name": "NVIDIA GeForce RTX 3090",
+            "gpu_count": 3, "price_per_gpu": None, "executor_ip_address": "pod.invalid",
+            "specs": {"gpu": {"count": 3, "details": [{"name": "NVIDIA GeForce RTX 3090", "capacity": 24576}] * 3}},
+            "location": {"country": "Germany", "country_code": "DE"},
+        },
+    }]
+    monkeypatch.setattr(Lium, "_request", lambda self, *a, **kw: SimpleNamespace(json=lambda: payload))
+
+    pod = Lium(Config(api_key="test")).ps()[0]
+
+    assert pod.executor.gpu_count == 1
+    assert pod.executor.price_per_hour == 0.18
+    assert pod.executor.price_per_gpu == 0.18
+
+
+def test_ps_keeps_the_executor_gpu_count_when_the_pod_value_is_malformed(monkeypatch, caplog):
+    """A non-numeric pod.gpu_count must not break `lium ps`: fall back to the executor's count, say so at DEBUG."""
+    payload = [{
+        "id": "d7b3e3b2-0f7c-4f7e-9c3c-0b3f1a2e9a02", "pod_name": "sx-bad", "status": "RUNNING",
+        "gpu_count": "three", "price": 0.54,
+        "executor": {
+            "id": "e0a7c1e2-6c2e-4d3d-9d8b-0f1a2b3c4d5f", "machine_name": "NVIDIA GeForce RTX 3090",
+            "gpu_count": 3, "price_per_gpu": None, "executor_ip_address": "pod.invalid",
+            "specs": {"gpu": {"count": 3, "details": [{"name": "NVIDIA GeForce RTX 3090", "capacity": 24576}] * 3}},
+            "location": {"country": "Germany", "country_code": "DE"},
+        },
+    }]
+    monkeypatch.setattr(Lium, "_request", lambda self, *a, **kw: SimpleNamespace(json=lambda: payload))
+
+    with caplog.at_level("DEBUG", logger="lium.sdk.client"):
+        pod = Lium(Config(api_key="test")).ps()[0]
+
+    assert pod.executor.gpu_count == 3
+    assert pod.executor.price_per_gpu == pytest.approx(0.18)
+    assert "ignoring malformed gpu_count 'three'" in caplog.text

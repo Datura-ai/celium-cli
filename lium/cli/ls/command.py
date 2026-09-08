@@ -9,35 +9,20 @@ from lium.cli import ui
 from lium.cli.utils import (
     CliFailure,
     EXIT_CONFIGURATION_ERROR,
-    calculate_pareto_frontier,
+    console,
     handle_errors,
     resolve_output_format,
     store_executor_selection,
 )
 from lium.cli.completion import get_gpu_completions
-from . import validation, display
+from . import validation, display, filters as node_filters
 from .actions import GetExecutorsAction
 
 
-def ls_store_executor(gpu_type: Optional[str] = None, sort_by: str = "download") -> List[ExecutorInfo]:
-    """Load and store nodes without displaying them."""
-    lium = Lium()
-    executors = lium.ls(gpu_type=gpu_type)
-
-    if not executors:
-        return []
-
-    pareto_flags = calculate_pareto_frontier(executors)
-    executors_with_pareto = list(zip(executors, pareto_flags))
-
-    executors_with_pareto = sorted(
-        executors_with_pareto,
-        key=lambda x: (not x[1], -x[0].download_speed)
-    )
-
-    sorted_executors = [e for e, _ in executors_with_pareto]
+def ls_store_executor(gpu_type: Optional[str] = None) -> List[ExecutorInfo]:
+    """Load and store nodes without displaying them, in the order `lium ls` prints them."""
+    sorted_executors, _ = display.sort_executors(Lium().ls(gpu_type=gpu_type))
     store_executor_selection(sorted_executors)
-
     return sorted_executors
 
 
@@ -45,6 +30,11 @@ def ls_store_executor(gpu_type: Optional[str] = None, sort_by: str = "download")
 @click.option("--gpu", "gpu_type", shell_complete=get_gpu_completions, help="Filter by GPU type, e.g. A100")
 @click.option("--count", "gpu_count", type=int, help="Exact GPU count to match (e.g., 1, 8)")
 @click.option("--min-cuda", "min_cuda_version", type=float, help="Minimum CUDA version, e.g. 12.4 (NVIDIA drivers are backward compatible)")
+@click.option("--country", "countries", multiple=True, metavar="CODE|NAME", help="Only nodes in these countries (ISO code or name; repeatable or comma-separated)")
+@click.option("--min-vram", "min_vram_gb", type=float, metavar="GB", help="Minimum memory per GPU in GB, e.g. 80")
+@click.option("--max-price", "max_price", type=float, metavar="USD", help="Maximum price per GPU-hour, e.g. 2.50")
+@click.option("--tier", type=click.Choice(["spot", "secure"]), help="Only spot (reclaimable) or secure nodes")
+@click.option("--min-cpus", "min_cpus", type=int, help="Minimum CPU thread count, e.g. 32 (the CPUs column)")
 @click.option("--lat", type=float, help="Latitude for distance filtering")
 @click.option("--lon", type=float, help="Longitude for distance filtering")
 @click.option("--max-distance", "max_distance", type=int, help="Maximum distance in miles from --lat/--lon")
@@ -53,7 +43,7 @@ def ls_store_executor(gpu_type: Optional[str] = None, sort_by: str = "download")
     "sort_by",
     type=click.Choice(display.SORT_KEYS + list(display.SORT_KEY_ALIASES)),
     default=None,
-    help="Sort result by the chosen field. An explicit --sort wins over the ★ optimal ordering.",
+    help="Sort result by the chosen field (default: cheapest $/GPU·h first).",
 )
 @click.option("--limit", type=int, default=None, help="Limit number of rows shown.")
 @click.option(
@@ -75,13 +65,36 @@ def ls_command(
     output_format: str,
     json_output: bool,
     min_cuda_version: Optional[float],
+    countries: tuple,
+    min_vram_gb: Optional[float],
+    max_price: Optional[float],
+    tier: Optional[str],
+    min_cpus: Optional[int],
 ):
-    """List available GPU nodes."""
+    """List available GPU nodes.
+
+    Rows are cheapest $/GPU·h first; nodes without a price come last. ★ marks
+    nodes no other node beats on download speed and price together (nodes under
+    100 Mbps are never ★). --sort picks another key.
+
+    \b
+    Examples:
+      lium ls --gpu H100 --count 8
+      lium ls --gpu H100 --country US,NL --max-price 2.50
+      lium ls --min-vram 80 --min-cuda 12.8 --tier secure
+      lium ls --gpu A100 --format json | jq '.[0].huid'
+    """
     output_format = resolve_output_format(output_format, json_output)
 
-    _, error = validation.validate(limit, lat, lon, max_distance, min_cuda_version)
+    _, error = validation.validate(limit, lat, lon, max_distance, min_cuda_version, min_vram_gb, max_price, min_cpus)
     if error:
         raise CliFailure("invalid_arguments", error, EXIT_CONFIGURATION_ERROR)
+    filters = node_filters.NodeFilters(
+        countries=node_filters.parse_countries(countries),
+        min_vram_gb=min_vram_gb,
+        max_price_per_gpu_hour=max_price,
+        tier=tier,
+    )
 
     # Load data
     lium = Lium()
@@ -93,6 +106,7 @@ def ls_command(
         "lon": lon,
         "max_distance": max_distance,
         "min_cuda_version": min_cuda_version,
+        "min_cpus": min_cpus,
     }
 
     action = GetExecutorsAction()
@@ -101,12 +115,16 @@ def ls_command(
     else:
         result = ui.load("Loading nodes", lambda: action.execute(ctx))
 
-    executors = result.data["executors"]
+    executors = node_filters.apply(result.data["executors"], filters)
 
     # Check if empty
     if not executors:
         if output_format == "json":
             click.echo("[]")
+            return
+        if filters.active and result.data["executors"]:
+            ui.error(f"No nodes match {node_filters.describe(filters)}")
+            ui.info(f"Tip: loosen a filter, or {ui.styled('lium ls --gpu ' + gpu_type if gpu_type else 'lium ls', 'success')} to see everything")
             return
         if gpu_type:
             known = lium.unknown_gpu_type(gpu_type)
@@ -140,11 +158,15 @@ def ls_command(
         executors,
         sort_by=sort_by,
         limit=limit,
+        width=console.width,
     )
 
     # Display
     ui.info(header)
     ui.print(table)
+    _, hidden = display.fit_columns(console.width)
+    if hidden:
+        ui.dim(display.format_hidden_columns(hidden))
     ui.print("")
     ui.info(tip)
 

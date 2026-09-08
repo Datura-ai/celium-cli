@@ -4,6 +4,7 @@ import base64
 import getpass
 import hashlib
 import ipaddress
+import logging
 import os
 import re
 import shlex
@@ -66,6 +67,7 @@ load_dotenv()
 ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")  # checked with fullmatch: `$` would let a trailing newline through
 # HTTP methods that are safe to repeat after a lost response; see ``Lium._request``.
 IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+logger = logging.getLogger(__name__)
 
 # Public API key for the pay API (pay-tao-api-v2). Single source of truth so the
 # literal is not re-typed across every pay-API call site.
@@ -1327,6 +1329,7 @@ class Lium:
         lon: Optional[float] = None,
         max_distance_miles: Optional[int] = None,
         min_cuda_version: Optional[float] = None,
+        min_cpus: Optional[int] = None,
     ) -> List[ExecutorInfo]:
         """List available nodes.
 
@@ -1339,6 +1342,8 @@ class Lium:
             min_cuda_version: Optional minimum CUDA version to require (e.g. ``12.4``). Nodes whose
                 ``max_cuda_version`` is ``None`` or below this threshold are excluded. NVIDIA drivers are
                 backward compatible, so a node with a higher driver CUDA version satisfies the requirement.
+            min_cpus: Optional minimum CPU thread count (``specs.cpu.count``). Nodes that report fewer
+                CPUs, or none, are excluded.
 
         Returns:
             A list of :class:`ExecutorInfo` objects that satisfy the filters.
@@ -1373,6 +1378,9 @@ class Lium:
                 if e.max_cuda_version is not None and e.max_cuda_version >= min_cuda_version
             ]
 
+        if min_cpus is not None:
+            executors = [e for e in executors if e.cpu_count is not None and e.cpu_count >= min_cpus]
+
         return executors
 
     def ps(self) -> List[PodInfo]:
@@ -1389,10 +1397,22 @@ class Lium:
             # The /pods endpoint returns the authoritative total $/h as pod.price; the
             # nested executor.price_per_gpu is not populated in this payload. Anchor
             # executor.price_per_hour on pod.price and derive per-GPU from it.
+            # The nested executor also describes the WHOLE host: for a GPU-split rental
+            # (1 GPU of a 3×3090 node) pod.gpu_count is the renter's count, so use it.
             pod_price = d.get("price")
-            if executor is not None and pod_price is not None:
-                executor.price_per_hour = float(pod_price)
-                executor.price_per_gpu = float(pod_price) / max(1, executor.gpu_count)
+            if executor is not None:
+                try:
+                    executor.gpu_count = int(d.get("gpu_count") or executor.gpu_count)
+                except (TypeError, ValueError):
+                    # A malformed pod.gpu_count must not break `lium ps`: keep the
+                    # executor's own count (the pre-DAH-3073 behaviour) and move on.
+                    logger.debug(
+                        "pod %s: ignoring malformed gpu_count %r, keeping executor count %s",
+                        d.get("id"), d.get("gpu_count"), executor.gpu_count,
+                    )
+                if pod_price is not None:
+                    executor.price_per_hour = float(pod_price)
+                    executor.price_per_gpu = float(pod_price) / max(1, executor.gpu_count)
             pods.append(PodInfo(
                 id=d.get("id", ""),
                 name=d.get("pod_name", ""),
