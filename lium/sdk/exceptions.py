@@ -51,6 +51,10 @@ class PodStartError(LiumError):
         self.cause = cause
 
 
+class LiumHostKeyError(LiumError):
+    """A pod presented an SSH host key that differs from the pinned one."""
+
+
 __all__ = [
     "LiumError",
     "LiumAuthError",
@@ -59,4 +63,5 @@ __all__ = [
     "LiumNotFoundError",
     "LiumPermissionError",
     "PodStartError",
+    "LiumHostKeyError",
 ]
