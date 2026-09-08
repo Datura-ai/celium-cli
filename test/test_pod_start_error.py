@@ -203,6 +203,24 @@ def test_up_ready_timeout_is_forwarded_and_names_the_billing_pod(monkeypatch):
     assert "pod-1" in result.output and "lium rm train" in result.output
 
 
+def test_up_ready_timeout_with_until_says_termination_was_not_scheduled(monkeypatch):
+    # --until/--ttl are scheduled after the pod is ready; when the wait gives up first the
+    # caller must learn the pod has no end time, not assume it will stop on its own.
+    class _Wait:
+        def execute(self, ctx):
+            return ActionResult(ok=False, data={}, error="still starting")
+
+    result = _run_up(monkeypatch, _Wait, ["--ready-timeout", "90", "--ttl", "2h"])
+
+    assert result.exit_code == EXIT_GENERAL_ERROR, result.output
+    assert "Auto-termination (--ttl/--until) was NOT scheduled" in result.output
+
+    result = _run_up(monkeypatch, _Wait, ["--ready-timeout", "90"])
+
+    assert result.exit_code == EXIT_GENERAL_ERROR, result.output
+    assert "NOT scheduled" not in result.output
+
+
 def test_up_waits_without_limit_by_default(monkeypatch):
     seen = {}
 

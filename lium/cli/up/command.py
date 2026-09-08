@@ -371,10 +371,15 @@ def up_command(
 
     if not result.ok:
         # Still starting when --ready-timeout ran out: the pod keeps billing, so
-        # name it and hand the decision back to the caller.
+        # name it and hand the decision back to the caller. Auto-termination is
+        # scheduled only once the pod is ready (below), so say when it was not.
+        not_scheduled = (
+            " Auto-termination (--ttl/--until) was NOT scheduled; it is set once the pod is ready."
+            if termination_time else ""
+        )
         raise CliFailure(
             "pod_not_ready",
-            f"Pod {pod_name} (id: {pod_id}) is still starting after {ready_timeout}s and is billing. "
+            f"Pod {pod_name} (id: {pod_id}) is still starting after {ready_timeout}s and is billing.{not_scheduled} "
             f"Wait with 'lium ps', or remove it with 'lium rm {pod_name}'.",
             EXIT_GENERAL_ERROR,
         )

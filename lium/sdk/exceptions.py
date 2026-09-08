@@ -1,5 +1,11 @@
 """Exception hierarchy for the Lium SDK."""
 
+from typing import TYPE_CHECKING, List, Optional
+
+if TYPE_CHECKING:  # models imports nothing from here, but keep the import one-way at runtime
+    from .models import PodInfo
+
+
 class LiumError(Exception):
     """Base exception for Lium SDK."""
 
@@ -43,7 +49,15 @@ class PodStartError(LiumError):
         history: Every distinct status observed while waiting, in order.
     """
 
-    def __init__(self, message: str, *, pod_id: str, pod=None, status=None, history=None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        pod_id: str,
+        pod: Optional["PodInfo"] = None,
+        status: Optional[str] = None,
+        history: Optional[List[str]] = None,
+    ):
         super().__init__(message)
         self.pod_id = pod_id
         self.pod = pod
