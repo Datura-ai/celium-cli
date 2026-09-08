@@ -40,6 +40,30 @@ Binary assets are uploaded to GitHub Releases so the public installer can fetch
 Fresh installs keep ``~/.lium/bin/lium`` on ``PATH`` as a symlink to the managed
 versioned binary stored in ``~/.lium/versions/<version>/lium``.
 
+What the Linux bundle ships
+---------------------------
+
+PyInstaller copies the build image's ``libssl.so.1.1``, ``libcrypto.so.1.1`` and
+``libpython3.12.so.1.0`` into ``dist/lium/_internal``. After every Linux build,
+``ci.yml`` and ``release.yml`` run ``scripts/linux_bundle_report.py``, which writes
+to the run's step summary the Debian ``libssl1.1`` package version,
+``ssl.OPENSSL_VERSION``, the Python version and the bundled ``requests``,
+``paramiko`` and ``cryptography`` versions. They are read inside the build image;
+the OpenSSL and Python values are tied to the bundle by the sha256 of those three
+libraries, the wheel versions are the build venv's. The step fails when
+``libssl1.1`` is below ``1.1.1w-0+deb11u8`` (the version ``Dockerfile.build`` pins)
+or a bundled library is not the image's file; ``release-assets`` needs the build
+job, so such a bundle cannot be published. ``ssl.OPENSSL_VERSION`` alone cannot
+tell ``deb11u3`` from ``deb11u8`` (both print ``OpenSSL 1.1.1w  11 Sep 2023``),
+which is why the check reads the Debian package version.
+
+Locally, after ``docker build -f Dockerfile.build -t lium-build:local .`` and
+copying ``/app/dist/lium`` out of the image to ``dist/lium``:
+
+.. code-block:: bash
+
+   python3 scripts/linux_bundle_report.py --bundle dist/lium --image lium-build:local
+
 Binary runtime notes
 --------------------
 

@@ -74,7 +74,7 @@ jobs:
         if [[ "$EVENT" != "pull_request" ]]; then full; exit 0; fi
         files="$(gh api --paginate "repos/${{ github.repository }}/pulls/$PR/files" -q '.[].filename')"
         printf '%s\n' "$files"
-        if printf '%s\n' "$files" | grep -Eq '^(pyproject\.toml|uv\.lock|lium\.spec|lium_entry\.py|Dockerfile\.build|scripts/install\.sh|\.github/workflows/(ci|release)\.yml)$'; then
+        if printf '%s\n' "$files" | grep -Eq '^(pyproject\.toml|uv\.lock|lium\.spec|lium_entry\.py|Dockerfile\.build|scripts/install\.sh|scripts/linux_bundle_report\.py|\.github/workflows/(ci|release)\.yml)$'; then
           full
         else
           amd_only
@@ -162,6 +162,12 @@ jobs:
       run: |
         ./dist/lium/lium --version
         ./dist/lium/lium --help >/dev/null
+
+    # what the bundle ships (OpenSSL package + runtime string, Python, requests/paramiko/cryptography) goes to the
+    # step summary; the step fails when libssl1.1 is below 1.1.1w-0+deb11u8 or a bundled library is not the image's
+    # file. 0.0.34 shipped deb11u3 after #150 and nobody saw it until after the release (#223).
+    - name: Report what the bundle ships, fail below the OpenSSL floor
+      run: python3 scripts/linux_bundle_report.py --bundle dist/lium --image lium-build:${GITHUB_SHA}-${{ matrix.asset_name }} --name ${{ matrix.asset_name }}
 
     - name: Upload Linux artifact
       uses: actions/upload-artifact@v4
