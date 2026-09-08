@@ -169,7 +169,9 @@ def test_report_sends_the_crash_and_the_command_but_not_the_values(events):
 
 def test_windows_home_directories_are_scrubbed_too():
     text = r"C:\Users\renter\AppData\Local\lium\config.ini and c:\users\Renter Two\x"
-    assert telemetry.scrub_text(text) == r"~\AppData\Local\lium\config.ini and ~ Two\x"
+    assert telemetry.scrub_text(text) == r"~\AppData\Local\lium\config.ini and ~\x"   # the whole "Renter Two" goes
+    assert telemetry.scrub_text("C:\\Users\\Renter Two\nnext line") == "~\nnext line"   # home dir last on its line
+    assert telemetry.scrub_text(r"'C:\Users\Renter Two' is not writable") == "'~' is not writable"
 
 
 def test_windows_frame_paths_are_scrubbed(events):

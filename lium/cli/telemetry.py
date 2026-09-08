@@ -35,10 +35,12 @@ DEFAULT_API_HOST = "lium.io"
 
 _TRUE = {"1", "true", "yes", "on"}
 
-# home directories (a username is PII — macOS, Linux and Windows spellings) and the usual credential shapes
+# home directories (a username is PII — macOS, Linux and Windows spellings) and the usual credential shapes.
+# A Windows username may contain spaces ("Renter Two"), so that segment runs to the next backslash, quote or
+# line end — never to the next space, which would leave the second half of the name in the event.
 _SCRUB = (
     (re.compile(r"(?:/Users|/home)/[^/\s'\"]+"), "~"),
-    (re.compile(r"(?i)[A-Z]:\\Users\\[^\\\s'\"]+"), "~"),
+    (re.compile(r"(?i)[A-Z]:\\Users\\[^\\'\"\n]+"), "~"),
     (re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b"), "[email]"),
     (re.compile(r"\bsk_[A-Za-z0-9_-]{16,}"), "[api-key]"),
     (re.compile(r"\b(?:ssh-(?:rsa|dss|ed25519)|ecdsa-sha2-nistp\d{3})\s+[A-Za-z0-9+/=]+(?:\s+\S+)?"), "[ssh-key]"),
