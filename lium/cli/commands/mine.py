@@ -297,16 +297,19 @@ def _host_ports_from_answers(answers: dict) -> dict[str, int]:
 
 
 def _compose_project_running(executor_dir: Path) -> bool:
-    """Whether this executor's own compose project has containers in the ``running`` state.
+    """Whether this executor's own ``executor`` service is in the ``running`` state.
 
     On a re-run (`lium mine` on a host whose executor is up: the update path) the ports are
     held by the project's own ``docker-proxy``; ``docker compose up -d`` is then a no-op, so
-    the pre-check must not fail on our own listener. Only ``running`` counts: a container in
-    a restart loop (``restarting`` — the "address already in use" case this check exists for)
-    holds nothing, so the ports are checked as on a first run.
+    the pre-check must not fail on our own listener. The question is asked of the ``executor``
+    service alone (``docker-compose.app.yml``, the file the health wait reads too): the project's
+    ``watchtower`` sidecar is always running, and a crash-looping executor (``restarting`` on
+    "address already in use" — the case this check exists for) is not ``running`` at the moment
+    of the query, so the ports are then checked as on a first run.
     """
     try:
-        out, _ = _run("docker compose ps -q --status running", check=False, cwd=str(executor_dir))
+        out, _ = _run("docker compose -f docker-compose.app.yml ps -q --status running executor",
+                      check=False, cwd=str(executor_dir))
     except OSError:   # no such directory yet (first run): nothing of ours is running
         return False
     return bool(out.strip())
@@ -319,8 +322,8 @@ def _check_ports_free(ports: dict[str, int], executor_dir: Optional[Path] = None
     ``{"service port": 8080, "SSH port": 2200}``. Without this check the
     executor container enters a restart loop and the caller only sees the
     health check time out three minutes later. Skipped when the executor's
-    own compose project is already running (``executor_dir`` given): those
-    listeners are ours and ``compose up`` keeps them.
+    own ``executor`` service is already running (``executor_dir`` given):
+    those listeners are ours and ``compose up`` keeps them.
     """
     if executor_dir is not None and _compose_project_running(executor_dir):
         return
@@ -581,9 +584,9 @@ def mine_command(ctx, hotkey, dir_, branch, auto, verbose):
 
     Before `docker compose up`, the service and SSH ports are checked on this host: a port
     another process holds fails fast, naming that process, instead of a three-minute health
-    timeout. On a host whose executor is already running the check is skipped (the ports are
-    ours). The preflight image is pulled while the node starts; its checks are shown as they
-    run. Exit 1 on any failed step, with the step and the reason.
+    timeout. On a host whose executor service is already running the check is skipped (the
+    ports are ours). The preflight image is pulled while the node starts; its checks are shown
+    as they run. Exit 1 on any failed step, with the step and the reason.
     """
     if verbose:
         _show_setup_summary()   # keep the banner only when asked

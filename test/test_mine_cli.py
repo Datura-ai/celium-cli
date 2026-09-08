@@ -55,8 +55,9 @@ def test_check_ports_free_is_skipped_when_the_executor_already_runs(monkeypatch,
     monkeypatch.setattr(mine, "_run", run)
 
     mine._check_ports_free({"service port": 8080, "SSH port": 2200}, tmp_path)   # no exception
-    # only containers in the running state count: a crash-looping one holds no port
-    assert compose_calls == ["docker compose ps -q --status running"]
+    # the executor service alone, in the running state: watchtower is always up, and a
+    # crash-looping executor holds no port
+    assert compose_calls == ["docker compose -f docker-compose.app.yml ps -q --status running executor"]
 
     monkeypatch.setattr(mine, "_run", lambda cmd, check=True, capture=True, cwd=None: ("", ""))
     with pytest.raises(Exception, match="Port 8080 .* already in use"):

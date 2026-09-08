@@ -285,9 +285,10 @@ def test_mine_does_not_route_gpu_splitting_as_subcommand(monkeypatch):
     monkeypatch.setattr(legacy_mine, "_check_prereqs", lambda *args, **kwargs: None)
     monkeypatch.setattr(legacy_mine, "_setup_executor_env", lambda *args, **kwargs: None)
     monkeypatch.setattr(legacy_mine, "_apply_env_overrides", lambda *args, **kwargs: None)
+    monkeypatch.setattr(legacy_mine, "_check_ports_free", lambda *args, **kwargs: None)   # no real 8080/2200 bind here
     monkeypatch.setattr(legacy_mine, "_start_executor", lambda *args, **kwargs: None)
     monkeypatch.setattr(legacy_mine, "_get_gpu_info", lambda: {"gpu_count": 1, "gpu_type": "H100"})
-    monkeypatch.setattr(legacy_mine, "_get_public_ip", lambda: "1.2.3.4")
+    monkeypatch.setattr(legacy_mine, "_get_public_ip", lambda: "203.0.113.4")
     forwarded = {}
 
     def fake_validate(extra_args=None, on_check=None):
