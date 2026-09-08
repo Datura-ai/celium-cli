@@ -501,10 +501,12 @@ class Lium:
         specs = executor_dict.get("specs") or {}
         gpu_info = specs.get("gpu") or {}
         gpu_details = gpu_info.get("details") or []
-        # Prefer the reported count; otherwise count the listed GPUs. Only assume a single
-        # GPU when the API gives us nothing at all, so a missing count cannot silently
-        # turn an 8-GPU node into a "1×" line with a 1-GPU price.
-        gpu_count = gpu_info.get("count") or len(gpu_details) or 1
+        # The top-level gpu_count is the Executor.gpu_count column the rent path
+        # multiplies price_per_gpu by, so it comes first; then the count in the
+        # scraped specs, then the listed GPUs. Only assume a single GPU when the
+        # API gives us nothing at all, so a missing count cannot silently turn an
+        # 8-GPU node into a "1×" line with a 1-GPU price.
+        gpu_count = executor_dict.get("gpu_count") or gpu_info.get("count") or len(gpu_details) or 1
 
         # Extract GPU type from machine_name or specs
         machine_name = executor_dict.get("machine_name") or ""

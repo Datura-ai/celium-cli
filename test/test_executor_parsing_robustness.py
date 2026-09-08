@@ -35,6 +35,15 @@ def test_missing_machine_name_key_does_not_raise():
     assert info.gpu_type == "H100"
 
 
+def test_top_level_gpu_count_is_the_billed_one():
+    """The record's own gpu_count (the Executor column the rent path bills on) wins
+    over a stale count inside the scraped specs."""
+    rec = _record(gpu_count=8, specs={"gpu": {"count": 4, "details": [{"name": "NVIDIA H100 80GB HBM3"}] * 4}})
+    info = _client()._dict_to_executor_info(rec)
+    assert info.gpu_count == 8
+    assert info.price_per_hour == 16.0
+
+
 def test_missing_count_uses_number_of_listed_gpus_not_one():
     rec = _record(specs={"gpu": {"details": [{"name": "NVIDIA H200"}] * 4}})
     info = _client()._dict_to_executor_info(rec)
