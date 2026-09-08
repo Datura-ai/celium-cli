@@ -79,8 +79,8 @@ def ssh_command(target: str):
 
     \b
     TARGET: Pod identifier - can be:
-      - Pod name/ID (eager-wolf-aa)
-      - Index from 'lium ps' (1, 2, 3)
+      - Pod huid, name or ID (eager-wolf-aa) — the stable form for scripts
+      - Row number of your last 'lium ps' (1, 2) — refused if that row changed or the listing is >10 min old
 
     \b
     Examples:
