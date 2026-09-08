@@ -2,7 +2,7 @@
 
 import shutil
 import subprocess
-from typing import Tuple
+from typing import List, Tuple
 import click
 
 from lium.sdk import Lium, PodInfo
@@ -18,8 +18,8 @@ from .actions import SshAction
 _SSH_CONNECTION_FAILED = 255
 
 
-def get_ssh_method_and_pod(target: str) -> Tuple[str, PodInfo]:
-    """The ssh command line for a pod. Raises when SSH is not possible."""
+def get_ssh_method_and_pod(target: str) -> Tuple[List[str], PodInfo]:
+    """The ssh argument list for a pod. Raises when SSH is not possible."""
     if not shutil.which("ssh"):
         raise CliFailure(
             "ssh_client_missing",
@@ -43,23 +43,22 @@ def get_ssh_method_and_pod(target: str) -> Tuple[str, PodInfo]:
             EXIT_SSH_ERROR,
         )
 
+    # The pod's user, host and port become the argument list (no shell), with the
+    # pinned host-key options; a value of any other shape is refused here.
     try:
-        ssh_cmd = lium.ssh(pod)
-        ssh_cmd += " -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
-        return ssh_cmd, pod
-    except ValueError:
-        ssh_cmd = pod.ssh_cmd + " -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
-        return ssh_cmd, pod
+        return lium.ssh_argv(pod), pod
+    except ValueError as e:
+        raise CliFailure("ssh_unavailable", f"Pod '{pod.huid}': {e}", EXIT_SSH_ERROR)
 
 
-def ssh_session_connected(ssh_cmd: str) -> bool:
+def ssh_session_connected(ssh_argv: List[str]) -> bool:
     """Open the session; False when the connection never opened.
 
     A remote shell exiting non-zero is the user's business, not a failure of the
     lium command — only ssh's own connection failure is.
     """
     try:
-        result = subprocess.run(ssh_cmd, shell=True, check=False)
+        result = subprocess.run(ssh_argv, check=False)
 
         if result.returncode not in (0, _SSH_CONNECTION_FAILED):
             ui.dim(f"\nSSH session ended with exit code {result.returncode}")
@@ -114,6 +113,8 @@ def ssh_command(target: str):
 
     action = SshAction()
     result = action.execute(ctx)
+    if not result.ok:
+        raise CliFailure("ssh_unavailable", result.error, EXIT_SSH_ERROR)
 
     exit_code = result.data.get("exit_code")
     if exit_code == _SSH_CONNECTION_FAILED:

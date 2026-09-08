@@ -595,12 +595,12 @@ def up_command(
         })
     )
 
-    ssh_cmd = result.data["ssh_cmd"]
+    ssh_argv = result.data["ssh_argv"]
     pod = result.data["pod"]
 
     from lium.cli.ssh.command import ssh_session_connected
 
-    if not ssh_session_connected(ssh_cmd):
+    if not ssh_session_connected(ssh_argv):
         raise CliFailure(
             "ssh_connection_failed",
             f"Pod {pod.huid} is running but the SSH connection failed",
