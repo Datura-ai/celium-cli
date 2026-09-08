@@ -5,7 +5,6 @@ from decimal import Decimal, ROUND_DOWN
 from typing import Optional
 
 import click
-from rich.prompt import Prompt
 
 from lium.sdk import Lium, LiumError
 from lium.cli import ui
@@ -51,8 +50,8 @@ def _legacy_tao_fund(wallet: Optional[str], amount: Optional[str], yes: bool) ->
 
     if not wallet:
         default_wallet = config.get("funding.default_wallet", "default")
-        wallet_name = Prompt.ask(
-            "Bittensor wallet name", default=default_wallet
+        wallet_name = ui.prompt(
+            "Bittensor wallet name", default=default_wallet, hint="pass --wallet"
         ).strip()
     else:
         wallet_name = wallet
@@ -72,7 +71,7 @@ def _legacy_tao_fund(wallet: Optional[str], amount: Optional[str], yes: bool) ->
     lium = Lium()
 
     if not amount:
-        amount_str = Prompt.ask("Enter TAO amount to fund").strip()
+        amount_str = ui.prompt("Enter TAO amount to fund", hint="pass --amount").strip()
     else:
         amount_str = amount
 
@@ -176,14 +175,17 @@ def _alpha_fund(
     # Resolve the wallet (coldkey).
     if not wallet:
         default_wallet = config.get("funding.default_wallet", "default")
-        wallet = Prompt.ask("Bittensor wallet name", default=default_wallet).strip()
+        wallet = ui.prompt(
+            "Bittensor wallet name", default=default_wallet, hint="pass --wallet"
+        ).strip()
 
     # Resolve and validate the origin hotkey. Accept either an SS58 address or a
     # wallet hotkey NAME (resolved against --wallet), mirroring btcli's stake-move.
     # --wallet is already resolved above, which a name lookup requires.
     if not hotkey:
-        hotkey = Prompt.ask(
-            "Origin hotkey (SS58 or wallet hotkey name) the alpha is staked under"
+        hotkey = ui.prompt(
+            "Origin hotkey (SS58 or wallet hotkey name) the alpha is staked under",
+            hint="pass --hotkey",
         ).strip()
     hotkey, error = validation.resolve_hotkey(hotkey, wallet, bt)
     if error:
@@ -197,7 +199,7 @@ def _alpha_fund(
 
     # Resolve and validate the USD amount (fail fast, before any network call).
     if not amount:
-        amount = Prompt.ask("Enter USD amount to fund").strip()
+        amount = ui.prompt("Enter USD amount to fund", hint="pass --amount").strip()
     usd_amount, error = validation.validate_amount(amount)
     if error:
         raise LiumError(error)

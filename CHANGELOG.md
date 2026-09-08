@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `LIUM_NONINTERACTIVE=1` turns every prompt off, the same as running without a terminal on stdin.
+- `lium config reset` accepts `--yes/-y` alongside `--confirm`.
+
+### Changed
+- No command waits on a prompt it cannot show. Without a terminal on stdin (or with `LIUM_NONINTERACTIVE=1`), confirmations fail at once with `confirmation_required` (exit 2) and a hint naming the flag to pass (`--yes`); prompts for a value return their default or fail with `input_required`; `lium init` takes the `--no-browser` path; a missing API key names `LIUM_API_KEY` instead of opening a browser and polling.
+- `lium fund` reads its interactive answers through the same gate, so `-w`, `-a`, `-k` and `-y` are required when piped.
+
+### Fixed
+- `lium config set template.default_id` (interactive selection) called a method the SDK does not have.
+
 ## [0.4.3] - 2025-10-23
 
 ### Added

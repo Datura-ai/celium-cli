@@ -1,6 +1,5 @@
 """Remove (rm) command implementation."""
 
-import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional
@@ -8,6 +7,7 @@ import click
 
 from lium.sdk import Lium, PodInfo
 from lium.cli import ui
+from lium.cli.interactive import is_interactive
 from lium.cli.utils import (
     EXIT_CONFIGURATION_ERROR,
     EXIT_GENERAL_ERROR,
@@ -93,7 +93,7 @@ def human_approved_index_targets(matches: List[TargetMatch], yes: bool = False) 
     """
     for match in matches:
         ui.info(f"Pod {describe_index_match(match)}")
-    if yes or not sys.stdin.isatty():
+    if yes or not is_interactive():
         return True
     try:
         return ui.confirm(f"Remove {len(matches)} pod(s) selected by index?")
@@ -105,14 +105,15 @@ def human_approved_index_targets(matches: List[TargetMatch], yes: bool = False) 
 def human_approved_removing_every_pod(pods: List[PodInfo]) -> bool:
     """Ask before wiping the whole account — but only ask a human.
 
-    A piped caller has already said what it wants and cannot answer a prompt.
+    A piped caller (or one that set ``LIUM_NONINTERACTIVE``) has already said
+    what it wants and cannot answer a prompt.
     """
-    if not sys.stdin.isatty():
+    if not is_interactive():
         return True
     listed_huids = ", ".join(pod.huid for pod in pods)
     try:
         return ui.confirm(f"Remove all {len(pods)} pods ({listed_huids})?")
-    except EOFError:
+    except (EOFError, CliFailure):
         # The terminal went away mid-prompt. No answer is not a yes.
         ui.warning("\nNo answer — nothing removed")
         return False
