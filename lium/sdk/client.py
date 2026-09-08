@@ -816,7 +816,7 @@ class Lium:
 
         executor_info = self.get_executor(executor_id)
         if not executor_info:
-            raise ValueError(f"Node with ID '{executor_id}' not found")
+            raise ValueError(self.executor_not_found_message(executor_id))
 
         if template_id is None and dockerfile_content is None:
             selected_template = self.default_docker_template(executor_info.id)
@@ -1524,7 +1524,7 @@ class Lium:
         """
         executor = self.get_executor(executor_id)
         if not executor:
-            raise ValueError(f"No node found with id {executor_id}")
+            raise ValueError(self.executor_not_found_message(executor_id))
 
         default_images = self.get_default_images(executor.gpu_model, executor.driver_version)
 
@@ -1585,18 +1585,27 @@ class Lium:
 
 
     def get_executor(self, executor: str) -> Optional[ExecutorInfo]:
-        """Resolve a node by ID.
+        """Resolve a node by UUID or HUID against the same listing :meth:`ls` returns.
 
         Args:
-            executor: Node ID string.
+            executor: Node UUID, or the HUID ``lium ls`` prints for it (``cosmic-hawk-f2``).
 
         Returns:
-            Matching :class:`ExecutorInfo` or ``None`` if not found.
+            Matching :class:`ExecutorInfo` or ``None`` if no listed node has that id.
         """
         for e in self.ls():
-            if e.id == executor:
+            if executor in (e.id, e.huid):
                 return e
         return None
+
+    @staticmethod
+    def executor_not_found_message(executor: str) -> str:
+        """The one sentence every caller prints when a node id resolves to nothing."""
+        return (
+            f"Node '{executor}' is not in the current listing (looked up by UUID and HUID). "
+            "It may have been rented or gone offline since 'lium ls'; "
+            "run 'lium ls --format json' for the ids rentable now."
+        )
 
     def _resolve_machine_name(self, gpu_short: str) -> Optional[str]:
         """Resolve a short GPU name to all matching full machine names from API.
