@@ -348,11 +348,18 @@ def _validate_executor(extra_args=None):
         raise Exception(message)
 
 
-def _mine_status(args: list) -> int:
-    """Run `lium provider node status <args>`; `--json` may come after the node id here."""
+def _mine_status(args: list, hotkey: Optional[str] = None) -> int:
+    """Run `lium provider node status <args>`; `--json` may come after the node id here.
+
+    `-k/--hotkey` is an option of `lium mine` itself, so Click has already taken it out of
+    `args`; it is handed on as the provider group's `--hotkey` (the wallet hotkey name),
+    next to `--json`.
+    """
     from lium.cli.provider.command import provider_command
 
     group_args = ["--json"] if "--json" in args else []
+    if hotkey:
+        group_args += ["--hotkey", hotkey]
     sub_args = [a for a in args if a != "--json"]
     try:
         code = provider_command.main(
@@ -370,7 +377,7 @@ def _mine_status(args: list) -> int:
 # CLI
 # --------------------------
 @click.command("mine", context_settings=dict(ignore_unknown_options=True, allow_extra_args=True))
-@click.option("--hotkey", "-k", help="Miner hotkey SS58 address")
+@click.option("--hotkey", "-k", help="Miner hotkey SS58 address (for `mine status`: the wallet hotkey name, as `lium provider --hotkey`)")
 @click.option("--dir", "-d", "dir_", default="compute-subnet", help="Target directory")
 @click.option("--branch", "-b", default="main")
 @click.option("--auto", "-a", is_flag=True)
@@ -382,7 +389,7 @@ def mine_command(ctx, hotkey, dir_, branch, auto, verbose):
         # `lium mine` is the provider's first command; `lium mine status <node>` is where they look
         # next, so it is the same command as `lium provider node status` (auth from
         # LIUM_PROVIDER_HOTKEY / ~/.lium/config.ini). Extra args are otherwise the validator's.
-        raise SystemExit(_mine_status(ctx.args[1:]))
+        raise SystemExit(_mine_status(ctx.args[1:], hotkey=hotkey))
 
     if verbose:
         _show_setup_summary()   # keep the banner only when asked

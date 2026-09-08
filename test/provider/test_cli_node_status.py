@@ -192,3 +192,41 @@ def test_mine_status_json_after_the_node_id(patched_client, monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert json.loads(result.output.strip())["data"]["phase"] == "idle"
+
+
+def _recording_builder(monkeypatch, seen: dict):
+    """Wrap the patched build_client so the test sees the hotkey the provider group resolved."""
+    import lium.cli.provider.node as node_mod
+
+    inner = node_mod.build_client
+
+    def _record(ctx):
+        seen["hotkey"] = ctx.obj["provider_opts"]["hotkey"]
+        return inner(ctx)
+
+    monkeypatch.setattr("lium.cli.provider.node.build_client", _record)
+
+
+@pytest.mark.parametrize("flag", ["-k", "--hotkey"])
+def test_mine_status_forwards_the_hotkey_flag(patched_client, monkeypatch, flag):
+    """`lium mine` parses -k/--hotkey itself; `mine status` must hand it to the provider group,
+    otherwise the call fails on the missing hotkey (no env, no config in the isolated HOME)."""
+    portal = patched_client(IDLE_FAILED)
+    seen: dict = {}
+    _recording_builder(monkeypatch, seen)
+
+    result = CliRunner().invoke(cli, ["mine", "status", "e-1", flag, "stg1"])
+
+    assert result.exit_code == 0, result.output
+    assert seen == {"hotkey": "stg1"}
+    assert portal.gets == ["/executors/e-1/verification"]
+
+
+def test_mine_status_without_a_hotkey_still_fails(patched_client):
+    """Control for the test above: the same call minus the flag is refused, so the forward is what makes it pass."""
+    patched_client(IDLE_FAILED)
+
+    result = CliRunner().invoke(cli, ["mine", "status", "e-1"])
+
+    assert result.exit_code != 0
+    assert "hotkey" in result.output.lower()
