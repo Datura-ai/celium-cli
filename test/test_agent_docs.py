@@ -130,6 +130,22 @@ def test_guide_covers_the_lifecycle_and_the_gotchas():
         assert needle in text, needle
 
 
+def test_the_json_flag_command_list_matches_the_cli():
+    """§2 names the commands that take `--json` in prose, not as `lium …` lines, so the invocation test above
+    cannot see it (the list once said `rm` and `up`, neither of which has the flag)."""
+    text = AGENTS_DOC.read_text()
+    m = re.search(r"command that takes `--json` \(([^)]*)\)", text)
+    assert m, "docs/agents.md §2 no longer says which commands take --json"
+    named = re.findall(r"`([^`]+)`", m.group(1))
+    assert named, m.group(0)
+    for name in named:
+        resolved = _resolve(name.split())
+        assert resolved and len(resolved[1]) == len(name.split()), f"`lium {name}` is not a command"
+        assert "--json" in {opt for param in resolved[0].params for opt in param.opts}, f"`lium {name}` has no --json"
+    for absent in ("rm", "up", "ps", "ls"):
+        assert absent not in named, f"`lium {absent}` has no --json (ls/ps use --format json)"
+
+
 def test_guide_does_not_promise_unmerged_features():
     """The page describes this CLI; branch names and features that live elsewhere do not belong on it."""
     text = AGENTS_DOC.read_text()
