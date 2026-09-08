@@ -330,8 +330,8 @@ def test_resolve_restore_id_searches_active_pods(monkeypatch):
     assert client.resolve_restore_id("9B6C8D90") == restore_id
 
 
-def test_ps_uses_the_pod_gpu_count_for_a_split_rental(monkeypatch):
-    """1 GPU rented of a 3×RTX 3090 node: the nested executor still says 3 GPUs; the pod says 1."""
+def test_ps_prices_a_split_rental_per_pod_gpu_and_leaves_the_host_count_alone(monkeypatch):
+    """1 GPU rented of a 3×RTX 3090 node: PodInfo.gpu_count is 1, the executor keeps the host's 3, $/GPU is $/h over 1."""
     payload = [{
         "id": "d7b3e3b2-0f7c-4f7e-9c3c-0b3f1a2e9a01", "pod_name": "sx-ctl", "status": "RUNNING",
         "gpu_count": "1", "gpu_name": "NVIDIA GeForce RTX 3090", "price": 0.18,
@@ -348,13 +348,14 @@ def test_ps_uses_the_pod_gpu_count_for_a_split_rental(monkeypatch):
 
     pod = Lium(Config(api_key="test")).ps()[0]
 
-    assert pod.executor.gpu_count == 1
+    assert pod.gpu_count == 1
+    assert pod.executor.gpu_count == 3
     assert pod.executor.price_per_hour == 0.18
     assert pod.executor.price_per_gpu == 0.18
 
 
-def test_ps_keeps_the_executor_gpu_count_when_the_pod_value_is_malformed(monkeypatch, caplog):
-    """A non-numeric pod.gpu_count must not break `lium ps`: fall back to the executor's count, say so at DEBUG."""
+def test_ps_prices_per_host_gpu_when_the_pod_count_is_malformed(monkeypatch):
+    """A non-numeric pod.gpu_count must not break `lium ps`: PodInfo.gpu_count is None and $/GPU falls back to the host's count."""
     payload = [{
         "id": "d7b3e3b2-0f7c-4f7e-9c3c-0b3f1a2e9a02", "pod_name": "sx-bad", "status": "RUNNING",
         "gpu_count": "three", "price": 0.54,
@@ -367,9 +368,8 @@ def test_ps_keeps_the_executor_gpu_count_when_the_pod_value_is_malformed(monkeyp
     }]
     monkeypatch.setattr(Lium, "_request", lambda self, *a, **kw: SimpleNamespace(json=lambda: payload))
 
-    with caplog.at_level("DEBUG", logger="lium.sdk.client"):
-        pod = Lium(Config(api_key="test")).ps()[0]
+    pod = Lium(Config(api_key="test")).ps()[0]
 
+    assert pod.gpu_count is None
     assert pod.executor.gpu_count == 3
     assert pod.executor.price_per_gpu == pytest.approx(0.18)
-    assert "ignoring malformed gpu_count 'three'" in caplog.text
