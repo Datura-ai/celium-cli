@@ -137,11 +137,19 @@ def audit_command(pod: Optional[str], since: Optional[str], api_key_id: Optional
       lium audit                       # last 200 events, oldest first
       lium audit --since 24h           # what happened today
       lium audit --pod my-pod          # one pod's history, also after it was deleted (full id)
-      lium audit --key 3f2a...         # everything one API key did
+      lium audit --key 3f2a...         # everything one API key did (the full id; --json shows it as actor.api_key_id)
       lium audit --json | jq '.[] | select(.actor.api_key_name == "ci")'
     """
     if not json_output:
         ensure_config()
+
+    if api_key_id and not _UUID.match(api_key_id):
+        # the server declares api_key_id as a UUID; the 8 characters the By column prints would come back as a 422
+        raise CliFailure(
+            "invalid_key",
+            f"Invalid --key '{api_key_id}'. --key takes the API key's full id (lium audit --json shows it as actor.api_key_id).",
+            EXIT_CONFIGURATION_ERROR,
+        )
 
     lium = Lium()
     since_at = parse_since(since) if since else None

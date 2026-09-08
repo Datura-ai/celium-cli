@@ -149,6 +149,15 @@ def test_pod_option_rejects_an_unknown_name(monkeypatch):
     assert _FakeLium.calls == []
 
 
+def test_key_option_takes_the_full_id_not_the_eight_characters_the_table_prints(monkeypatch):
+    # the server declares api_key_id as a UUID; a prefix would come back as a 422 (exit 3) — refuse it locally
+    result = _run(monkeypatch, "--key", KEY_ID[:8], "--json")
+
+    assert result.exit_code == EXIT_CONFIGURATION_ERROR
+    assert "full id" in result.output and "actor.api_key_id" in result.output
+    assert _FakeLium.calls == []
+
+
 def test_auth_failure_points_at_an_old_backend(monkeypatch):
     result = _run(monkeypatch, error=LiumAuthError("Invalid API key"))
 
