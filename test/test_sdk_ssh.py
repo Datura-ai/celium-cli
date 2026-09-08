@@ -13,7 +13,7 @@ def _pod():
         name="backup-test",
         huid="swift-fox-c8",
         status="RUNNING",
-        ssh_cmd="ssh root@38.80.122.244 -p 20299",
+        ssh_cmd="ssh root@203.0.113.10 -p 20299",
         ports={},
         created_at="2026-05-14T00:00:00Z",
         updated_at="2026-05-14T00:00:00Z",
@@ -60,7 +60,7 @@ def test_ssh_connection_falls_back_to_agent_when_key_file_cannot_be_loaded(monke
 
     assert connect_calls == [
         {
-            "hostname": "38.80.122.244",
+            "hostname": "203.0.113.10",
             "port": 20299,
             "username": "root",
             "timeout": 30,
@@ -368,10 +368,10 @@ def test_ssh_session_reuses_one_connection_for_every_operation_inside(monkeypatc
     with client.ssh_session(pod) as held:
         with client.ssh_connection(pod) as a, client.ssh_connection(pod) as b:
             assert a is held and b is held
-        assert connects == ["38.80.122.244"] and closes == []
+        assert connects == ["203.0.113.10"] and closes == []
     assert closes == [True]                       # closed once, when the session ends
     assert client._ssh_sessions == {}
 
     with client.ssh_connection(pod):              # outside a session: a fresh connection again
         pass
-    assert connects == ["38.80.122.244", "38.80.122.244"] and closes == [True, True]
+    assert connects == ["203.0.113.10", "203.0.113.10"] and closes == [True, True]

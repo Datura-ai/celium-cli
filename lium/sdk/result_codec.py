@@ -16,10 +16,16 @@ with a hint rather than coming back as a different type):
 * ``None``, ``bool``, ``int``, ``float``, ``str``, ``bytes``;
 * ``list``, ``tuple``, ``set``, ``frozenset`` and ``dict`` of the above (any of them as keys), nested;
 * ``datetime.datetime`` (an aware value comes back with a fixed UTC offset), ``date``, ``time``,
-  ``timedelta``, ``decimal.Decimal``, ``pathlib.Path`` (any ``PurePath`` comes back as ``Path``),
-  ``uuid.UUID``;
+  ``timedelta``, ``decimal.Decimal``, ``pathlib.Path`` (``PosixPath`` or ``PurePosixPath`` on the pod;
+  comes back as ``Path``), ``uuid.UUID``;
 * ``numpy.ndarray`` of any dtype without Python objects — numeric, bool, string, datetime64/timedelta64,
-  structured; any shape including 0-d — and numpy scalars (``np.float64(1.5)`` comes back as ``np.float64``).
+  structured; any shape including 0-d — and numpy's own scalar types (``np.float64(1.5)`` comes back as
+  ``np.float64``; a subclass of one is refused).
+
+What the caller constructs from a file the pod wrote, and nothing else: the JSON scalars and containers,
+the tagged values above through their own parsers (``fromisoformat``, ``Decimal(str)``, ``Path(str)``,
+``UUID(str)``, ``b64decode``), and arrays through ``numpy.load(allow_pickle=False)``. No name in the file is
+resolved to a class or a callable.
 """
 
 import base64
@@ -41,6 +47,7 @@ SUPPORTED = (
     "decimal.Decimal, pathlib.Path, uuid.UUID, numpy.ndarray and numpy scalars"
 )
 _PLAIN = (type(None), bool, int, float, str)
+_PATHS = (pathlib.PurePosixPath, pathlib.PosixPath)   # the pod is Linux; a Windows path object has no meaning there
 
 
 class ResultEncodingError(TypeError):
@@ -61,7 +68,7 @@ def encode_exception_args(args: tuple) -> Optional[List[Any]]:
     scratch: Dict[str, Any] = {}
     try:
         encoded = [_encode(a, scratch, "the exception's args", f"[{i}]") for i, a in enumerate(args)]
-    except ResultEncodingError:
+    except Exception:  # noqa: BLE001 — a refused type, a self-referencing arg (RecursionError): the message still travels
         return None
     return None if scratch else encoded  # an array inside an exception is not worth a sidecar
 
@@ -77,9 +84,13 @@ def decode(value: Any, arrays: Dict[str, Any]) -> Any:
         return {k: decode(v, arrays) for k, v in value.items()}
     if tag in ("ndarray", "npscalar"):
         key = value.get("key")
-        if key not in arrays:
+        if not isinstance(key, str) or key not in arrays:
             raise ValueError(f"the result envelope names array {key!r}, which the .npz sidecar does not hold")
-        return arrays[key] if tag == "ndarray" else arrays[key][()]
+        if tag == "ndarray":
+            return arrays[key]
+        if arrays[key].ndim != 0:
+            raise ValueError(f"the result envelope tags array {key!r} as a scalar but it has shape {arrays[key].shape}")
+        return arrays[key][()]
     if tag == "bytes":
         return base64.b64decode(value["b64"])
     if tag in ("tuple", "set", "frozenset"):
@@ -114,7 +125,11 @@ def load_arrays(path: str) -> Dict[str, Any]:
     if _np is None:
         raise ImportError("the result holds numpy arrays; install numpy here to receive it")
     with _np.load(path, allow_pickle=False) as npz:
-        return {name: npz[name] for name in npz.files}
+        arrays = {name: npz[name] for name in npz.files}
+    for name, arr in arrays.items():
+        if not isinstance(arr, _np.ndarray):  # a zip member without the NPY header comes back as bytes
+            raise ValueError(f"the .npz member {name!r} is not an array")
+    return arrays
 
 
 def dumps(payload: Dict[str, Any]) -> str:
@@ -122,13 +137,27 @@ def dumps(payload: Dict[str, Any]) -> str:
 
 
 def loads(raw: bytes) -> Dict[str, Any]:
-    """The envelope, or ``ValueError`` for anything that is not one (a pickle, a truncated file)."""
+    """The envelope, or ``ValueError`` for anything that is not one (a pickle, a truncated file, a wrong shape)."""
     try:
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as exc:
         raise ValueError(f"the result file is not a JSON envelope: {exc}") from exc
-    if not isinstance(payload, dict) or "ok" not in payload:
-        raise ValueError("the result file is not a JSON envelope: no 'ok' field")
+    if not isinstance(payload, dict) or not isinstance(payload.get("ok"), bool):
+        raise ValueError("the result file is not a JSON envelope: no boolean 'ok' field")
+    if not isinstance(payload.get("npz", False), bool):
+        raise ValueError("the result file is not a JSON envelope: 'npz' is not a boolean")
+    if payload["ok"]:
+        if "result" not in payload:
+            raise ValueError("the result file is not a JSON envelope: 'ok' without a 'result'")
+        return payload
+    for field in ("type", "message"):
+        if not isinstance(payload.get(field), str):
+            raise ValueError(f"the result file is not a JSON envelope: the exception's {field!r} is not a string")
+    for field in ("module", "traceback"):
+        if not isinstance(payload.get(field, ""), str):
+            raise ValueError(f"the result file is not a JSON envelope: the exception's {field!r} is not a string")
+    if payload.get("args") is not None and not isinstance(payload["args"], list):
+        raise ValueError("the result file is not a JSON envelope: the exception's 'args' is not a list")
     return payload
 
 
@@ -137,6 +166,8 @@ def _encode(obj: Any, arrays: Dict[str, Any], what: str, path: str) -> Any:
         if type(obj) is _np.ndarray:
             return _array(obj, arrays, what, path, "ndarray")
         if isinstance(obj, _np.generic):
+            if type(obj).__module__ != "numpy":  # a subclass of a numpy scalar type would come back as its base
+                _refuse(obj, what, path, "return x.item() or the numpy type itself (numpy.float64(x))")
             return _array(_np.asarray(obj), arrays, what, path, "npscalar")
         if isinstance(obj, _np.ndarray):  # matrix, MaskedArray, recarray, memmap: the subclass would be lost
             _refuse(obj, what, path, "return arr.view(numpy.ndarray) (a masked array: arr.filled())")
@@ -164,7 +195,7 @@ def _encode(obj: Any, arrays: Dict[str, Any], what: str, path: str) -> Any:
         return {TAG: "timedelta", "days": obj.days, "seconds": obj.seconds, "microseconds": obj.microseconds}
     if t is decimal.Decimal:
         return {TAG: "Decimal", "value": str(obj)}
-    if isinstance(obj, pathlib.PurePath):
+    if t in _PATHS:
         return {TAG: "Path", "value": str(obj)}
     if t is uuid.UUID:
         return {TAG: "UUID", "value": str(obj)}

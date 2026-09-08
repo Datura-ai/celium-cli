@@ -57,8 +57,9 @@ of those, ``datetime``/``date``/``time``/``timedelta``, ``Decimal``, ``pathlib.P
 ``numpy.ndarray`` (any dtype without Python objects) and numpy scalars; anything else is a
 ``lium.ResultEncodingError`` on the pod naming the type (return ``.tolist()``, ``dict(x)``,
 ``x.value`` instead). Only the function's own ``def`` is sent, so import inside it. A remote exception is re-raised with
-its type, with ``lium.RemoteExecutionError`` (remote traceback, exit code, output) as its
-cause. Progress lines go to stderr (``quiet=True`` to silence them).
+its type when that type is a builtin (``except ValueError`` works; other types arrive as
+``lium.RemoteExecutionError`` with the name), with ``lium.RemoteExecutionError`` (remote traceback, exit code,
+output) as its cause. Progress lines go to stderr (``quiet=True`` to silence them).
 
 Direct SDK usage follows the same pattern:
 

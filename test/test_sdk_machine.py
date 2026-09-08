@@ -21,7 +21,7 @@ def _executor(gpu_type, count, price, huid="node", machine_name=None, country="U
         gpu_type=gpu_type, gpu_count=count,
         price_per_hour=price, price_per_gpu=price / count,
         location={"country": country}, specs={}, status="online",
-        docker_in_docker=False, ip="1.2.3.4",
+        docker_in_docker=False, ip="203.0.113.4",
     )
 
 
@@ -318,9 +318,9 @@ def test_arguments_are_pickled_and_the_result_comes_back_through_the_json_envelo
     assert out == (args, {"k": 3.5})
     assert type(out) is tuple and type(out[0][1]) is set and type(out[0][2]) is bytes and isinstance(out[0][3], Path)
     runner = next(iter(fake.uploaded.values()))
-    assert "pickle.loads(base64.b64decode(" in runner            # arguments: the caller's own bytes
-    assert "def encode(" in runner and "save_arrays(" in runner   # the result: the codec, shipped verbatim
-    assert "pickle.dumps" not in runner.split("pickle.loads")[1]  # nothing the pod writes is a pickle
+    assert "_lium_pickle.loads(_lium_base64.b64decode(" in runner          # arguments: the caller's own bytes
+    assert "def encode(" in runner and "_lium_codec.save_arrays(" in runner  # the result: the codec, shipped as text
+    assert "pickle.dumps" not in runner.split("pickle.loads")[1]            # nothing the pod writes is a pickle
 
 
 DOCUMENTED_VALUES = [
@@ -457,6 +457,93 @@ def test_a_result_file_holding_pickle_bytes_is_refused_by_the_loader(tmp_path):
     with open(str(path) + ".npz", "wb") as f:
         np.savez(f, a0=np.arange(2))
     with pytest.raises(ValueError, match="names array 'missing'"):
+        D._load_result(str(path))
+
+
+def test_a_function_named_like_the_runner_or_the_codec_still_runs(fake):
+    """The user's `def` shares the runner's module namespace: the codec lives in its own module object and
+    every runner name is prefixed, so `encode`, `args`, `sys` or `dumps` as function names do not break it."""
+    @D.machine(machine="A100", quiet=True)
+    def encode(x):
+        return [x]
+
+    @D.machine(machine="A100", quiet=True)
+    def args():
+        return "called"
+
+    @D.machine(machine="A100", quiet=True)
+    def sys():
+        import sys
+        return sys.platform[:0] + "ok"
+
+    assert encode(1) == [1] and args() == "called" and sys() == "ok"
+
+
+def test_a_malformed_envelope_is_refused_not_a_key_error(tmp_path):
+    path = tmp_path / "result.json"
+    for text, why in [
+        ('{"ok": false}', "'type' is not a string"),
+        ('{"ok": "yes", "result": 1}', "no boolean 'ok'"),
+        ('{"ok": true}', "'ok' without a 'result'"),
+        ('{"ok": false, "type": ["x"], "message": "m"}', "'type' is not a string"),
+        ('{"ok": false, "type": "ValueError", "message": "m", "args": 3}', "'args' is not a list"),
+        ('{"ok": true, "result": 1, "npz": "yes"}', "'npz' is not a boolean"),
+        ('[1, 2]', "no boolean 'ok'"),
+    ]:
+        path.write_text(text)
+        with pytest.raises(ValueError, match=why):
+            D._load_result(str(path))
+
+
+def test_a_self_referencing_exception_arg_still_arrives_typed(fake):
+    @D.machine(machine="A100", quiet=True)
+    def cyclic():
+        loop = []
+        loop.append(loop)
+        raise ValueError(loop)
+
+    with pytest.raises(ValueError) as info:
+        cyclic()
+    assert info.value.__cause__.exception_type == "ValueError" and "raise ValueError(loop)" in info.value.__cause__.remote_traceback
+
+
+def test_subclasses_of_admitted_types_are_refused_not_widened(fake):
+    """`type(x) is` exactly: a subclass of a numpy scalar type or a Windows path object would otherwise come back
+    as its base (np.float64 / PosixPath) — a silent type change the docs' "each as its own type" rules out."""
+    np = pytest.importorskip("numpy")
+    from lium.sdk import result_codec
+
+    class MyFloat(np.float64):
+        pass
+
+    with pytest.raises(result_codec.ResultEncodingError, match=r"MyFloat, which does not travel back from the pod; return x.item\(\)"):
+        result_codec.encode(MyFloat(1.5), {})
+    assert type(result_codec.decode(result_codec.encode(np.float64(1.5), arrays := {}), arrays)) is np.float64
+
+    @D.machine(machine="A100", quiet=True)
+    def windows_path():
+        import pathlib
+        return pathlib.PureWindowsPath("C:/x/y")
+
+    with pytest.raises(D.ResultEncodingError, match=r"pathlib.PureWindowsPath, which does not travel back"):
+        windows_path()
+
+
+def test_a_sidecar_member_that_is_not_an_array_is_refused(tmp_path):
+    np = pytest.importorskip("numpy")
+    import zipfile
+
+    path = tmp_path / "result.json"
+    path.write_text('{"ok": true, "npz": true, "result": {"__lium__": "ndarray", "key": "a0"}}')
+    with zipfile.ZipFile(str(path) + ".npz", "w") as z:
+        z.writestr("a0.npy", b"not an NPY file")          # np.load hands this back as bytes, not an ndarray
+    with pytest.raises(ValueError, match="member 'a0' is not an array"):
+        D._load_result(str(path))
+
+    path.write_text('{"ok": true, "npz": true, "result": {"__lium__": "npscalar", "key": "a0"}}')
+    with open(str(path) + ".npz", "wb") as f:
+        np.savez(f, a0=np.arange(3))                       # tagged as a scalar, shaped (3,)
+    with pytest.raises(ValueError, match=r"tags array 'a0' as a scalar but it has shape \(3,\)"):
         D._load_result(str(path))
 
 
