@@ -84,13 +84,17 @@ def events(monkeypatch):
 
 def _crash_with_secrets_in_scope(pod_name: str, api_key: str):
     home_path = "/Users/renter/.lium/config.ini"
-    raise RuntimeError(f"cannot read {home_path} for renter@example.com key {api_key}")
+    host = "@".join(["root", ".".join(["203", "0", "113", "7"])])
+    pod_id = "-".join(["0f1e2d3c", "4b5a", "6978", "8796", "a5b4c3d2e1f0"])
+    raise RuntimeError(
+        f"cannot read {home_path} for renter@example.com key {api_key}: pod {pod_name} ({pod_id}) on {host} is gone"
+    )
 
 
 def test_report_sends_the_crash_and_the_command_but_not_the_values(events):
     assert telemetry.init("lium up", "0.0.33") is True
     # built at runtime: the SDK attaches source context lines, so a literal here would show up legitimately
-    pod_name = "-".join(["my", "secret", "pod"])
+    pod_name = "-".join(["eager", "wolf", "a1"])  # the generated shape, lium.sdk.utils.generate_huid
     api_key = "sk_" + "".join(chr(ord("A") + i % 26) for i in range(43))
 
     @click.command("up")
@@ -111,7 +115,7 @@ def test_report_sends_the_crash_and_the_command_but_not_the_values(events):
     assert event["release"] == "lium-cli@0.0.33"
     exc = event["exception"]["values"][0]
     assert exc["type"] == "RuntimeError"
-    assert exc["value"] == "cannot read ~/.lium/config.ini for [email] key [api-key]"
+    assert exc["value"] == "cannot read ~/.lium/config.ini for [email] key [api-key]: pod [pod] ([id]) on [host] is gone"
     frames = exc["stacktrace"]["frames"]
     assert frames, "the stack is the point of the report"
     assert all("vars" not in frame for frame in frames)  # local variables held pod_name and the key
@@ -120,7 +124,22 @@ def test_report_sends_the_crash_and_the_command_but_not_the_values(events):
         assert absent not in event
     serialised = repr(event)
     assert pod_name not in serialised
+    assert "203.0.113.7" not in serialised
     assert api_key[3:] not in serialised
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("ssh root@203.0.113.7 -p 20299 refused", "ssh [host] -p 20299 refused"),
+        ("pod swift-fox-c8 not found", "pod [pod] not found"),
+        ("pod 0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0 not found", "pod [id] not found"),
+        ("mail renter@example.com bounced", "mail [email] bounced"),
+        ("pod my-training-box not found", "pod my-training-box not found"),  # a --name the user chose: not recognised
+    ],
+)
+def test_scrub_text_hosts_and_pod_identifiers(text, expected):
+    assert telemetry.scrub_text(text) == expected
 
 
 def test_expected_failures_are_not_crashes(events):

@@ -24,8 +24,8 @@ Authentication requires an API key stored in ``~/.lium/config.ini`` or exported 
 
 The CLI sends no telemetry unless you opt in with ``lium config set telemetry.enabled true``
 (or ``LIUM_TELEMETRY=1``); then an unexpected error is reported with the command name and the
-stack trace — never with arguments, values or anything identifying you. See the README's
-"Crash reporting" section.
+stack trace — never with arguments or values; home paths, e-mails, keys, hosts and pod ids are
+scrubbed from the message first. See the README's "Crash reporting" section.
 
 Example
 -------

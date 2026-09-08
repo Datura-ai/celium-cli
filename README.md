@@ -359,9 +359,12 @@ lium config set telemetry.enabled false   # off again
 
 When on, an *unexpected* error (a bug, shown as `Unexpected error: …`) is reported once with the
 exception, its stack trace, the command name (`lium up`), the CLI version, the Python version and
-the OS. API errors, usage errors, arguments, option values, local variables, pod names, hosts,
-paths under your home directory, e-mails and API keys are never sent. Reports go to Lium's Sentry
-project; `LIUM_SENTRY_DSN` points them somewhere else (a self-hosted GlitchTip, for example).
+the OS. API errors, usage errors, arguments, option values and local variables are never sent.
+Before the report leaves your machine, the message and file paths are scrubbed of home
+directories, e-mails, API keys, SSH keys, IP addresses, `user@host` targets, UUIDs and the
+generated `adjective-noun-xx` pod names; a pod name you chose with `--name` is not recognised
+and stays in the text if the error message quotes it. Reports go to Lium's Sentry project;
+`LIUM_SENTRY_DSN` points them somewhere else (a self-hosted GlitchTip, for example).
 
 ## Requirements
 

@@ -6,7 +6,10 @@ command (the ``Unexpected error:`` branch of ``handle_errors``, never an API or
 usage error) is sent to Sentry with: the exception type and message, its stack
 frames (file, line, function), the command name (``lium up``), the CLI version,
 the Python version and the OS. Never sent: arguments, option values, local
-variables, pod names, hosts, paths under the home directory, e-mails, API keys.
+variables. The message and frame paths are scrubbed of home directories,
+e-mails, API keys, SSH keys, IP addresses, ``user@host`` targets, UUIDs and the
+generated ``adjective-noun-xx`` pod names before they leave the machine; a pod
+name you chose yourself with ``--name`` is not recognised and stays in the text.
 
 Without a project DSN this module does nothing even when enabled — the CLI ships
 with ``DEFAULT_SENTRY_DSN`` blank until the Lium CLI Sentry project exists;
@@ -20,17 +23,24 @@ from typing import Any, Optional
 
 import click
 
+from lium.sdk.utils import ADJECTIVES, NOUNS
+
 # the Lium CLI project's public DSN; blank = no reporting even when the user opted in
 DEFAULT_SENTRY_DSN = ""
 
 _TRUE = {"1", "true", "yes", "on"}
 
-# home directories (a username is PII) and the usual credential shapes
+# home directories (a username is PII), the usual credential shapes, then hosts and pod identifiers.
+# Order matters: e-mails before user@host, so renter@example.com is [email] and root@203.0.113.7 is [host].
 _SCRUB = (
     (re.compile(r"(?:/Users|/home)/[^/\s'\"]+"), "~"),
     (re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b"), "[email]"),
     (re.compile(r"\bsk_[A-Za-z0-9_-]{16,}"), "[api-key]"),
     (re.compile(r"\b(?:ssh-(?:rsa|dss|ed25519)|ecdsa-sha2-nistp\d{3})\s+[A-Za-z0-9+/=]+(?:\s+\S+)?"), "[ssh-key]"),
+    (re.compile(r"\b[A-Za-z0-9._-]+@[A-Za-z0-9.-]+"), "[host]"),
+    (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "[host]"),
+    (re.compile(r"\b[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\b"), "[id]"),
+    (re.compile(r"\b(?:%s)-(?:%s)-[0-9a-f]{2}\b" % ("|".join(ADJECTIVES), "|".join(NOUNS))), "[pod]"),
 )
 
 _initialised = False
