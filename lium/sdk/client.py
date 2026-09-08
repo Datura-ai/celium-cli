@@ -22,7 +22,6 @@ from typing import Any, Callable, Dict, Generator, List, Optional, Union
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
-import paramiko
 import requests
 from dotenv import load_dotenv
 
@@ -336,6 +335,18 @@ def permission_error(
         required=usd(_REQUIRED_RE.search(detail)),
         available=usd(_AVAILABLE_RE.search(detail)),
     )
+
+
+def __getattr__(name: str):
+    # paramiko is a quarter of the CLI's import time (140 ms on a pod, seconds on a cold disk) and
+    # only ssh_connection() needs it, so it is imported there; `lium.sdk.client.paramiko` still
+    # resolves for callers and tests that patch it (DAH-3053).
+    if name == "paramiko":
+        import paramiko
+
+        globals()["paramiko"] = paramiko
+        return paramiko
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _response_error_message(response: requests.Response) -> str:
@@ -1329,6 +1340,7 @@ class Lium:
         max_distance_miles: Optional[int] = None,
         min_cuda_version: Optional[float] = None,
         min_cpus: Optional[int] = None,
+        view: str = "summary",
     ) -> List[ExecutorInfo]:
         """List available nodes.
 
@@ -1343,11 +1355,17 @@ class Lium:
                 backward compatible, so a node with a higher driver CUDA version satisfies the requirement.
             min_cpus: Optional minimum CPU thread count (``specs.cpu.count``). Nodes that report fewer
                 CPUs, or none, are excluded.
+            view: ``"summary"`` (default) asks the API for the fields a listing reads — price, GPU/CPU/RAM/disk
+                headline specs, location, tier, network — about a tenth of the full row. ``"full"`` returns the
+                whole validator scrape in :attr:`ExecutorInfo.specs` (docker info, verified ports, per-GPU
+                telemetry, checksums).
 
         Returns:
             A list of :class:`ExecutorInfo` objects that satisfy the filters.
         """
-        params: Dict[str, Any] = {"size": 1000}
+        # no `size`: the API applies it only together with `page`, and a bare `size` made the
+        # request miss the server's listing cache (DAH-3052)
+        params: Dict[str, Any] = {"view": view}
         if gpu_type:
             # Try to map short GPU name to full machine name
             machine_name = self._resolve_machine_name(gpu_type)
@@ -1733,6 +1751,8 @@ class Lium:
 
         if not self.config.ssh_key_path:
             raise ValueError("No SSH key configured")
+
+        import paramiko
 
         # Parse SSH command
         parts = shlex.split(pod.ssh_cmd)
