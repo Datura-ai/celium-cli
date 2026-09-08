@@ -13,6 +13,7 @@ from lium.sdk import (
     PodStartError,
 )
 from lium.cli import ui
+from lium.cli.workspaces.context import context_line
 from lium.cli.utils import (
     CliFailure,
     EXIT_API_ERROR,
@@ -260,6 +261,10 @@ def up_command(
             )
 
     lium = Lium(source="cli")
+    workspace = context_line(lium)
+    if workspace:
+        # the billing owner of this workspace pays for the pod (lium-platform DAH-2986)
+        ui.dim(workspace)
     if restore_backup_id:
         restore_backup_id = ui.load(
             "Resolving backup ID", lambda: lium.resolve_backup_id(restore_backup_id)

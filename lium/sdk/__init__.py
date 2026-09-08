@@ -23,10 +23,16 @@ from .models import (
     SSHKey,
     Template,
     VolumeInfo,
+    WorkspaceInfo,
+    WorkspaceMember,
 )
+from .workspaces import WorkspacesClient
 
 __all__ = [
     "Lium",
+    "WorkspacesClient",
+    "WorkspaceInfo",
+    "WorkspaceMember",
     "AlphaQuote",
     "Config",
     "ExecutorInfo",

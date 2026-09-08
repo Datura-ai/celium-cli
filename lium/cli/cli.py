@@ -38,6 +38,8 @@ from .ssh_keys import ssh_keys_command
 from .schedules import schedules_command
 from .update.command import update_command
 from .port_forward import port_forward_command
+from .workspaces import workspaces_command
+from .keys import keys_command
 from .plugins import load_plugins
 from .self_update import maybe_perform_startup_update
 
@@ -52,8 +54,12 @@ def get_version():
 
 @click.group(invoke_without_command=True)
 @click.version_option(version=get_version(), prog_name="lium")
+@click.option(
+    "--workspace", "-w", "workspace", default=None, envvar="LIUM_WORKSPACE", metavar="NAME",
+    help="Run in this workspace: uses the API key saved for it (lium keys create --workspace NAME --save).",
+)
 @click.pass_context
-def cli(ctx):
+def cli(ctx, workspace):
     """Lium CLI - Unix-style GPU pod management.
 
     A clean, Unix-style command-line interface for managing GPU pods.
@@ -62,6 +68,9 @@ def cli(ctx):
     # Make ThemedConsole available to all commands via context
     ctx.ensure_object(dict)
     ctx.obj["console"] = ThemedConsole()
+    if workspace:
+        # every command builds its own Lium(); Config.load reads the choice from here
+        os.environ["LIUM_WORKSPACE"] = workspace
 
     if ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())
@@ -98,6 +107,8 @@ cli.add_command(ssh_keys_command, name="ssh-keys")
 cli.add_command(schedules_command, name="schedules")
 cli.add_command(update_command)
 cli.add_command(port_forward_command)
+cli.add_command(workspaces_command)
+cli.add_command(keys_command)
 
 # Add compose placeholder (will be overridden if plugin is installed)
 # cli.add_command(compose_command)  # Disabled for beta.1

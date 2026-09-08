@@ -13,6 +13,7 @@ from lium.cli.utils import (
     ensure_config,
     store_pod_selection,
 )
+from lium.cli.workspaces.context import context_line
 from . import display
 from .actions import GetPodsAction
 
@@ -101,3 +102,6 @@ def ps_command(pod_id: Optional[str], output_format: str):
         from lium.cli.describe.display import format_event
 
         ui.dim(f"last event: {format_event(last_event)}")
+    workspace = context_line(lium)
+    if workspace:
+        ui.dim(workspace)

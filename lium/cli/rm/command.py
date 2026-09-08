@@ -7,6 +7,7 @@ import click
 
 from lium.sdk import Lium, PodInfo
 from lium.cli import ui
+from lium.cli.workspaces.context import context_line
 from lium.cli.utils import (
     EXIT_CONFIGURATION_ERROR,
     EXIT_GENERAL_ERROR,
@@ -156,6 +157,9 @@ def rm_command(
     typo cannot look like a successful teardown.
     """
     lium = Lium()
+    workspace = context_line(lium)
+    if workspace:
+        ui.dim(workspace)
     plan = build_removal_plan(
         lium, targets, remove_all, in_duration, at_time, allow_index=False if name_only else None
     )

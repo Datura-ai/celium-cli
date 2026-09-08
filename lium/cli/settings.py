@@ -115,6 +115,13 @@ class ConfigManager:
         self._config.set(section, option, value)
         self._save_config()
     
+    def set_in_section(self, section: str, option: str, value: str) -> None:
+        """Set an option in a section whose name itself contains a dot (``[workspace.<name>]``)."""
+        if not self._config.has_section(section):
+            self._config.add_section(section)
+        self._config.set(section, option, value)
+        self._save_config()
+
     def unset(self, key: str) -> bool:
         """Remove configuration value."""
         section, option = self._parse_key(key)

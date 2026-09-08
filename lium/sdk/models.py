@@ -107,6 +107,9 @@ class PodInfo:
     # None when the API did not send it. ``executor`` describes the whole host, so
     # for a GPU-split rental (2 of the host's 8) this is the smaller number.
     gpu_count: Optional[int] = None
+    # The workspace the pod belongs to (lium-platform DAH-3030); None from a server without
+    # workspaces or for a pod from before them.
+    workspace_id: Optional[str] = None
 
     def eta_hint(self) -> Optional[str]:
         """One line for a pod that is still starting, e.g. ``est. ready in ~18 s (phase: pulling image)``.
@@ -272,6 +275,30 @@ class VolumeInfo:
     last_metrics_update: Optional[str] = None
 
 
+@dataclass
+class WorkspaceInfo:
+    """A workspace as the API describes it (lium-platform DAH-2975 / DAH-3030)."""
+
+    id: str
+    name: str
+    role: str  # the caller's role: owner / admin / member
+    billing_owner_user_id: str
+    pending_billing_owner_user_id: Optional[str] = None
+    created_at: Optional[str] = None
+    # Only GET /users/me says so; None when read from GET /workspaces
+    is_personal: Optional[bool] = None
+
+
+@dataclass
+class WorkspaceMember:
+    user_id: str
+    name: str
+    email: Optional[str]
+    role: str
+    is_billing_owner: bool
+    joined_at: Optional[str] = None
+
+
 __all__ = [
     "ExecutorInfo",
     "PodInfo",
@@ -281,4 +308,6 @@ __all__ = [
     "RestoreLog",
     "VolumeInfo",
     "SSHKey",
+    "WorkspaceInfo",
+    "WorkspaceMember",
 ]

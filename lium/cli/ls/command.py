@@ -14,6 +14,7 @@ from lium.cli.utils import (
     store_executor_selection,
 )
 from lium.cli.completion import get_gpu_completions
+from lium.cli.workspaces.context import context_line
 from . import validation, display
 from .actions import GetExecutorsAction
 
@@ -137,6 +138,9 @@ def ls_command(
     ui.print(table)
     ui.print("")
     ui.info(tip)
+    workspace = context_line(lium)
+    if workspace:
+        ui.dim(workspace)
 
     # Store selection for index-based access in up command
     store_executor_selection(sorted_executors)

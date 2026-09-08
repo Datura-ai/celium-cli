@@ -171,6 +171,22 @@ The `lium` CLI exposes the full pod lifecycle. Run `lium --help` to see everythi
 - `lium schedules list` - List scheduled terminations
 - `lium schedules rm <POD>` - Cancel scheduled termination
 
+### Workspace Commands
+
+Teams share a workspace whose billing owner pays (lium-platform DAH-1992). An API key is bound to one workspace, so `--workspace NAME` on any command means "use the key saved for NAME". On a server without workspaces these commands say so and nothing else changes.
+
+- `lium workspaces [list]` - The workspace this key acts in; every workspace you belong to after `lium workspaces login`
+- `lium workspaces members [WORKSPACE]` - Members, roles and who pays
+- `lium workspaces use <WORKSPACE> [--api-key KEY]` - Default workspace for every command (`~/.lium/config.ini`)
+- `lium workspaces login` - Sign in once (e-mail + password) for the session-only subcommands below
+- `lium workspaces create <NAME> [--use]` - Create a workspace; you are its owner and billing owner
+- `lium workspaces invite <EMAIL> [WORKSPACE] [--role member|admin|owner]` - E-mail an invitation (no account needed yet)
+- `lium workspaces remove <USER_ID_OR_EMAIL> [WORKSPACE]` - Remove a member (owners and the billing owner cannot be; the server says so)
+- `lium workspaces transfer-billing <USER_ID_OR_EMAIL> [WORKSPACE]` - Hand the bill to another member
+- `lium workspaces delete [WORKSPACE]` - Delete a workspace (owners; refused while pods run or volumes exist)
+- `lium keys list [--workspace W]` / `lium keys create <NAME> [--workspace W] [--save]` - API keys per workspace; `--save` keeps the key for `--workspace`
+- `lium --workspace NAME <command>` / `LIUM_WORKSPACE=NAME` - Run one command with that workspace's saved key; `ps`, `ls`, `up`, `rm` print the workspace they act in
+
 ### Configuration Commands
 
 - `lium config show` - Show all configuration
@@ -362,6 +378,22 @@ You can also use environment variables:
 ```bash
 export LIUM_API_KEY=your-api-key-here
 ```
+
+With workspaces, `lium workspaces use` and `lium keys create --save` add:
+
+```ini
+[workspaces]
+active = research
+
+[workspace.research]
+id = 9d8c7b6a-…
+api_key = the-key-bound-to-that-workspace
+
+[session]
+token = …   # from `lium workspaces login`; LIUM_SESSION_TOKEN overrides it
+```
+
+Key resolution, first match wins: the key saved for an explicit `--workspace` / `LIUM_WORKSPACE`, then `LIUM_API_KEY`, then the key saved for `[workspaces] active`, then `[api] api_key`.
 
 SSH host keys of pods are pinned on first use under `~/.lium/known_hosts/<pod-id>`
 (`lium ssh`, `lium up`, and the SDK's `exec`, `stream_exec`, `rsync`). `reboot`, `edit`,
