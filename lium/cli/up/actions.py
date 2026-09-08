@@ -208,10 +208,11 @@ class WaitReadyAction:
         if pod is None:
             error = f"Pod {pod_id} was still starting after {timeout}s"
             # DAH-3005: the backend's own estimate tells a slow-but-coming pod from a stuck one.
+            # It travels in ``data`` too, so the command can put it in its own message.
             hint = last_seen["pod"].eta_hint() if last_seen["pod"] is not None else None
             if hint:
                 error += f" (backend: {hint})"
-            return ActionResult(ok=False, data={}, error=error)
+            return ActionResult(ok=False, data={"eta_hint": hint}, error=error)
         return ActionResult(ok=True, data={"pod": pod})
 
     def _progress(self, report, last_seen: Optional[dict] = None):

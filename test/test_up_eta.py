@@ -13,9 +13,11 @@ from unittest.mock import patch
 
 
 from lium.cli.up import actions as up_actions
+from lium.cli.utils import EXIT_GENERAL_ERROR
 from lium.sdk import Config, Lium, PodInfo
 
 from test_pod_start_error import _pod
+from test_up_progress_timeout import _flat, _run_up
 
 # --- SDK ------------------------------------------------------------------------------------
 
@@ -93,6 +95,7 @@ def test_timeout_error_says_what_the_backend_still_expects():
 
     assert result.ok is False
     assert result.error == "Pod pod-1 was still starting after 30s (backend: est. ready in ~40 s (phase: pulling image))"
+    assert result.data == {"eta_hint": "est. ready in ~40 s (phase: pulling image)"}
 
 
 def test_timeout_error_is_the_plain_one_without_an_estimate():
@@ -106,3 +109,25 @@ def test_timeout_error_is_the_plain_one_without_an_estimate():
     )
 
     assert result.error == "Pod pod-1 was still starting after 30s"
+    assert result.data == {"eta_hint": None}
+
+
+def test_lium_up_timeout_message_carries_the_backends_estimate(monkeypatch):
+    """The whole path: wait_ready's last poll → WaitReadyAction → the `lium up` error the caller reads."""
+
+    class _Lium:
+        def wait_ready(self, pod_id, *, timeout, poll_interval=None, on_poll=None):
+            on_poll(_pending(40, phase="pulling image", basis="cold_pull_estimate"), "PENDING", timeout)
+            return None
+
+    class _Wait(up_actions.WaitReadyAction):
+        def execute(self, ctx):
+            return super().execute({**ctx, "lium": _Lium()})
+
+    result = _run_up(monkeypatch, wait_action=_Wait, args=["--timeout", "120"])
+
+    assert result.exit_code == EXIT_GENERAL_ERROR
+    output = _flat(result.output)
+    assert "Pod train (id: pod-1) is still starting after" in output
+    assert "and is billing (backend: est. ready in ~40 s (phase: pulling image))." in output
+    assert "lium rm train" in output

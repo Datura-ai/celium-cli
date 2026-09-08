@@ -232,7 +232,7 @@ def _executor():
     )
 
 
-def _run_up(monkeypatch, *, rent_action=None, wait_action=None, args=()):
+def _run_up(monkeypatch, *, resolve_action=None, rent_action=None, wait_action=None, args=()):
     class _Lium:
         def get_deployment_estimate(self, *a, **k):
             return {}
@@ -255,7 +255,7 @@ def _run_up(monkeypatch, *, rent_action=None, wait_action=None, args=()):
 
     monkeypatch.setattr(up_command, "ensure_config", lambda: None)
     monkeypatch.setattr(up_command, "Lium", lambda **kwargs: _Lium())
-    monkeypatch.setattr(up_command, "ResolveExecutorAction", _Resolve)
+    monkeypatch.setattr(up_command, "ResolveExecutorAction", resolve_action or _Resolve)
     monkeypatch.setattr(up_command, "ResolveTemplateAction", _Template)
     monkeypatch.setattr(up_command, "RentPodAction", rent_action or _Rent)
     monkeypatch.setattr(up_command, "WaitReadyAction", wait_action or _Wait)
@@ -316,7 +316,60 @@ def test_a_budget_that_runs_out_names_the_billing_pod(monkeypatch):
 
     assert result.exit_code == EXIT_GENERAL_ERROR
     assert "Pod train (id: pod-1) is still starting after" in _flat(result.output)
+    assert "(backend:" not in result.output
     assert "lium rm train" in _flat(result.output)
+
+
+def test_a_budget_spent_before_the_rent_rents_nothing(monkeypatch):
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(up_command.time, "monotonic", lambda: clock["now"])
+    rented = []
+
+    class _SlowResolve:
+        def execute(self, ctx):
+            clock["now"] += 121  # finding the node took longer than the whole --timeout
+            return ActionResult(ok=True, data={"executor": _executor()})
+
+    class _Rent:
+        def execute(self, ctx):
+            rented.append(ctx)
+            return ActionResult(ok=True, data={"pod_info": {}, "pod_id": "pod-1", "pod_name": "train"})
+
+    result = _run_up(monkeypatch, resolve_action=_SlowResolve, rent_action=_Rent, args=["--timeout", "120"])
+
+    assert result.exit_code == EXIT_GENERAL_ERROR
+    output = _flat(result.output)
+    assert "The --timeout budget of 120s ran out before renting brave-fox-3a; nothing was created" in output
+    assert rented == []
+
+
+def test_a_budget_with_time_left_reaches_the_rent(monkeypatch):
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(up_command.time, "monotonic", lambda: clock["now"])
+    rented = []
+
+    class _Resolve:
+        def execute(self, ctx):
+            clock["now"] += 30
+            return ActionResult(ok=True, data={"executor": _executor()})
+
+    class _Rent:
+        def execute(self, ctx):
+            rented.append(ctx)
+            return ActionResult(ok=True, data={"pod_info": {}, "pod_id": "pod-1", "pod_name": "train"})
+
+    seen = {}
+
+    class _Wait:
+        def execute(self, ctx):
+            seen["timeout"] = ctx["timeout"]
+            return ActionResult(ok=True, data={"pod": _pod("RUNNING")})
+
+    result = _run_up(monkeypatch, resolve_action=_Resolve, rent_action=_Rent, wait_action=_Wait, args=["--timeout", "120"])
+
+    assert result.exit_code == 0, result.output
+    assert len(rented) == 1
+    assert seen["timeout"] == 90  # the 30 s spent finding the node came off the wait's budget
 
 
 def test_an_unanswered_rent_request_says_to_check_ps_before_retrying(monkeypatch):
@@ -333,7 +386,9 @@ def test_an_unanswered_rent_request_says_to_check_ps_before_retrying(monkeypatch
     assert "may exist and be billing" in output
 
 
-def test_a_rejected_rent_names_the_node_and_the_reason_and_says_no_pod_exists(monkeypatch):
+def test_a_rejected_rent_names_the_node_and_the_reason_and_points_at_ps(monkeypatch):
+    # Lium.up() retries an unanswered rent once; a refusal of that retry can mean the first
+    # request did create a pod, so the message must not promise that none exists.
     class _Rent:
         def execute(self, ctx):
             raise LiumError("API error 400: Executor has a pending rental")
@@ -343,7 +398,8 @@ def test_a_rejected_rent_names_the_node_and_the_reason_and_says_no_pod_exists(mo
     assert result.exit_code == EXIT_API_ERROR
     output = _flat(result.output)
     assert "Node brave-fox-3a could not be rented: API error 400: Executor has a pending rental" in output
-    assert "No pod was created" in output
+    assert "Run 'lium ps' to check whether a pod was created" in output
+    assert "No pod was created" not in output
     assert "lium ls --format json" in output
 
 

@@ -69,7 +69,7 @@ def _wait_budget(deadline: float, ready_timeout: Optional[int]) -> int:
     default=DEFAULT_TIMEOUT_SECONDS,
     show_default=True,
     metavar="SECONDS",
-    help="Time budget for the whole command: finding the node, renting it and waiting for the pod. When it runs out while the pod is still starting, exit 1 with the pod named (it keeps running and billing).",
+    help="Time budget for the whole command: finding the node, renting it and waiting for the pod. If it runs out before the rent, exit 1 with nothing created; if it runs out while the pod is still starting, exit 1 with the pod named (it keeps running and billing).",
 )
 @click.option(
     "--ready-timeout",
@@ -343,6 +343,17 @@ def up_command(
         if not ui.confirm(confirm_msg):
             return
 
+    # --timeout is the whole command's budget. Finding the node and the template (and a slow
+    # answer at the prompt) count against it; a budget that is already spent must not reach
+    # the rent, or the pod would be created and then reported as timed out one second later.
+    if time.monotonic() >= deadline:
+        raise CliFailure(
+            "timeout_before_rent",
+            f"The --timeout budget of {timeout}s ran out before renting {executor.huid}; nothing was created. "
+            "Run again with a larger --timeout.",
+            EXIT_GENERAL_ERROR,
+        )
+
     if volume_create_params:
         action = CreateVolumeAction()
         result = ui.load(
@@ -387,10 +398,13 @@ def up_command(
         raise  # handle_errors already names these (bad key, no permission, server down, throttled)
     except LiumError as exc:
         # The API answered and said no: the node is no longer rentable (taken, offline, pending
-        # rental) or the request was refused. No pod exists, so this is safe to retry elsewhere.
+        # rental) or the request was refused. Usually no pod exists — but Lium.up() sends the
+        # rent a second time when the first request got no answer, and a refusal of that retry
+        # can mean the first one did create a pod. So point at 'lium ps' instead of promising
+        # that nothing was created.
         raise CliFailure(
             "rent_rejected",
-            f"Node {executor.huid} could not be rented: {exc}. No pod was created. "
+            f"Node {executor.huid} could not be rented: {exc}. Run 'lium ps' to check whether a pod was created. "
             "Run 'lium ls --format json' for the nodes rentable now.",
             EXIT_API_ERROR,
         )
@@ -430,10 +444,14 @@ def up_command(
 
     if not result.ok:
         # Still starting when the budget ran out: the pod keeps billing, so
-        # name it and hand the decision back to the caller.
+        # name it and hand the decision back to the caller — with the backend's
+        # own estimate and phase when it sent them, so a slow pull reads
+        # differently from a stuck pod.
+        hint = result.data.get("eta_hint")
+        backend = f" (backend: {hint})" if hint else ""
         raise CliFailure(
             "pod_not_ready",
-            f"Pod {pod_name} (id: {pod_id}) is still starting after {wait_timeout}s and is billing. "
+            f"Pod {pod_name} (id: {pod_id}) is still starting after {wait_timeout}s and is billing{backend}. "
             f"Wait with 'lium ps', or remove it with 'lium rm {pod_name}'.",
             EXIT_GENERAL_ERROR,
         )
