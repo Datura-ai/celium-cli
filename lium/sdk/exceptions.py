@@ -24,6 +24,10 @@ class LiumPermissionError(LiumError):
     """The account is not allowed to do this (403)."""
 
 
+class LiumHostKeyError(LiumError):
+    """A pod presented an SSH host key that differs from the pinned one."""
+
+
 __all__ = [
     "LiumError",
     "LiumAuthError",
@@ -31,4 +35,5 @@ __all__ = [
     "LiumServerError",
     "LiumNotFoundError",
     "LiumPermissionError",
+    "LiumHostKeyError",
 ]
