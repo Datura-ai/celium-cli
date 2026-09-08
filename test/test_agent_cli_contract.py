@@ -360,7 +360,7 @@ def test_ssh_session_connected_reports_only_connection_failure(monkeypatch, retu
         ssh_module.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=returncode)
     )
 
-    assert ssh_module.ssh_session_connected("ssh root@x") is connected
+    assert ssh_module.ssh_session_connected(["ssh", "root@203.0.113.7"]) is connected
 
 
 def test_rm_all_treats_a_lost_terminal_as_no(monkeypatch):
@@ -549,11 +549,11 @@ def test_ssh_separates_its_own_failure_from_the_remote_shell(monkeypatch):
         def ps(self):
             return [SimpleNamespace(
                 id="pod-uuid-1", huid="eager-wolf-aa", name="my-pod",
-                status="RUNNING", ssh_cmd="ssh root@1.2.3.4",
+                status="RUNNING", ssh_cmd="ssh root@203.0.113.7",
             )]
 
-        def ssh(self, pod):
-            return "ssh root@1.2.3.4"
+        def ssh_argv(self, pod):
+            return ["ssh", "root@203.0.113.7"]
 
     monkeypatch.setattr(ssh_module, "Lium", _SshLium)
 

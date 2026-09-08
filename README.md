@@ -353,12 +353,15 @@ export LIUM_API_KEY=your-api-key-here
 ```
 
 SSH host keys of pods are pinned on first use under `~/.lium/known_hosts/<pod-id>`
-(SDK `exec`, `stream_exec`, `rsync`). `reboot`, `edit`, `switch_template` and `rm` drop the
-pin themselves (the container, and its key, are replaced). A pod that later presents a
-different key is rejected with `LiumHostKeyError` — after a reboot the platform did on its
-own, or an interception; delete that file if the pod was legitimately re-provisioned.
-Fingerprints are `SHA256:…`, as `ssh-keygen -lf` prints them. `LIUM_SSH_INSECURE=1`
-restores the old accept-anything behaviour (each accepted key is reported with its fingerprint).
+(`lium ssh`, `lium up`, and the SDK's `exec`, `stream_exec`, `rsync`). `reboot`, `edit`,
+`switch_template` and `rm` drop the pin themselves (the container, and its key, are replaced).
+A pod that later presents a different key is rejected — the SDK raises `LiumHostKeyError`,
+`lium ssh` stops with OpenSSH's own "host identification has changed" message — after a
+reboot the platform did on its own, or an interception; delete that file if the pod was
+legitimately re-provisioned. Fingerprints are `SHA256:…`, as `ssh-keygen -lf` prints them.
+`LIUM_SSH_INSECURE=1` restores the old accept-anything behaviour (each accepted key is
+reported with its fingerprint). `lium ssh` runs OpenSSH with an argument list built from the
+pod's user, address and port; the API's connection string is never handed to a shell.
 
 ## Requirements
 

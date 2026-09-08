@@ -253,13 +253,33 @@ def test_rsync_uses_pinned_known_hosts_unless_insecure(monkeypatch, tmp_path):
     ssh_opt = calls[0][3]
     hosts_file = tmp_path / ".lium" / "known_hosts" / "pod-123"
     assert "-o StrictHostKeyChecking=accept-new" in ssh_opt
-    assert f"-o UserKnownHostsFile={hosts_file}" in ssh_opt
+    assert f"-o 'UserKnownHostsFile=\"{hosts_file}\"'" in ssh_opt
     assert "StrictHostKeyChecking=no" not in ssh_opt
     assert hosts_file.exists()
 
     monkeypatch.setenv("LIUM_SSH_INSECURE", "1")
     client.rsync(pod, local="./out", remote="/workspace/out")
     assert "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" in calls[1][3]
+
+
+def test_rsync_refuses_an_ssh_cmd_of_another_shape(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    calls = []
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr(sdk_client.subprocess, "run", fake_run)
+    key_path = tmp_path / "id_ed25519"
+    key_path.write_text("key")
+    client = Lium(Config(api_key="test", ssh_key_path=key_path))
+    pod = _pod()
+    pod.ssh_cmd = "ssh root@203.0.113.7 -p 20299 -o ProxyCommand=id"
+
+    with pytest.raises(ValueError, match="Unexpected ssh command"):
+        client.rsync(pod, local="./out", remote="/workspace/out")
+    assert calls == []
+    assert not (tmp_path / ".lium").exists()
 
 
 @pytest.mark.parametrize("method, verb, path", [

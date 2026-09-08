@@ -3,6 +3,7 @@
 import base64
 import getpass
 import hashlib
+import ipaddress
 import os
 import re
 import shlex
@@ -102,6 +103,61 @@ def _ensure_known_hosts_file(path: Path) -> None:
         pass  # best effort (read-only or foreign filesystem); the per-file 0600 mode below is what protects the pins
     if not path.exists():
         path.touch(mode=0o600)
+
+
+def openssh_host_key_options(pod: PodInfo) -> List[str]:
+    """The ``-o`` arguments that make the OpenSSH client check a pod's host key.
+
+    Pinned per pod under ``~/.lium/known_hosts/<pod id>`` (created here), accepted
+    on the first connection and refused by ssh itself when the pod later presents
+    a different key — the same rule :meth:`Lium.ssh_connection` applies through
+    paramiko. ``LIUM_SSH_INSECURE=1`` returns the old accept-anything options.
+    """
+    if ssh_insecure():
+        return ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]
+    hosts_file = known_hosts_path(pod)
+    _ensure_known_hosts_file(hosts_file)
+    # OpenSSH splits an unquoted UserKnownHostsFile value on whitespace (it takes several files); the
+    # quotes keep a home directory with a space in it as one path.
+    return ["-o", "StrictHostKeyChecking=accept-new", "-o", f'UserKnownHostsFile="{hosts_file}"']
+
+
+_SSH_USER_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]*")   # no leading "-": ssh would read the destination as an option
+_SSH_HOSTNAME_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?")
+
+
+def ssh_target(ssh_cmd: Optional[str]) -> tuple[str, str, int]:
+    """``(user, host, port)`` from the API's ``ssh_connect_cmd``, or ``ValueError``.
+
+    The API sends ``ssh <user>@<host> -p <port>`` and nothing else. Only that shape
+    (``-p <port>`` optional, default 22) is accepted — every token is checked, so a
+    value that carries anything besides a user, an address and a port (an extra ssh
+    option, a shell character) is refused instead of being handed to ssh or to a shell.
+    """
+    if not ssh_cmd:
+        raise ValueError("No SSH command for this pod")
+    try:
+        tokens = shlex.split(ssh_cmd)
+    except ValueError as e:
+        raise ValueError(f"Unexpected ssh command from the API: {ssh_cmd!r} ({e})") from e
+    if len(tokens) not in (2, 4) or tokens[0] != "ssh":
+        raise ValueError(f"Unexpected ssh command from the API: {ssh_cmd!r}")
+    user, sep, host = tokens[1].partition("@")
+    if not sep or len(user) > 32 or len(host) > 253 or not _SSH_USER_RE.fullmatch(user):
+        raise ValueError(f"Unexpected ssh command from the API: {ssh_cmd!r}")
+    if not _SSH_HOSTNAME_RE.fullmatch(host):
+        try:
+            if "%" in host:  # an IPv6 scope id is not an address the API sends
+                raise ValueError(host)
+            ipaddress.ip_address(host)
+        except ValueError:
+            raise ValueError(f"Unexpected ssh command from the API: {ssh_cmd!r}") from None
+    port = 22
+    if len(tokens) == 4:
+        if tokens[2] != "-p" or not re.fullmatch(r"[0-9]{1,5}", tokens[3]) or not 1 <= int(tokens[3]) <= 65535:
+            raise ValueError(f"Unexpected ssh command from the API: {ssh_cmd!r}")
+        port = int(tokens[3])
+    return user, host, port
 
 
 class _PinOnFirstUsePolicy(paramiko.MissingHostKeyPolicy):
@@ -1388,8 +1444,32 @@ class Lium:
         """
         self.scp(pod, local=local, remote=remote)
 
+    def ssh_argv(self, pod: PodInfo) -> List[str]:
+        """The OpenSSH argument list that opens a shell on a pod.
+
+        Built from the user, host and port the API's ``ssh_connect_cmd`` names
+        (:func:`ssh_target`; any other shape is refused), with ``-i <configured
+        key>`` when one is configured and the host-key options of
+        :func:`openssh_host_key_options`. Run it with ``subprocess.run(argv)`` —
+        no shell is involved, so nothing in the API's value is ever interpreted.
+
+        Raises:
+            ValueError: The pod has no SSH command, or it is not ``ssh <user>@<host> [-p <port>]``.
+        """
+        user, host, port = ssh_target(pod.ssh_cmd)
+        argv = ["ssh"]
+        if self.config.ssh_key_path:
+            argv += ["-i", str(Path(self.config.ssh_key_path).expanduser())]
+        argv += ["-p", str(port), *openssh_host_key_options(pod), f"{user}@{host}"]
+        return argv
+
     def ssh(self, pod: PodInfo) -> str:
         """Get SSH command string for connecting to a pod.
+
+        The shell-quoted form of :meth:`ssh_argv`: the configured key, the pinned
+        host-key options and the pod's ``user@host``, ready to paste into a POSIX shell.
+        Building it creates the pod's ``~/.lium/known_hosts/<pod id>`` file when it does
+        not exist yet (empty until the first connection pins the key).
 
         Args:
             pod: The pod to generate SSH command for.
@@ -1403,7 +1483,7 @@ class Lium:
         if not pod.ssh_cmd or not self.config.ssh_key_path:
             raise ValueError("No SSH configured")
 
-        return pod.ssh_cmd.replace("ssh ", f"ssh -i {self.config.ssh_key_path} ")
+        return shlex.join(self.ssh_argv(pod))
 
     def rsync(self, pod: PodInfo, *, local: str, remote: str) -> None:
         """Sync directories with rsync.
@@ -1419,14 +1499,11 @@ class Lium:
         if not pod.ssh_cmd or not self.config.ssh_key_path:
             raise ValueError("No SSH configured")
 
-        ssh_cmd = f"ssh -i {shlex.quote(str(self.config.ssh_key_path))} -p {pod.ssh_port}"
-        if ssh_insecure():
-            ssh_cmd += " -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
-        else:
-            hosts_file = known_hosts_path(pod)
-            _ensure_known_hosts_file(hosts_file)
-            ssh_cmd += f" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={shlex.quote(str(hosts_file))}"
-        cmd = ["rsync", "-avz", "-e", ssh_cmd, local,  f"{pod.username}@{pod.host}:{remote}"]
+        user, host, port = ssh_target(pod.ssh_cmd)
+        ssh_cmd = shlex.join(
+            ["ssh", "-i", str(self.config.ssh_key_path), "-p", str(port), *openssh_host_key_options(pod)]
+        )
+        cmd = ["rsync", "-avz", "-e", ssh_cmd, local, f"{user}@{host}:{remote}"]
 
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
