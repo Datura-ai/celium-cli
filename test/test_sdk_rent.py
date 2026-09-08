@@ -11,6 +11,7 @@ import pytest
 import responses
 
 from lium.sdk import Config, Lium, LiumError, LiumServerError, RentResult
+from lium.sdk import client as client_module
 from lium.sdk import utils as sdk_utils
 
 BASE = "https://lium.io/api"
@@ -114,6 +115,7 @@ def test_an_unreachable_version_means_no_features(client):
 @responses.activate
 def test_rent_posts_the_spec_once_and_maps_the_pick(client):
     _version(["rent_by_spec"])
+    responses.add(responses.GET, f"{BASE}/pods", json=[])  # the snapshot `up` also takes before a rent
     responses.add(responses.POST, f"{BASE}/executors/rent-by-spec", json=RENTED)
 
     result = client.rent(
@@ -129,8 +131,8 @@ def test_rent_posts_the_spec_once_and_maps_the_pick(client):
         "user_public_key": [KEY], "initial_port_count": 3, "enable_volume_encryption": True,
         "backup_log_id": None, "restore_path": None, "dry_run": False,
     }
-    assert [c.request.url for c in responses.calls] == [f"{BASE}/version", f"{BASE}/executors/rent-by-spec"]
-    assert isinstance(result, RentResult) and result.server_side is True
+    assert [c.request.url for c in responses.calls] == [f"{BASE}/version", f"{BASE}/pods", f"{BASE}/executors/rent-by-spec"]
+    assert isinstance(result, RentResult) and result.server_side is True and result.gpu_count == 1
     assert result.pod == {"id": "pod-uuid-1", "name": "train-1", "status": "PENDING", "executor_id": "exec-cheap"}
     assert result.executor.id == "exec-cheap" and result.executor.gpu_type == "H100"
     assert result.executor.price_per_gpu == 1.2 and result.price_per_hour == 1.2
@@ -184,6 +186,62 @@ def test_a_rent_is_posted_once_even_when_the_server_fails(client, monkeypatch):
         client.rent(gpu_type="H100", ssh_keys=[KEY])
 
     assert [c.request.url for c in responses.calls].count(f"{BASE}/executors/rent-by-spec") == 1
+
+
+@responses.activate
+def test_rent_reports_the_gpus_rented_not_the_nodes_total(client):
+    # a 2-GPU split of an 8-GPU node: price_per_hour is for the 2, and so is gpu_count
+    _version(["rent_by_spec"])
+    responses.add(
+        responses.POST, f"{BASE}/executors/rent-by-spec",
+        json={**RENTED, "selected_executor": _node("exec-eight", gpu_count=8), "price_per_hour": 2.4},
+    )
+
+    result = client.rent(gpu_type="H100", gpu_count=2, ssh_keys=[KEY])
+
+    assert result.executor.gpu_count == 8
+    assert result.gpu_count == 2 and result.price_per_hour == 2.4
+
+
+def _pod_row(pod_id, name, executor, price):
+    # a row as GET /pods carries it: the billed $/h is `price`, the node is nested
+    return {"id": pod_id, "pod_name": name, "status": "PENDING", "executor": executor, "price": price,
+            "ports_mapping": {}, "created_at": "2026-09-08T05:00:00Z", "updated_at": "2026-09-08T05:00:00Z"}
+
+
+@responses.activate
+def test_a_lost_rent_response_hands_back_the_pod_the_server_created(client, monkeypatch):
+    # the POST is not repeated (a second rent-by-spec could pick another node); the pod that
+    # appeared under the requested name since the snapshot is the one this call rented
+    monkeypatch.setattr(client_module.time, "sleep", lambda seconds: None)
+    _version(["rent_by_spec"])
+    stale = _pod_row("pod-uuid-old", "train-1", _node("exec-old"), 1.9)
+    responses.add(responses.GET, f"{BASE}/pods", json=[stale])                      # the snapshot before the rent
+    responses.add(responses.POST, f"{BASE}/executors/rent-by-spec", status=502)
+    responses.add(responses.GET, f"{BASE}/pods", json=[stale])                      # first look: not there yet
+    responses.add(responses.GET, f"{BASE}/pods", json=[stale, _pod_row("pod-uuid-7", "train-1", _node("exec-cheap"), 1.2)])
+
+    result = client.rent(gpu_type="H100", name="train-1", ssh_keys=[KEY])
+
+    assert [c.request.url for c in responses.calls].count(f"{BASE}/executors/rent-by-spec") == 1
+    assert result.pod["id"] == "pod-uuid-7" and result.pod["name"] == "train-1"
+    assert result.executor.id == "exec-cheap" and result.price_per_hour == 1.2
+    assert result.server_side is True and result.attempts == 1 and result.dry_run is False
+
+
+@responses.activate
+def test_a_lost_rent_response_with_no_pod_raises_and_posts_nothing_more(client, monkeypatch):
+    monkeypatch.setattr(client_module.time, "sleep", lambda seconds: None)
+    _version(["rent_by_spec"])
+    responses.add(responses.GET, f"{BASE}/pods", json=[])
+    responses.add(responses.POST, f"{BASE}/executors/rent-by-spec", status=502)
+
+    with pytest.raises(LiumServerError):
+        client.rent(gpu_type="H100", name="train-1", ssh_keys=[KEY])
+
+    urls = [c.request.url for c in responses.calls]
+    assert urls.count(f"{BASE}/executors/rent-by-spec") == 1
+    assert urls.count(f"{BASE}/pods") == 1 + 3  # the snapshot, then three looks for the pod
 
 
 @responses.activate

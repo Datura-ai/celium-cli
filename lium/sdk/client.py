@@ -727,12 +727,27 @@ class Lium:
         interval: float,
         exclude: frozenset = frozenset(),
     ) -> Optional[Dict[str, Any]]:
-        """A pod called ``name`` on ``executor_id`` if one shows up in ``ps``.
+        """The dict :meth:`up` returns for a pod called ``name`` on ``executor_id``, if one
+        shows up in ``ps`` (see :meth:`_find_pod_info_by_name`)."""
+        pod = self._find_pod_info_by_name(name, executor_id, attempts=attempts, interval=interval, exclude=exclude)
+        return None if pod is None else self._created_pod_record(pod, executor_id)
 
-        Used when the rent response did not say what it created. The executor
-        is matched when the listing includes one, so two pods sharing a generic
-        name on different nodes are not confused, and pods whose id is in
-        ``exclude`` (the ones that existed before the rent) are never returned.
+    def _find_pod_info_by_name(
+        self,
+        name: Optional[str],
+        executor_id: Optional[str],
+        *,
+        attempts: int,
+        interval: float,
+        exclude: frozenset = frozenset(),
+    ) -> Optional[PodInfo]:
+        """A pod called ``name`` if one shows up in ``ps``.
+
+        Used when the rent response did not say what it created. With ``executor_id`` the
+        executor is matched when the listing includes one, so two pods sharing a generic
+        name on different nodes are not confused; ``None`` (a rent-by-spec, where the server
+        chose the node) matches on the name alone. Pods whose id is in ``exclude`` (the ones
+        that existed before the rent) are never returned.
         """
         if not name:
             return None
@@ -741,9 +756,14 @@ class Lium:
             for pod in self._list_pods_or_none() or []:
                 if pod.id in exclude or pod.name != name:
                     continue
-                if pod.executor is not None and pod.executor.id and pod.executor.id != executor_id:
+                if (
+                    executor_id
+                    and pod.executor is not None
+                    and pod.executor.id
+                    and pod.executor.id != executor_id
+                ):
                     continue
-                return self._created_pod_record(pod, executor_id)
+                return pod
         return None
 
     @staticmethod
@@ -818,8 +838,8 @@ class Lium:
                 a dry run as a rent); the client-side pick needs no key.
 
         Returns:
-            :class:`RentResult` — the node, the hourly price, the pod (``None`` on a dry run),
-            the template used, how many nodes qualified and the runners-up.
+            :class:`RentResult` — the node, the GPUs rented, the hourly price, the pod (``None``
+            on a dry run), the template used, how many nodes qualified and the runners-up.
 
         Raises:
             LiumError: No node satisfies the spec. The message names the constraint that
@@ -828,6 +848,10 @@ class Lium:
                 satisfies it; the best on offer is 48``.
             LiumError: ``interconnect`` was given and the backend rents by spec (nothing is
                 registered or rented).
+            LiumServerError, requests.RequestException: the rent-by-spec response was lost. The
+                rent is posted once (a repeat could rent a second node); the pod is looked up
+                by name for ~9 s and returned when it appears, otherwise the error propagates
+                and the pod may still exist — check :meth:`ps`.
         """
         if template_id is not None and dockerfile_content is not None:
             raise ValueError("Provide either template_id or dockerfile_content, not both")
@@ -895,9 +919,35 @@ class Lium:
             "restore_path": rental["restore_path"],
             "dry_run": dry_run,
         }
+        gpu_count = int(spec.get("gpu_count") or 1)
         # A rent is billable and a lost response may have succeeded server-side, so it is sent
-        # once, as in `up`; a dry run rents nothing and keeps the retries.
-        data = self._request("POST", "/executors/rent-by-spec", json=payload, retry=dry_run).json()
+        # once, as in `up`; a dry run rents nothing and keeps the retries. Pods that exist before
+        # the rent can never be the one it created (see `up`).
+        known_pod_ids = frozenset() if dry_run else self._pod_ids_before_rent()
+        try:
+            data = self._request("POST", "/executors/rent-by-spec", json=payload, retry=dry_run).json()
+        except (requests.RequestException, LiumServerError, LiumRateLimitError):
+            if dry_run:
+                raise
+            # The server may have rented before the response was lost: hand back the pod it
+            # created rather than an error next to a billing pod. Nothing is posted again — a
+            # second rent-by-spec could pick another node — so when no pod appears the error
+            # propagates and the docstring tells the caller to check `ps`.
+            pod = self._find_pod_info_by_name(
+                rental["name"], None, attempts=3, interval=3, exclude=known_pod_ids
+            )
+            if pod is None or pod.executor is None:
+                raise
+            return RentResult(
+                executor=pod.executor,
+                price_per_hour=pod.executor.price_per_hour,  # ps() anchors it on the pod's billed price
+                gpu_count=gpu_count,
+                pod=self._created_pod_record(pod, pod.executor.id),
+                template_id=rental["template_id"],
+                candidates=1,
+                attempts=1,
+                server_side=True,
+            )
         executor = self._dict_to_executor_info(data.get("selected_executor") or {})
         if executor is None:
             raise LiumError("rent-by-spec returned no node")
@@ -905,6 +955,7 @@ class Lium:
         return RentResult(
             executor=executor,
             price_per_hour=float(data.get("price_per_hour") or executor.price_per_hour),
+            gpu_count=gpu_count,
             pod=None
             if pod_id is None
             else {"id": pod_id, "name": rental["name"], "status": "PENDING", "executor_id": executor.id},
@@ -958,6 +1009,7 @@ class Lium:
         return RentResult(
             executor=executor,
             price_per_hour=executor.price_per_hour,
+            gpu_count=executor.gpu_count,  # exact match on gpu_count: the whole node is rented
             pod=pod,
             template_id=rental["template_id"],
             candidates=len(matches),

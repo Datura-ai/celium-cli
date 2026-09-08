@@ -74,6 +74,8 @@ class ResolveExecutorAction:
                     "candidates": pick.candidates,
                     "spec": spec,
                     "price_per_hour": pick.price_per_hour,
+                    # the GPUs the rental gets: a split of a larger node when the server allows one
+                    "gpu_count": pick.gpu_count,
                     "template_id": pick.template_id,
                 },
             )
@@ -225,11 +227,13 @@ class RentPodAction:
         )
         spec: Optional[Dict] = ctx.get("spec")
         price_per_hour = getattr(executor, "price_per_hour", None)
+        gpu_count = getattr(executor, "gpu_count", None)
         if spec:
             # The server re-selects at rent time, so a pick taken since the dry run falls
             # through to the next candidate — never one dearer than the price confirmed.
             result = lium.rent(**spec, max_price_per_gpu_hour=executor.price_per_gpu, **rental)
-            pod_info, executor, price_per_hour = result.pod, result.executor, result.price_per_hour
+            pod_info, executor = result.pod, result.executor
+            price_per_hour, gpu_count = result.price_per_hour, result.gpu_count
         else:
             pod_info = lium.up(executor_id=executor.id, **rental)
 
@@ -242,6 +246,7 @@ class RentPodAction:
                 "pod_name": name,
                 "executor": executor,
                 "price_per_hour": price_per_hour,
+                "gpu_count": gpu_count,
             },
         )
 
