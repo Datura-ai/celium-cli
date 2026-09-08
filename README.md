@@ -118,6 +118,7 @@ JSON keeps the API's raw value as `ssh_cmd`.
 
 - **CLI docs:** https://docs.lium.io/category/cli
 - **SDK docs:** https://docs.lium.io/developers/sdk
+- **Exit codes and the JSON error envelope:** [docs/exit-codes.md](docs/exit-codes.md) — what a script or agent gets back when a command fails (`--format json`, `LIUM_OUTPUT=json`).
 
 ## Binary Releases
 
