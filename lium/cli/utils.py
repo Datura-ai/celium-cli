@@ -739,7 +739,12 @@ def parse_targets(targets: str, all_pods: List[PodInfo]) -> List[PodInfo]:
     return selected
 
 
-def wait_ready_no_timeout(lium_client, pod_id: str, timeout: Optional[int] = None, on_poll=None):
+def wait_ready_no_timeout(
+    lium_client: Lium,
+    pod_id: str,
+    timeout: Optional[int] = None,
+    on_poll: Optional[Callable[[Optional[PodInfo], str, float], None]] = None,
+) -> Optional[PodInfo]:
     """Wait for a pod to be ready (RUNNING with SSH); by default with no time limit.
 
     Delegates to :meth:`Lium.wait_ready`, so a pod that fails or disappears

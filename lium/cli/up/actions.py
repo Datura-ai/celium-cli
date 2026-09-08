@@ -1,4 +1,4 @@
-from typing import Optional, Dict, List
+from typing import Callable, Optional, Dict, List
 import time
 
 from lium.cli.actions import ActionResult
@@ -210,7 +210,7 @@ class WaitReadyAction:
             )
         return ActionResult(ok=True, data={"pod": pod})
 
-    def _progress(self, report):
+    def _progress(self, report: Optional[Callable[[str], None]]) -> Optional[Callable[[Optional[PodInfo], str, float], None]]:
         """An on_poll callback that says what the pod is doing, without repeating itself every poll.
 
         A silent wait is what turned a slow rent into a killed command: nothing tells the caller

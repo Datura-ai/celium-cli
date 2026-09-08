@@ -1336,13 +1336,14 @@ class Lium:
         """The pod's event log, oldest first — creation, reboots, failures with their error, and
         lifecycle entries saying why it left RUNNING. Answers for a pod whose row is already gone.
 
-        Returns ``[]`` against a backend that predates the endpoint.
+        Returns ``[]`` against a backend that predates the endpoint. One attempt, no retries:
+        this is read on a failure path, after the wait's budget is already spent.
         """
         try:
-            data = self._request("GET", f"/pods/{pod_id}/events").json()
+            data = self._request("GET", f"/pods/{pod_id}/events", retry=False).json()
         except LiumNotFoundError:
             return []
-        return data if isinstance(data, list) else []
+        return [e for e in data if isinstance(e, dict)] if isinstance(data, list) else []
 
     def pod_failure_cause(self, pod_id: str) -> Optional[str]:
         """What the backend recorded as the reason the pod failed or was closed, or ``None``.
@@ -1353,8 +1354,8 @@ class Lium:
         try:
             events = self.pod_events(pod_id)
         except Exception:
-            # ``_request(retry=True)`` re-raises ``requests.RequestException`` after its retries, and a
-            # network blip here must not turn a ``PodStartError`` into "Unexpected error".
+            # ``_request`` raises ``requests.RequestException`` on a network failure and ``LiumError``
+            # on an API one; neither may turn a ``PodStartError`` into "Unexpected error".
             return None
         for event in reversed(events):
             if event.get("error"):
@@ -1416,16 +1417,20 @@ class Lium:
                 if on_poll:
                     on_poll(last_seen, "missing", time.time() - start)
                 if last_seen is not None:
+                    cause = self.pod_failure_cause(pod_id)
                     raise PodStartError(
                         f"Pod {last_seen.huid} ({pod_id}) disappeared while starting; "
-                        f"last status {history[-1] if history else 'unknown'}",
+                        f"last status {history[-1] if history else 'unknown'}"
+                        + (f"; cause: {cause}" if cause else ""),
                         pod_id=pod_id, pod=last_seen, status=history[-1] if history else None,
-                        history=history, cause=self.pod_failure_cause(pod_id),
+                        history=history, cause=cause,
                     )
                 if missing_polls >= self.MISSING_POLLS_BEFORE_ERROR:
+                    cause = self.pod_failure_cause(pod_id)
                     raise PodStartError(
-                        f"Pod {pod_id} is not in the pod list after {missing_polls} checks",
-                        pod_id=pod_id, cause=self.pod_failure_cause(pod_id),
+                        f"Pod {pod_id} is not in the pod list after {missing_polls} checks"
+                        + (f"; cause: {cause}" if cause else ""),
+                        pod_id=pod_id, cause=cause,
                     )
                 time.sleep(poll_interval)
                 continue

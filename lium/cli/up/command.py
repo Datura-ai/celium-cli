@@ -387,11 +387,14 @@ def up_command(
         raise  # handle_errors already names these (bad key, no permission, server down, throttled)
     except LiumError as exc:
         # The API answered and said no: the node is no longer rentable (taken, offline, pending
-        # rental) or the request was refused. No pod exists, so this is safe to retry elsewhere.
+        # rental) or the request was refused. Usually no pod exists — but Lium.up() sends the POST a
+        # second time after a network failure, and a first POST that did land makes the second one a
+        # 400 "pending rental" — so the caller checks before renting elsewhere.
         raise CliFailure(
             "rent_rejected",
-            f"Node {executor.huid} could not be rented: {exc}. No pod was created. "
-            "Run 'lium ls --format json' for the nodes rentable now.",
+            f"Node {executor.huid} could not be rented: {exc}. "
+            f"Run 'lium ps' to confirm no pod named {name or executor.huid} was created, "
+            "then 'lium ls --format json' for the nodes rentable now.",
             EXIT_API_ERROR,
         )
 

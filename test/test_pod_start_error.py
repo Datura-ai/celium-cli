@@ -38,12 +38,21 @@ def _pod(status: str, ssh_cmd: str | None = "ssh user@pod.example -p 20299") -> 
 
 
 class _Client(Lium):
-    """A client whose `ps` replays a scripted sequence of pod lists."""
+    """A client whose `ps` replays a scripted sequence of pod lists and whose event log is empty.
+
+    `pod_events` is answered here so the failure path (`pod_failure_cause`) never opens a
+    connection: a unit test must not reach the API.
+    """
 
     def __init__(self, sequence):
         super().__init__(Config(api_key="test"))
         self.sequence = list(sequence)
         self.calls = 0
+        self.event_requests = 0
+
+    def pod_events(self, pod_id):
+        self.event_requests += 1
+        return []
 
     def ps(self):
         self.calls += 1

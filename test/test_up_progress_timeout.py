@@ -132,6 +132,7 @@ def test_a_vanished_pod_carries_its_lifecycle_reason():
         client.wait_ready("pod-1", timeout=None)
 
     assert failure.value.cause == "executor_offline: node offline for 8 days"
+    assert str(failure.value).endswith("; cause: executor_offline: node offline for 8 days")
 
 
 def test_pod_events_is_empty_against_a_backend_without_the_endpoint():
@@ -160,10 +161,15 @@ def test_pod_failure_cause_prefers_the_latest_readable_event():
     assert client.pod_failure_cause("pod-1") == CREATE_FAILED_EVENT["error"]
 
 
-def test_a_slow_pod_still_times_out_to_none_without_reading_events():
+def test_a_slow_pod_still_times_out_to_none_without_reading_events(monkeypatch):
+    # three polls of PENDING inside a 30 s budget, then the clock passes it: None, and the
+    # events route was never asked (a slow pod has no failure to explain)
+    clock = iter([0, 0, 10, 20, 40])
+    monkeypatch.setattr("lium.sdk.client.time.time", lambda: next(clock))
     client = _Client([[_pod("PENDING", None)]], events_error=AssertionError("must not be called"))
 
-    assert client.wait_ready("pod-1", timeout=0) is None
+    assert client.wait_ready("pod-1", timeout=30, poll_interval=10) is None
+    assert client.event_requests == 0
 
 
 # --- CLI: progress lines --------------------------------------------------------------------------
@@ -343,7 +349,7 @@ def test_a_rejected_rent_names_the_node_and_the_reason_and_says_no_pod_exists(mo
     assert result.exit_code == EXIT_API_ERROR
     output = _flat(result.output)
     assert "Node brave-fox-3a could not be rented: API error 400: Executor has a pending rental" in output
-    assert "No pod was created" in output
+    assert "Run 'lium ps' to confirm no pod named brave-fox-3a was created" in output
     assert "lium ls --format json" in output
 
 
