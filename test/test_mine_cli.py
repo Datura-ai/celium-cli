@@ -79,9 +79,13 @@ def test_start_executor_timeout_includes_compose_diagnostics(monkeypatch, tmp_pa
             return "abc123\n", ""
         if cmd.startswith("docker inspect"):
             return "unhealthy\n", ""
-        if cmd == "docker compose ps":
-            return "executor-executor-runner-1  Restarting (1)\n", ""
-        if cmd.startswith("docker compose logs"):
+        if cmd == "docker compose -f docker-compose.yml ps":
+            return "executor-executor-runner-1  Up\n", ""
+        if cmd == "docker compose -f docker-compose.app.yml ps":
+            return "executor-executor-1  Restarting (1)\n", ""
+        if cmd == "docker compose -f docker-compose.yml logs --no-color --tail 30 executor-runner":
+            return "runner: starting app compose\n", ""
+        if cmd == "docker compose -f docker-compose.app.yml logs --no-color --tail 30 executor":
             return "failed to bind host port 0.0.0.0:8080/tcp: address already in use\n", ""
         return "", ""
 
@@ -96,8 +100,38 @@ def test_start_executor_timeout_includes_compose_diagnostics(monkeypatch, tmp_pa
     msg = str(exc.value)
     assert "timed out after 5s" in msg
     assert "Restarting (1)" in msg
+    assert "runner: starting app compose" in msg
     assert "address already in use" in msg
-    assert any(c.startswith("docker compose logs") for c in calls)
+    # `executor` exists only in docker-compose.app.yml, the runner only in the
+    # default file: each is asked with its own -f, in this order.
+    diagnostics = [c for c in calls if " ps" in c and "-q" not in c or " logs " in c]
+    assert diagnostics == [
+        "docker compose -f docker-compose.yml ps",
+        "docker compose -f docker-compose.yml logs --no-color --tail 30 executor-runner",
+        "docker compose -f docker-compose.app.yml ps",
+        "docker compose -f docker-compose.app.yml logs --no-color --tail 30 executor",
+    ]
+
+
+def test_precheck_ports_skips_when_this_hosts_executor_is_already_up(monkeypatch, tmp_path: Path) -> None:
+    checked: list[dict] = []
+    monkeypatch.setattr(mine, "_check_ports_free", lambda ports: checked.append(ports))
+    answers = {"external_port": "8080", "ssh_port": "2200"}
+
+    # Rerun: the executor started last time owns 8080 and 2200 itself.
+    monkeypatch.setattr(mine, "_run", lambda cmd, **k: ("abc123\n", "") if "ps -q executor" in cmd else ("", ""))
+    assert mine._precheck_ports(tmp_path, answers) is False
+    assert checked == []
+
+    # First run: no executor container, the ports must be free.
+    monkeypatch.setattr(mine, "_run", lambda cmd, **k: ("", ""))
+    assert mine._precheck_ports(tmp_path, answers) is True
+    assert checked == [{"service port": 8080, "SSH port": 2200}]
+
+
+def test_executor_container_is_empty_when_the_directory_does_not_exist(tmp_path: Path) -> None:
+    # subprocess raises FileNotFoundError for a missing cwd; that is "nothing runs from here".
+    assert mine._executor_container(tmp_path / "missing" / "neurons" / "executor") == ""
 
 
 def test_provider_add_command_and_note() -> None:

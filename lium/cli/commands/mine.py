@@ -293,25 +293,58 @@ def _check_ports_free(ports: dict[str, int]) -> None:
         )
 
 
+def _executor_container(executor_dir: Path) -> str:
+    """Container id of the ``executor`` service left by an earlier run, or ``""``."""
+    try:
+        out, _ = _run(
+            "docker compose -f docker-compose.app.yml ps -q executor", check=False, cwd=str(executor_dir)
+        )
+    except OSError:  # no such directory yet: nothing can be running from it
+        return ""
+    return out.strip()
+
+
+def _precheck_ports(executor_dir: Path, answers: dict) -> bool:
+    """Run the free-port check unless this host's own executor holds the ports.
+
+    On a rerun against a running node the executor container itself is bound
+    to ``EXTERNAL_PORT`` and ``SSH_PORT``; asking the provider to free them
+    would be wrong, and ``docker compose up`` re-uses that container. Returns
+    False when the check was skipped for that reason.
+    """
+    if _executor_container(executor_dir):
+        return False
+    _check_ports_free(_host_ports_from_answers(answers))
+    return True
+
+
+# The runner and watchtower live in docker-compose.yml (what `docker compose
+# up -d` starts); the executor itself is started by the runner from
+# docker-compose.app.yml. Each file is asked on its own: `docker compose logs
+# executor` on the default file is "no such service" and prints nothing.
+_COMPOSE_SERVICES = (("docker-compose.yml", "executor-runner"), ("docker-compose.app.yml", "executor"))
+
+
 def _compose_diagnostics(executor_dir: Path, tail: int = 30) -> str:
-    """``docker compose ps`` + the last log lines of the executor services.
+    """``docker compose ps`` + the last log lines of the runner and the executor.
 
     Used when the health check times out so the actual failure (port
     conflict, image pull error, bad .env) is on screen instead of only
     'timed out'.
     """
     parts = []
-    ps, _ = _run("docker compose ps", check=False, cwd=str(executor_dir))
-    if ps.strip():
-        parts.append("--- docker compose ps ---\n" + ps.strip())
-    logs, err = _run(
-        f"docker compose logs --no-color --tail {tail} executor executor-runner",
-        check=False,
-        cwd=str(executor_dir),
-    )
-    text = (logs or "") + (err or "")
-    if text.strip():
-        parts.append(f"--- last {tail} log lines (executor, executor-runner) ---\n" + text.strip()[-4000:])
+    for compose_file, service in _COMPOSE_SERVICES:
+        ps, _ = _run(f"docker compose -f {compose_file} ps", check=False, cwd=str(executor_dir))
+        if ps.strip():
+            parts.append(f"--- docker compose -f {compose_file} ps ---\n" + ps.strip())
+        logs, err = _run(
+            f"docker compose -f {compose_file} logs --no-color --tail {tail} {service}",
+            check=False,
+            cwd=str(executor_dir),
+        )
+        text = (logs or "") + (err or "")
+        if text.strip():
+            parts.append(f"--- last {tail} log lines ({service}) ---\n" + text.strip()[-4000:])
     return "\n".join(parts)
 
 
@@ -498,7 +531,8 @@ def mine_command(ctx, hotkey, dir_, branch, auto, verbose):
             # A taken host port makes `docker compose up` loop on
             # "address already in use" and the health check below time out
             # with no explanation. Catch it here, before the 3-minute wait.
-            _check_ports_free(_host_ports_from_answers(answers))
+            if not _precheck_ports(executor_dir, answers):
+                console.dim("A node from an earlier run is up on this host; its ports are kept.")
 
         with timed_step_status(5, TOTAL_STEPS, "Starting node"):
             _start_executor(executor_dir)
