@@ -13,6 +13,8 @@ from lium.cli.utils import (
     ensure_config,
     store_pod_selection,
 )
+from lium.cli.describe.actions import pod_detail
+from lium.cli.describe.display import event_view, format_event
 from . import display
 from .actions import GetPodsAction
 
@@ -51,11 +53,18 @@ def ps_command(pod_id: Optional[str], output_format: str):
     pods = result.data["pods"]
 
     # Filter by pod_id if provided
+    last_event = None
     if pod_id:
         pod = next((p for p in pods if p.id == pod_id or p.huid == pod_id or p.name == pod_id), None)
         if not pod:
-            raise CliFailure("pod_not_found", f"Pod '{pod_id}' not found", EXIT_POD_NOT_FOUND)
+            raise CliFailure(
+                "pod_not_found",
+                f"Pod '{pod_id}' not found. If it was deleted, 'lium describe <pod id>' shows its last events.",
+                EXIT_POD_NOT_FOUND,
+            )
         pods = [pod]
+        # One pod asked for by name: worth the extra call for why it is REBOOT_FAILED / BROKEN.
+        last_event = event_view(pod_detail(lium, pod.id).get("last_event"))
     else:
         # Only a full listing defines what "pod 1" means; a filtered one does not.
         store_pod_selection(pods)
@@ -73,6 +82,8 @@ def ps_command(pod_id: Optional[str], output_format: str):
             display.compact_pod(p, index=None if pod_id else position)
             for position, p in enumerate(pods, start=1)
         ]
+        if pod_id:
+            payload[0]["last_event"] = last_event
         click.echo(json.dumps(payload, indent=2, ensure_ascii=False))
         return
 
@@ -82,3 +93,5 @@ def ps_command(pod_id: Optional[str], output_format: str):
     # Display
     ui.info(header)
     ui.print(table)
+    if last_event:
+        ui.dim(f"last event: {format_event(last_event)}")
