@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from lium.cli.utils import wait_ready_no_timeout
+from lium.cli.utils import wait_for_pod_ready
 from lium.sdk import Lium
 
 from test_pod_start_error import _Client, _pod
@@ -80,5 +80,5 @@ def test_cli_wait_uses_the_adaptive_schedule():
             seen.update(pod_id=pod_id, timeout=timeout, poll_interval=poll_interval)
             return _pod("RUNNING")
 
-    assert wait_ready_no_timeout(_Recording(), "pod-1").status == "RUNNING"
+    assert wait_for_pod_ready(_Recording(), "pod-1").status == "RUNNING"
     assert seen == {"pod_id": "pod-1", "timeout": None, "poll_interval": None}

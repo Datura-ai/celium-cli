@@ -32,6 +32,7 @@ from .actions import (
     RentPodAction,
     WaitReadyAction,
     ScheduleTerminationAction,
+    VerifyGpuCountAction,
     InstallJupyterAction,
     PrepareSSHAction,
 )
@@ -79,6 +80,15 @@ def _wait_budget(deadline: float, ready_timeout: Optional[int]) -> int:
     metavar="SECONDS",
     help="Bound only the wait for the pod to become ready (exit 1, pod left running and named). Default: whatever --timeout leaves.",
 )
+@click.option(
+    "--verify-gpus", "verify_gpus", is_flag=True,
+    help="After the pod is ready, count the GPUs nvidia-smi sees over SSH and compare with the billed count",
+)
+@click.option(
+    "--strict-gpus", "strict_gpus", is_flag=True,
+    help="Remove the pod automatically when its GPU count does not match what was requested or billed "
+         "(a pod that could not be checked over SSH is kept)",
+)
 @click.option("--restore-backup", "restore_backup_id", help="Backup ID to restore after the pod starts")
 @click.option("--restore-to", "restore_path", help="New or empty subdirectory for the startup restore")
 @click.option("--image", help="Docker image to run (e.g., pytorch/pytorch:2.0, nvidia/cuda:12.0)")
@@ -110,6 +120,8 @@ def up_command(
     no_ssh: bool,
     timeout: int,
     ready_timeout: Optional[int],
+    verify_gpus: bool,
+    strict_gpus: bool,
     restore_backup_id: Optional[str],
     restore_path: Optional[str],
     image: Optional[str],
@@ -144,6 +156,8 @@ def up_command(
       lium up 1 --until "today 23:00"       # Auto-terminate at 23:00 local time today
       lium up 1 --until "tomorrow 01:00"    # Auto-terminate at 01:00 local time tomorrow
       lium up 1 --jupyter                   # Install Jupyter Notebook (auto-selects port)
+      lium up --gpu H200 -c 8 --verify-gpus # Fail if the pod exposes fewer GPUs than billed
+      lium up --gpu H200 -c 8 --verify-gpus --strict-gpus  # ...and remove the pod on mismatch
       lium up 1 --restore-backup BACKUP_ID --restore-to /root/restored
       LIUM_DEBUG=1 lium up 1 --jupyter      # Show debug information
     \b
@@ -340,8 +354,12 @@ def up_command(
         )
         if restore_backup_id:
             confirm_msg += f" Restore backup {restore_backup_id} to {restore_path} after startup."
+        asked_at = time.monotonic()
         if not ui.confirm(confirm_msg):
             return
+        # The prompt waits on a person, not on Lium: the time spent answering it is not part of
+        # the --timeout budget, or a slow answer would kill the command before it rents.
+        deadline += time.monotonic() - asked_at
 
     if volume_create_params:
         action = CreateVolumeAction()
@@ -356,7 +374,7 @@ def up_command(
         volume_id = result.data["volume_id"]
 
     # --timeout is the whole command's budget. Everything before this line (finding the node and
-    # the template, a slow answer at the prompt, creating the volume) counts against it; a budget
+    # the template, creating the volume — not the answer at the prompt) counts against it; a budget
     # that is already spent must not reach the rent, or the pod would be created and then
     # reported as timed out one second later. The rent is the first thing that bills.
     if time.monotonic() >= deadline:
@@ -475,6 +493,40 @@ def up_command(
         except Exception:
             ui.info(f"{pod_label} is running but auto-termination was NOT scheduled")
             raise
+
+    # The GPU count is checked after --ttl is scheduled: a mismatched pod that is
+    # left running (no --strict-gpus) must still terminate when the caller asked.
+    # The requested count is --count, or the chosen node's count when there was none.
+    action = VerifyGpuCountAction()
+    verify_ctx = {
+        "lium": lium,
+        "pod": pod,
+        "expected_count": count if count is not None else executor.gpu_count,
+        "executor_id": executor.id,
+        "verify_via_ssh": verify_gpus,
+    }
+    if verify_gpus:
+        result = ui.load("Verifying GPU count", lambda: action.execute(verify_ctx))
+    else:
+        result = action.execute(verify_ctx)
+    if not result.ok:
+        ui.error(result.error)
+        if strict_gpus and result.data.get("mismatch"):
+            ui.load("Removing pod", lambda: lium.rm(pod))
+            ui.info(f"{pod_label} removed (--strict-gpus)")
+            raise CliFailure(
+                "gpu_count_mismatch",
+                f"{result.error}; pod removed",
+                EXIT_GENERAL_ERROR,
+                data=result.data,
+            )
+        ui.info(f"{pod_label} is running with the GPU count above; remove it with 'lium rm {pod.huid}'")
+        raise CliFailure(
+            "gpu_count_mismatch" if result.data.get("mismatch") else "gpu_verification_failed",
+            result.error,
+            EXIT_GENERAL_ERROR,
+            data=result.data,
+        )
 
     if jupyter:
         action = InstallJupyterAction()

@@ -73,6 +73,11 @@ class PodInfo:
     eta_basis: str | None = None
     phase: str | None = None
 
+    # GPUs this pod is billed for: the pod row's own ``gpu_count`` from ``/pods``,
+    # None when the API did not send it. ``executor`` describes the whole host, so
+    # for a GPU-split rental (2 of the host's 8) this is the smaller number.
+    gpu_count: Optional[int] = None
+
     def eta_hint(self) -> Optional[str]:
         """One line for a pod that is still starting, e.g. ``est. ready in ~18 s (phase: pulling image)``.
 

@@ -177,8 +177,8 @@ def exec_command(
     
     \b
     TARGETS: Pod identifiers - can be:
-      - Pod name/ID (eager-wolf-aa)
-      - Index from 'lium ps' (1, 2, 3)
+      - Pod huid, name or ID (eager-wolf-aa) — the stable form for scripts
+      - Row number of your last 'lium ps' in this shell (1, 2) — refused if that pod is gone or the listing is >10 min old
       - Comma-separated (1,2,eager-wolf-aa)
       - All pods (all)
     
@@ -211,7 +211,11 @@ def exec_command(
             console.info(f"Executing on {len(selected_pods)} pods")
 
         if env_dict:
-            console.dim(f"Environment: {', '.join(f'{k}={v}' for k, v in env_dict.items())}")
+            # Names only, values masked. -e is a common way to pass tokens, and
+            # echoing the values here lands secrets in terminal logs and agent
+            # transcripts. The values still reach the pod unchanged.
+            masked = ", ".join(f"{name}=****" for name in env_dict)
+            console.dim(f"Environment: {masked}")
 
     if len(selected_pods) == 1:
         results = [lium.exec(selected_pods[0], command=command_to_run, env=env_dict)]

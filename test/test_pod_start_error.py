@@ -244,3 +244,70 @@ def test_up_help_documents_ready_timeout():
 
     assert result.exit_code == 0
     assert "--ready-timeout" in result.output
+
+
+def _run_up_with_prompt(monkeypatch, *, answer_takes: float, resolve_takes: float = 0.0, timeout: int = 60):
+    """`lium up` without --yes on a fake clock: `resolve_takes` seconds pass while the node is found,
+    `answer_takes` seconds pass at the confirm prompt (answered yes)."""
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(up_command.time, "monotonic", lambda: clock["now"])
+    executor = SimpleNamespace(
+        id="exec-1", huid="brave-fox-3a", gpu_count=1, gpu_type="A6000",
+        price_per_hour=0.24, available_port_count=10, download_speed=1000,
+    )
+
+    class _Lium:
+        def get_deployment_estimate(self, *a, **k):
+            return {}
+
+    class _Resolve:
+        def execute(self, ctx):
+            clock["now"] += resolve_takes
+            return ActionResult(ok=True, data={"executor": executor})
+
+    class _Template:
+        def execute(self, ctx):
+            return ActionResult(ok=True, data={"template": SimpleNamespace(id="tmpl-1")})
+
+    rented = []
+
+    class _Rent:
+        def execute(self, ctx):
+            rented.append(ctx["executor"].huid)
+            return ActionResult(ok=True, data={"pod_info": {}, "pod_id": "pod-1", "pod_name": "train"})
+
+    class _Wait:
+        def execute(self, ctx):
+            return ActionResult(ok=True, data={"pod": _pod("RUNNING")})
+
+    def confirm(message):
+        clock["now"] += answer_takes
+        return True
+
+    monkeypatch.setattr(up_command, "ensure_config", lambda: None)
+    monkeypatch.setattr(up_command, "Lium", lambda **kwargs: _Lium())
+    monkeypatch.setattr(up_command, "ResolveExecutorAction", _Resolve)
+    monkeypatch.setattr(up_command, "ResolveTemplateAction", _Template)
+    monkeypatch.setattr(up_command, "RentPodAction", _Rent)
+    monkeypatch.setattr(up_command, "WaitReadyAction", _Wait)
+    monkeypatch.setattr(up_command.ui, "confirm", confirm)
+    result = CliRunner().invoke(up_command.up_command, ["brave-fox-3a", "--no-ssh", "--timeout", str(timeout)])
+    return result, rented
+
+
+def test_a_slow_answer_at_the_prompt_does_not_eat_the_timeout_budget(monkeypatch):
+    # the prompt waits on a person: five minutes of thinking against a 60 s budget still rents
+    result, rented = _run_up_with_prompt(monkeypatch, answer_takes=300.0)
+
+    assert result.exit_code == 0, result.output
+    assert rented == ["brave-fox-3a"]
+    assert "timeout_before_rent" not in result.output
+
+
+def test_time_spent_before_the_prompt_still_counts_against_the_budget(monkeypatch):
+    # the negative control: the same five minutes spent finding the node runs the budget out
+    result, rented = _run_up_with_prompt(monkeypatch, answer_takes=0.0, resolve_takes=300.0)
+
+    assert result.exit_code == EXIT_GENERAL_ERROR, result.output
+    assert rented == []
+    assert "ran out before renting brave-fox-3a; no pod was created" in " ".join(result.output.split())
