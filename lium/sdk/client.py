@@ -1445,6 +1445,16 @@ class Lium:
         while True:
             elapsed = time.time() - start
             if timeout is not None and elapsed >= timeout:
+                if last_seen is None and missing_polls and elapsed >= self.MISSING_GRACE_SECONDS:
+                    # The budget and the grace ran out together: an id that was never listed in
+                    # 20 s is a missing pod, not a slow one — say so instead of answering None
+                    # (wait_ready('00000000-…', timeout=20), the DAH-1942 audit case).
+                    cause = self.pod_failure_cause(pod_id)
+                    raise PodStartError(
+                        f"Pod {pod_id} is not in the pod list after {missing_polls} checks over {elapsed:.0f} s"
+                        + (f"; cause: {cause}" if cause else ""),
+                        pod_id=pod_id, cause=cause,
+                    )
                 break
             fresh_pods = self.ps()
             current = next((p for p in fresh_pods if p.id == pod_id), None)
