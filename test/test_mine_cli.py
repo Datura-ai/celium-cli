@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import socket
+import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -27,6 +29,77 @@ def test_port_in_use_detects_a_listener() -> None:
         assert mine._port_in_use(port) is True
         assert mine._port_in_use(port, host="127.0.0.1") is True
     # closed again -> free
+    assert mine._port_in_use(port) is False
+
+
+def test_port_in_use_is_not_fooled_by_a_privileged_port(monkeypatch) -> None:
+    """An unprivileged `lium mine` cannot bind 443 (EACCES) — that is not "in use": compose binds it as root."""
+    import errno
+
+    class Denied(socket.socket):
+        def bind(self, address):
+            raise PermissionError(errno.EACCES, "Permission denied")
+
+    monkeypatch.setattr(socket, "socket", Denied)   # the function imports the socket module itself; the class is patched
+    assert mine._port_in_use(443) is False
+
+    class Taken(socket.socket):
+        def bind(self, address):
+            raise OSError(errno.EADDRINUSE, "Address already in use")
+
+    monkeypatch.setattr(socket, "socket", Taken)
+    assert mine._port_in_use(443) is True
+
+
+def _plain_bind_fails(port: int) -> bool:
+    """e7d0770's probe: a bind without SO_REUSEADDR, which TIME_WAIT sockets refuse too."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind(("0.0.0.0", port))
+        except OSError:
+            return True
+    return False
+
+
+def _leave_only_time_wait_on(port_holder: socket.socket) -> int:
+    """Serve one connection and close the server side first, so the port keeps a TIME_WAIT socket and nothing else."""
+    port_holder.listen(1)
+    port = port_holder.getsockname()[1]
+    client = socket.create_connection(("127.0.0.1", port))
+    served, _ = port_holder.accept()
+    served.close()          # the active closer is the side that ends in TIME_WAIT
+    client.close()
+    port_holder.close()
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and not _plain_bind_fails(port):
+        time.sleep(0.05)    # the FIN exchange on loopback is quick but not synchronous with close()
+    return port
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="the SO_REUSEADDR probe is Linux-only; lium mine brings up a Linux host")
+def test_port_in_use_ignores_time_wait_left_by_a_stopped_listener() -> None:
+    """A re-run within 60 s of `docker compose down`: the executor's ports carry only TIME_WAIT sockets. docker-proxy
+    binds them fine (Go sets SO_REUSEADDR), so the pre-check must not refuse them — e7d0770's plain bind did."""
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)   # as docker-proxy's listener is
+    listener.bind(("127.0.0.1", 0))
+    port = _leave_only_time_wait_on(listener)
+    assert _plain_bind_fails(port), "no TIME_WAIT socket on the port: the scenario did not happen, the test proves nothing"
+    assert mine._port_in_use(port) is False
+    assert mine._port_in_use(port, host="127.0.0.1") is False
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="the SO_REUSEADDR probe is Linux-only")
+def test_port_in_use_still_refuses_a_listener_that_set_reuseaddr_itself() -> None:
+    # SO_REUSEADDR on the probe does not turn it permissive: a LISTEN socket that also set the option (every Go
+    # listener, docker-proxy included) still refuses the bind — on the wildcard and on one interface alike
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as srv:
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        port = srv.getsockname()[1]
+        assert mine._port_in_use(port) is True
+        assert mine._port_in_use(port, host="127.0.0.1") is True
     assert mine._port_in_use(port) is False
 
 
@@ -146,6 +219,9 @@ def test_provider_add_command_and_note() -> None:
     )
     note = mine._registration_note()
     assert "opt-in" in note and "VALIDATION_PENDING" in note
+    # every IP service failed: _get_public_ip's sentinel is not pasted into the command as three words
+    cmd = mine._provider_add_command({"gpu_type": "NVIDIA RTX A6000", "gpu_count": 1}, "Unable to determine", 8080)
+    assert "--ip <public IPv4> --port 8080 --yes" in cmd and "Unable" not in cmd
 
 
 class _FakePreflight:

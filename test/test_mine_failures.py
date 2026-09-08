@@ -81,3 +81,22 @@ def test_a_failed_step_exits_non_zero(monkeypatch):
     result = CliRunner().invoke(mine.mine_command, ["--auto", "-k", "5F" + "x" * 46])
     assert result.exit_code == 1, result.output
     assert "apt update failed" in result.output
+
+
+def test_a_failed_step_prints_bracketed_tool_output_as_text(monkeypatch):
+    """The failure text carries tool output verbatim (compose `ps -a`, log tails): a `[type=…]` token from a
+    pydantic error or a `[/x]` is Rich markup and used to be eaten — or to raise MarkupError in place of the diagnosis."""
+    monkeypatch.setattr(mine, "_gather_inputs", lambda hotkey, auto: {
+        "hotkey": "5F" + "x" * 46, "internal_port": "8080", "external_port": "8080", "ssh_port": "2200",
+        "ssh_public_port": "", "port_range": ""})
+
+    def boom(*a, **k):
+        raise RuntimeError("Command failed (1): docker compose up\n--- docker compose logs ---\n"
+                           "validation error for Settings\nPORT\n  Input should be a valid integer "
+                           "[type=int_parsing, input_value='', input_type=str] and [/x]")
+
+    monkeypatch.setattr(mine, "_clone_or_update_repo", boom)
+    result = CliRunner().invoke(mine.mine_command, ["--auto", "-k", "5F" + "x" * 46])
+    assert result.exit_code == 1, result.output
+    flat = " ".join(result.output.split())   # Rich wraps the panel at 80 columns
+    assert "[type=int_parsing, input_value='', input_type=str]" in flat and "[/x]" in flat, result.output

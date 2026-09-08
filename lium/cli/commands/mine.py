@@ -262,23 +262,44 @@ def _listening_process(port: int) -> str:
 
 
 def _port_in_use(port: int, host: str = "0.0.0.0") -> bool:
-    """True when nothing on this host can still bind ``<host>:<port>``.
+    """True when ``docker compose up`` could not bind ``<host>:<port>`` on this host.
 
     This is a probe, not a listener: the socket is bound for an instant,
     never ``listen()``-ed, and closed on return. ``host`` defaults to the
     wildcard address because the executor's ``docker-compose.app.yml``
     publishes ``EXTERNAL_PORT`` and ``SSH_PORT`` on every interface, so the
-    probe must fail exactly where ``docker compose up`` would. A plain bind
-    (no SO_REUSEADDR) to the wildcard also fails when a listener is bound to
-    a single interface, which a ``127.0.0.1`` probe would miss.
+    probe must fail exactly where ``docker compose up`` would: a wildcard
+    bind fails when a listener holds the port on any single interface, which
+    a ``127.0.0.1`` probe would miss.
+
+    On Linux the probe binds with ``SO_REUSEADDR``, as docker-proxy's own bind
+    does (Go sets it on every listener): a port whose only sockets are in
+    ``TIME_WAIT`` left by a socket that had the option itself — the executor's
+    own connections for up to 60 s after ``docker compose down``, the case a
+    re-run hits — is free again, while a ``LISTEN`` socket on any address still
+    refuses the bind (Linux ignores ``TIME_WAIT`` only when both sockets set the
+    option, and never a listener). Without the option the plain bind refused
+    ``TIME_WAIT`` too and reported a port nobody held. BSD/macOS reads the option
+    differently (a wildcard bind may sit next to a specific-address listener),
+    so there the plain bind stays; ``lium mine`` brings up a Linux host. IPv4
+    only: the executor's compose publishes ``0.0.0.0``; an IPv6-only listener on
+    the port is not seen here (compose would then fail at ``:::<port>``). Only
+    ``EADDRINUSE`` means taken: ``EACCES`` on a privileged port from an
+    unprivileged ``lium mine`` is left to compose, which binds as root.
     """
+    import errno
     import socket
+    import sys
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        if sys.platform.startswith("linux"):
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind((host, port))
-        except OSError:
-            return True
+        except OSError as e:
+            # only "somebody holds it" is a conflict: EACCES on a port below 1024 says this uid may not bind it,
+            # which compose (root) can — a provider running `lium mine` unprivileged must not be told 443 is taken
+            return e.errno == errno.EADDRINUSE
     return False
 
 
@@ -663,7 +684,11 @@ def mine_command(ctx, hotkey, dir_, branch, auto, verbose):
             _validate_executor(ctx.args if ctx.args else None, on_check=_show_check)
 
     except Exception as e:
-        console.error(f"❌ {e}")
+        # the message carries tool output verbatim (compose `ps -a`, log tails, a stderr tail): escaped, or a
+        # `[type=…]` / `[/x]` token in it is Rich markup — eaten, or a MarkupError in place of the diagnosis
+        from rich.markup import escape
+
+        console.error(f"❌ {escape(str(e))}")
         raise SystemExit(1)   # a failed step is a failed command: mine.sh and scripts read the exit code
 
     # Get executor details for summary
@@ -714,10 +739,13 @@ def _provider_add_command(gpu_info: dict, public_ip: str, external_port: str | i
     import shlex
 
     gpu_type = gpu_info.get("gpu_type") or "Unknown"
+    # _get_public_ip() answers "Unable to determine" when every IP service failed: printed bare that is three
+    # extra argv words, so the placeholder says what to fill in instead
+    ip = public_ip if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", public_ip or "") else "<public IPv4>"
     return (
         "lium provider node add "
         f"--gpu-type {shlex.quote(gpu_type)} --gpu-count {gpu_info.get('gpu_count', 0)} "
-        f"--ip {public_ip} --port {external_port} --yes"
+        f"--ip {ip} --port {external_port} --yes"
     )
 
 
