@@ -39,10 +39,12 @@ Without `E2E_API_KEY` every test skips and `run.sh` exits 0 — nothing to run a
 
 ## CI (`.github/workflows/ci.yml`, job `e2e-live`)
 
-Runs on every PR from this repo that touches `lium/**`, the packaging files (`pyproject.toml`, `uv.lock`, `lium.spec`,
-`lium_entry.py`, `Dockerfile.build`, `scripts/install.sh`), `e2e/**` or the workflows (the workflow's `paths:` filter;
-a README- or `test/`-only PR does not run it), on `workflow_dispatch`, and once a day (`schedule`, e2e-live only — the
-build jobs skip on the cron) so API drift shows up without a push. Needs the repository secret **`LIUM_E2E_API_KEY`** (the key of a funded account on the target API) and the
+Runs on every PR from this repo that touches `lium/**`, `e2e/**`, `pyproject.toml`, `uv.lock` or `ci.yml` (the
+`e2e-inputs` job reads the PR's file list — the workflow itself has no `paths:` filter since #169, so that `ci-ok`
+always reports; a README- or `test/`-only PR does not rent anything), on `workflow_dispatch`, and once a day
+(`schedule`, e2e-live only — the suite and the build jobs skip on the cron) so API drift shows up without a push.
+`ci-ok`, the required check, does not depend on `e2e-live`: a live suite red on a platform defect (B-119) or an empty
+listing must not block every merge; the sticky comment is its verdict. Needs the repository secret **`LIUM_E2E_API_KEY`** (the key of a funded account on the target API) and the
 variable `LIUM_E2E_API_URL` (staging when unset). Today the variable is `https://lium.io/api` and the key belongs to
 a dedicated test account funded with $200, which covers about 6,000 runs at $0.03. Fork PRs have no secrets →
 the job skips and stays green. One run at a time repo-wide (`concurrency: e2e-live-staging`; the job's own group
