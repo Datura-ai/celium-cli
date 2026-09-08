@@ -25,6 +25,7 @@ otherwise — so a crash against a dev stack never counts as a production issue.
 import os
 import platform
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import click
@@ -101,7 +102,26 @@ def environment(host: Optional[str] = None) -> str:
     return "dev"
 
 
+def _home_prefixes() -> List[str]:
+    """The running user's home as ``Path.home()`` spells it, plus the doubled-backslash form a repr
+    leaves (``'C:\\\\Users\\\\x'``). Empty when the home is unknown or too short to be a name (``/``).
+
+    The patterns in ``_SCRUB`` know the usual spellings; this catches the rest — ``/srv/users/alice``,
+    ``/root``, a Windows profile outside ``Users`` — so a custom home keeps the username out too.
+    """
+    try:
+        home = str(Path.home())
+    except (RuntimeError, KeyError):
+        return []
+    if len(home.rstrip("/\\")) < 2:
+        return []
+    return [home, home.replace("\\", "\\\\")] if "\\" in home else [home]
+
+
 def scrub_text(text: str) -> str:
+    for home in _home_prefixes():
+        # the prefix as a path: `/root/.lium` and `/root` go, `/rootfs` stays
+        text = re.sub(re.escape(home) + r"(?![A-Za-z0-9_-])", "~", text)
     for pattern, placeholder in _SCRUB:
         text = pattern.sub(placeholder, text)
     return text

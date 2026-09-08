@@ -222,6 +222,20 @@ def test_windows_home_directories_are_scrubbed_too():
     assert telemetry.scrub_text(r"cannot use C:\Users\bob, using C:\Users\bob\.lium instead") == r"cannot use ~~\.lium instead"
 
 
+def test_the_running_users_home_is_scrubbed_whatever_it_is_called(monkeypatch):
+    """A custom Unix home (`/srv/users/alice`) or `/root` is not under /Users or /home, so the spelling
+    patterns miss it; `Path.home()` itself is cut out as a path prefix (arhangel66 on #212)."""
+    monkeypatch.setenv("HOME", "/srv/users/alice")
+    text = "[Errno 13] Permission denied: '/srv/users/alice/.lium/config.ini' (home /srv/users/alice)"
+    assert telemetry.scrub_text(text) == "[Errno 13] Permission denied: '~/.lium/config.ini' (home ~)"
+
+    monkeypatch.setenv("HOME", "/root")
+    assert telemetry.scrub_text("/root/.lium/config.ini, /rootfs/etc and /root") == "~/.lium/config.ini, /rootfs/etc and ~"
+
+    monkeypatch.setenv("HOME", "/")   # a one-character home would turn every path into ~…
+    assert telemetry.scrub_text("/etc/hosts") == "/etc/hosts"
+
+
 def test_a_windows_path_inside_a_real_oserror_message_is_scrubbed(events):
     """`OSError.__str__` reprs the filename, doubling the backslashes (`'C:\\Users\\Renter Two\\…'`); an
     `open()` failure under `~/.lium` is the likeliest unexpected error that carries a home directory."""
