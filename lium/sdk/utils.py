@@ -75,15 +75,18 @@ def expand_gpu_shorthand(gpu_short: str) -> str:
     return gpu_short
 
 
-def with_retry(max_attempts: int = 3, delay: float = 1.0):
-    """Retry decorator for API calls."""
+TRANSIENT_ERRORS = (LiumRateLimitError, LiumServerError, requests.RequestException)
+
+
+def with_retry(max_attempts: int = 3, delay: float = 1.0, exceptions: tuple = TRANSIENT_ERRORS):
+    """Retry decorator for API calls: back off and repeat on ``exceptions``."""
     def decorator(func: F) -> F:
         @wraps(func)
         def wrapper(*args, **kwargs):
             for attempt in range(max_attempts):
                 try:
                     return func(*args, **kwargs)
-                except (LiumRateLimitError, LiumServerError, requests.RequestException):
+                except exceptions:
                     if attempt == max_attempts - 1:
                         raise
                     time.sleep(delay * (2 ** attempt) + random.uniform(0, 0.5))

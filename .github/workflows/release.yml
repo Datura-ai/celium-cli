@@ -121,6 +121,11 @@ jobs:
         ./dist/lium/lium --version
         ./dist/lium/lium --help >/dev/null
 
+    # same check as ci.yml: release-assets needs this job, so a bundle with OpenSSL below 1.1.1w-0+deb11u8
+    # (what 0.0.34 shipped, #223) cannot be published.
+    - name: Report what the bundle ships, fail below the OpenSSL floor
+      run: python3 scripts/linux_bundle_report.py --bundle dist/lium --image lium-build:${GITHUB_SHA}-${{ matrix.asset_name }} --name ${{ matrix.asset_name }}
+
     - name: Generate Linux checksums
       run: |
         cd dist

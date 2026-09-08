@@ -6,7 +6,13 @@ import click
 
 from lium.sdk import Lium
 from lium.cli import ui
-from lium.cli.utils import CliFailure, EXIT_POD_NOT_FOUND, handle_errors, ensure_config
+from lium.cli.utils import (
+    CliFailure,
+    EXIT_POD_NOT_FOUND,
+    handle_errors,
+    ensure_config,
+    store_pod_selection,
+)
 from . import display
 from .actions import GetPodsAction
 
@@ -21,7 +27,14 @@ from .actions import GetPodsAction
 )
 @handle_errors
 def ps_command(pod_id: Optional[str], output_format: str):
-    """List active GPU pods."""
+    """List active GPU pods.
+
+    \b
+    The # column (and "index" in --format json) is the row number that rm, ssh,
+    exec and scp accept in place of a pod huid. It stands for the pod shown on
+    that row, is honoured only in this shell, for 10 minutes and while that pod
+    is still listed; the huid is the stable identifier for scripts.
+    """
 
     ensure_config()
 
@@ -43,6 +56,9 @@ def ps_command(pod_id: Optional[str], output_format: str):
         if not pod:
             raise CliFailure("pod_not_found", f"Pod '{pod_id}' not found", EXIT_POD_NOT_FOUND)
         pods = [pod]
+    else:
+        # Only a full listing defines what "pod 1" means; a filtered one does not.
+        store_pod_selection(pods)
 
     # Check if empty
     if not pods:
@@ -53,11 +69,15 @@ def ps_command(pod_id: Optional[str], output_format: str):
         return
 
     if output_format == "json":
-        click.echo(json.dumps([display.compact_pod(p) for p in pods], indent=2, ensure_ascii=False))
+        payload = [
+            display.compact_pod(p, index=None if pod_id else position)
+            for position, p in enumerate(pods, start=1)
+        ]
+        click.echo(json.dumps(payload, indent=2, ensure_ascii=False))
         return
 
     # Build table
-    table, header = display.build_pods_table(pods)
+    table, header = display.build_pods_table(pods, show_index=not pod_id)
 
     # Display
     ui.info(header)

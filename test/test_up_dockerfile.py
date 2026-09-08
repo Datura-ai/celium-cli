@@ -362,7 +362,7 @@ def test_up_command_reads_dockerfile_and_forwards_content(monkeypatch, tmp_path)
 
     class _FakePrepareSSH:
         def execute(self, ctx):
-            return ActionResult(ok=True, data={"ssh_cmd": "ssh root@host -p 22", "pod": pod})
+            return ActionResult(ok=True, data={"ssh_argv": ["ssh", "-p", "22", "root@203.0.113.7"], "pod": pod})
 
     monkeypatch.setattr(up_command, "ensure_config", lambda: None)
     monkeypatch.setattr(up_command, "Lium", lambda **kwargs: _FakeLium())

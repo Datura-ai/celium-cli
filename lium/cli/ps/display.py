@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 from rich.table import Table
 
-from lium.sdk import PodInfo
+from lium.sdk import PodInfo, pod_ssh_command
 from lium.cli.utils import console
 
 
@@ -76,10 +76,15 @@ def _format_ports(ports: dict) -> str:
     return ", ".join(port_pairs)
 
 
-def compact_pod(pod: PodInfo) -> dict:
-    """Slim, table-equivalent JSON view of a pod."""
+def compact_pod(pod: PodInfo, index: Optional[int] = None) -> dict:
+    """Slim, table-equivalent JSON view of a pod.
+
+    ``index`` is the 1-based row number in this listing — the number `lium rm 1`
+    refers to — and is only meaningful for the full, unfiltered list.
+    """
     executor = pod.executor
     return {
+        "index": index,
         "id": pod.id,
         "huid": pod.huid,
         "name": pod.name,
@@ -99,6 +104,7 @@ def compact_pod(pod: PodInfo) -> dict:
         "ip": executor.ip if executor else None,
         "ports": pod.ports or {},
         "ssh_cmd": pod.ssh_cmd,
+        "ssh_command": pod_ssh_command(pod),
         "removal_scheduled_at": pod.removal_scheduled_at,
         "jupyter_url": pod.jupyter_url,
     }
@@ -120,8 +126,12 @@ def format_header(pod_count: int) -> str:
     return f"Pods  ({pod_count} active)"
 
 
-def build_pods_table(pods: List[PodInfo], short: bool = False) -> tuple[Table | None, str]:
-    """Build pods table, returns (table, header)."""
+def build_pods_table(pods: List[PodInfo], short: bool = False, show_index: bool = True) -> tuple[Table | None, str]:
+    """Build pods table, returns (table, header).
+
+    ``show_index`` adds the ``#`` column: the row number other commands accept
+    as a pod index. It is off for filtered listings, where row 1 is not pod 1.
+    """
 
     if not pods:
         return None, ""
@@ -136,6 +146,8 @@ def build_pods_table(pods: List[PodInfo], short: bool = False) -> tuple[Table | 
     )
 
     # Add columns
+    if show_index:
+        table.add_column("#", justify="right", width=3, no_wrap=True)
     table.add_column("Pod", justify="left", ratio=3, min_width=18, overflow="fold")
     table.add_column("Status", justify="left", width=11, no_wrap=True)
     table.add_column("Config", justify="left", width=12, no_wrap=True)
@@ -148,7 +160,7 @@ def build_pods_table(pods: List[PodInfo], short: bool = False) -> tuple[Table | 
     table.add_column("Name", justify="left", ratio=2, min_width=15, overflow="fold")
 
     # Add rows
-    for pod in pods:
+    for position, pod in enumerate(pods, start=1):
         executor = pod.executor
         if executor:
             config = f"{executor.gpu_count}×{executor.gpu_type}" if executor.gpu_count > 1 else executor.gpu_type
@@ -165,7 +177,10 @@ def build_pods_table(pods: List[PodInfo], short: bool = False) -> tuple[Table | 
         template_name = _format_template_name(pod.template)
         ports_display = f"{executor.ip if executor else ''}\n" + _format_ports(pod.ports)
 
-        row = [
+        row = []
+        if show_index:
+            row.append(console.get_styled(str(position), 'dim'))
+        row += [
             console.get_styled(pod.huid, 'pod_id'),
             status_text,
             config,
