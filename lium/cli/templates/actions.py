@@ -1,4 +1,3 @@
-from typing import Optional
 
 from lium.cli.actions import ActionResult
 
