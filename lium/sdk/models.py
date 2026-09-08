@@ -64,6 +64,10 @@ class PodInfo:
     jupyter_url: Optional[str]
     enable_volume_encryption: bool | None = None
     volume_encryption_status: str | None = None
+    # GPUs this pod is billed for: the pod row's own ``gpu_count`` from ``/pods``,
+    # None when the API did not send it. ``executor`` describes the whole host, so
+    # for a GPU-split rental (2 of the host's 8) this is the smaller number.
+    gpu_count: Optional[int] = None
 
     @property
     def host(self) -> Optional[str]:

@@ -184,6 +184,14 @@ def _response_error_message(response: requests.Response) -> str:
     return str(message or "Request failed")
 
 
+def _pod_gpu_count(row: Dict[str, Any]) -> Optional[int]:
+    """The pod's own billed GPU count from a ``/pods`` row (a string in the payload), or None."""
+    try:
+        return int(row["gpu_count"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _get_client_version() -> str:
     try:
         return version("lium.io")
@@ -875,6 +883,7 @@ class Lium:
                 jupyter_url=d.get("jupyter_url"),
                 enable_volume_encryption=d.get("enable_volume_encryption"),
                 volume_encryption_status=d.get("volume_encryption_status"),
+                gpu_count=_pod_gpu_count(d),
             ))
 
         return pods
