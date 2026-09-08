@@ -20,8 +20,10 @@ from lium.sdk.jobs import (
     build_job_launcher,
     build_port_probe,
     build_status_probe,
+    identity_matches,
     job_paths,
     parse_status,
+    process_identity,
     validate_job_name,
 )
 
@@ -100,10 +102,39 @@ def test_launcher_writes_pid_and_exit_files_and_detaches_from_the_session():
 
     assert line.startswith("mkdir -p /workspace/logs || exit 1; ")
     assert "kill -0 \"$(cat /workspace/logs/vllm.pid)\"" in line and "exit 3" in line
-    assert "rm -f /workspace/logs/vllm.exit; " in line
+    assert "rm -f /workspace/logs/vllm.exit /workspace/logs/vllm.id; " in line
     assert "printf %s 'vllm serve m --port 8000' > /workspace/logs/vllm.cmd; " in line
     assert "nohup setsid bash -c 'bash -lc '\"'\"'vllm serve m --port 8000'\"'\"'; echo $? > /workspace/logs/vllm.exit'" in line
-    assert line.endswith("> /workspace/logs/vllm.log 2>&1 < /dev/null & echo $! > /workspace/logs/vllm.pid; echo $!")
+    assert line.endswith(
+        "> /workspace/logs/vllm.log 2>&1 < /dev/null & echo $! > /workspace/logs/vllm.pid; "
+        + process_identity("$!")
+        + " > /workspace/logs/vllm.id; echo $!"
+    )
+
+
+def test_launcher_refuses_a_live_name_only_when_the_pid_is_still_the_jobs_process():
+    """The .pid file on /workspace survives a pod restart; the number may then belong to another
+    process. "still running" therefore also needs the recorded identity to match."""
+    line = build_job_launcher("vllm serve m --port 8000", name="vllm", job_dir="/workspace/logs")
+    recorded = '"$(cat /workspace/logs/vllm.pid)"'
+
+    assert (
+        f"if [ -f /workspace/logs/vllm.pid ] && kill -0 {recorded} 2>/dev/null && "
+        + identity_matches(recorded, "/workspace/logs/vllm.id")
+        + "; then echo"
+    ) in line
+
+
+def test_process_identity_is_the_boot_id_and_the_start_time_from_proc_stat():
+    # field 22 of /proc/<pid>/stat is the start time; the comm field can hold spaces, so the
+    # line is cut after the closing parenthesis first (field 22 becomes field 20)
+    assert process_identity("4242") == (
+        "{ cat /proc/sys/kernel/random/boot_id 2>/dev/null; "
+        "sed 's/.*) //' /proc/4242/stat 2>/dev/null | cut -d' ' -f20; } | tr '\\n' ' '"
+    )
+    assert identity_matches("4242", "/workspace/logs/j.id") == (
+        '{ [ ! -f /workspace/logs/j.id ] || [ "$(' + process_identity("4242") + ')" = "$(cat /workspace/logs/j.id)" ]; }'
+    )
 
 
 def test_launcher_changes_directory_first_when_asked():
@@ -116,6 +147,12 @@ def test_status_and_port_probes_are_bash_only():
     assert build_status_probe(4242, "/workspace/logs/j.exit") == (
         'if [ -f /workspace/logs/j.exit ]; then echo "exited $(cat /workspace/logs/j.exit)"; '
         "elif kill -0 4242 2>/dev/null; then echo running; else echo gone; fi"
+    )
+    # with the .id file, "running" also needs the live process to be the recorded one
+    assert build_status_probe(4242, "/workspace/logs/j.exit", "/workspace/logs/j.id") == (
+        'if [ -f /workspace/logs/j.exit ]; then echo "exited $(cat /workspace/logs/j.exit)"; '
+        "elif kill -0 4242 2>/dev/null && " + identity_matches("4242", "/workspace/logs/j.id") + "; "
+        "then echo running; else echo gone; fi"
     )
     assert build_port_probe(8000) == (
         "if timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/8000' 2>/dev/null; then echo 'port open'; else echo 'port closed'; fi"
@@ -139,6 +176,7 @@ def test_job_names_are_file_name_stems(bad):
 def test_job_paths_sit_next_to_each_other():
     assert job_paths("vllm", "/workspace/logs/") == {
         "log_path": "/workspace/logs/vllm.log", "pid_file": "/workspace/logs/vllm.pid",
+        "id_file": "/workspace/logs/vllm.id",
         "exit_file": "/workspace/logs/vllm.exit", "cmd_file": "/workspace/logs/vllm.cmd",
     }
 
@@ -236,6 +274,7 @@ def test_job_to_dict_is_json_serialisable():
 
     assert data["name"] == "vllm" and data["pid"] == 5 and data["pod_id"] == "pod-1"
     assert data["log_path"] == "/workspace/logs/vllm.log" and data["exit_file"] == "/workspace/logs/vllm.exit"
+    assert data["id_file"] == "/workspace/logs/vllm.id"
 
 
 # --- re-attaching -----------------------------------------------------------------------------
@@ -440,7 +479,18 @@ def test_kill_signals_the_process_group(monkeypatch):
 
     assert job.kill() is True
     assert job.kill("SIGKILL") is True
-    assert sent[0].startswith("kill -TERM -- -4242") and sent[1].startswith("kill -KILL -- -4242")
+    assert "kill -TERM -- -4242 2>/dev/null || kill -TERM 4242" in sent[0]
+    assert "kill -KILL -- -4242 2>/dev/null || kill -KILL 4242" in sent[1]
+    # the signal is sent only when the PID is still the job's own process
+    assert sent[0].startswith(identity_matches("4242", "/workspace/logs/j.id") + " && { kill -TERM")
+
+
+def test_kill_reports_false_when_the_pid_is_no_longer_the_job(monkeypatch):
+    client = _Client()
+    _ssh_answering(monkeypatch, client, [("", 1)])  # the identity check failed: nothing was signalled
+    job = Job(client, _pod(), name="j", pid=4242, command="x")
+
+    assert job.kill() is False
 
 
 def test_kill_rejects_an_unknown_signal_shape():

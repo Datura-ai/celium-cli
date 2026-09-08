@@ -153,6 +153,30 @@ def test_rental_removes_a_pod_the_server_created_before_the_rent_call_raised():
     assert ("DELETE", "/pods/pod-stale") not in client.calls
 
 
+def test_rental_cleanup_leaves_a_same_name_pod_whose_executor_is_unknown_or_different():
+    """Two rentals with the default name can run at once: the one that raised may only
+    remove a pod on its own executor. An unknown executor is not a match."""
+    unknown = _pod()
+    unknown.id, unknown.executor = "pod-unknown", None
+    elsewhere = _pod()
+    elsewhere.id = "pod-elsewhere"
+    elsewhere.executor.id = "exec-2"
+    mine = _pod()
+
+    class _RentRaises(_Client):
+        def _rent(self, **kwargs):
+            raise LiumError("Failed to create pod job")
+
+    client = _RentRaises(ps_sequence=[[], [unknown, elsewhere, mine]])
+
+    with pytest.raises(LiumError):
+        with client.rental(executor_id="exec-1", name="job"):
+            pass
+
+    deleted = [c[1] for c in client.calls if c[0] == "DELETE"]
+    assert deleted == ["/pods/pod-1"]
+
+
 def test_rental_that_raised_before_any_pod_appeared_removes_nothing():
     class _RentRaises(_Client):
         def _rent(self, **kwargs):

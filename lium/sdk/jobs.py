@@ -5,15 +5,19 @@ for an agent, the turn that starts it. The pieces every caller otherwise rebuild
 hand — ``nohup setsid … < /dev/null &``, a PID file, an exit-code file, a
 ``/dev/tcp`` poll until the port answers — live here, behind one object.
 
-Every job keeps four small files next to each other on the pod, named after the job::
+Every job keeps five small files next to each other on the pod, named after the job::
 
     <job_dir>/<name>.log    stdout+stderr of the command
     <job_dir>/<name>.pid    PID of the job's process group leader
+    <job_dir>/<name>.id     the pod's boot id and the process start time — pins that PID
     <job_dir>/<name>.exit   exit code, written when the command ends
     <job_dir>/<name>.cmd    the command as given
 
 so :meth:`Lium.job` can re-attach to a running job from another process or a later
-agent turn with nothing but the pod and the name.
+agent turn with nothing but the pod and the name. The ``.id`` file is what keeps a
+PID that survived a pod restart on ``/workspace`` from being mistaken for the job:
+``status()`` and ``kill()`` only treat the process as the job when its boot id and
+start time (``/proc/<pid>/stat`` field 22) still match.
 """
 
 from __future__ import annotations
@@ -61,7 +65,37 @@ def default_job_name() -> str:
 
 def job_paths(name: str, job_dir: str = DEFAULT_JOB_DIR) -> Dict[str, str]:
     stem = f"{job_dir.rstrip('/')}/{name}"
-    return {"log_path": f"{stem}.log", "pid_file": f"{stem}.pid", "exit_file": f"{stem}.exit", "cmd_file": f"{stem}.cmd"}
+    return {
+        "log_path": f"{stem}.log",
+        "pid_file": f"{stem}.pid",
+        "id_file": f"{stem}.id",
+        "exit_file": f"{stem}.exit",
+        "cmd_file": f"{stem}.cmd",
+    }
+
+
+def process_identity(pid: str) -> str:
+    """Shell that prints what pins ``pid`` to one process: the boot id and the start time.
+
+    ``pid`` is shell text (``$!``, ``4242`` or ``"$(cat file)"``). The start time is
+    field 22 of ``/proc/<pid>/stat`` in clock ticks since boot; the comm field can hold
+    spaces, so the line is cut after its closing parenthesis first. Both parts are empty
+    when the process is gone, so a comparison with a recorded identity fails then too.
+    """
+    return (
+        f"{{ cat /proc/sys/kernel/random/boot_id 2>/dev/null; "
+        f"sed 's/.*) //' /proc/{pid}/stat 2>/dev/null | cut -d' ' -f20; }} | tr '\\n' ' '"
+    )
+
+
+def identity_matches(pid: str, id_file: str) -> str:
+    """Shell condition: ``pid`` is still the process recorded in ``id_file``.
+
+    A job started before the ``.id`` file existed has none; then the PID alone decides,
+    as before.
+    """
+    q = shlex.quote(id_file)
+    return f'{{ [ ! -f {q} ] || [ "$({process_identity(pid)})" = "$(cat {q})" ]; }}'
 
 
 def build_job_launcher(
@@ -97,23 +131,36 @@ def build_job_launcher(
         exports = " && ".join(f"export {_validate_env_name(key)}={q(str(value))}" for key, value in env.items())
         inner = f"{exports} && {inner}"
     wrapper = f"bash -lc {q(inner)}; echo $? > {q(p['exit_file'])}"
+    # "still running" needs the recorded PID to be the job's own process, not one that
+    # took the number after a pod restart (the .pid file on /workspace survives one).
+    recorded_pid = f'"$(cat {pid_file})"'
+    still_running = (
+        f"[ -f {pid_file} ] && kill -0 {recorded_pid} 2>/dev/null && {identity_matches(recorded_pid, p['id_file'])}"
+    )
     return (
         f"mkdir -p {q(job_dir)} || exit 1; "
-        f"if [ -f {pid_file} ] && kill -0 \"$(cat {pid_file})\" 2>/dev/null; "
+        f"if {still_running}; "
         f"then echo \"job {name} is still running (pid $(cat {pid_file}))\" >&2; exit 3; fi; "
-        f"rm -f {q(p['exit_file'])}; "
+        f"rm -f {q(p['exit_file'])} {q(p['id_file'])}; "
         f"printf %s {q(command)} > {q(p['cmd_file'])}; "
         f"nohup setsid bash -c {q(wrapper)} > {q(p['log_path'])} 2>&1 < /dev/null & "
-        f"echo $! > {q(p['pid_file'])}; echo $!"
+        f"echo $! > {q(p['pid_file'])}; {process_identity('$!')} > {q(p['id_file'])}; echo $!"
     )
 
 
-def build_status_probe(pid: int, exit_file: str) -> str:
-    """Prints ``exited <code>``, ``running`` or ``gone`` for a job."""
+def build_status_probe(pid: int, exit_file: str, id_file: Optional[str] = None) -> str:
+    """Prints ``exited <code>``, ``running`` or ``gone`` for a job.
+
+    With ``id_file``, ``running`` also needs the live process to carry the recorded
+    boot id and start time: after a pod restart the PID may belong to something else.
+    """
     q = shlex.quote
+    alive = f"kill -0 {int(pid)} 2>/dev/null"
+    if id_file is not None:
+        alive += f" && {identity_matches(str(int(pid)), id_file)}"
     return (
         f"if [ -f {q(exit_file)} ]; then echo \"exited $(cat {q(exit_file)})\"; "
-        f"elif kill -0 {int(pid)} 2>/dev/null; then echo running; else echo gone; fi"
+        f"elif {alive}; then echo running; else echo gone; fi"
     )
 
 
@@ -169,6 +216,7 @@ class Job:
         paths = job_paths(self.name, job_dir)
         self.log_path = paths["log_path"]
         self.pid_file = paths["pid_file"]
+        self.id_file = paths["id_file"]
         self.exit_file = paths["exit_file"]
         self.cmd_file = paths["cmd_file"]
 
@@ -185,6 +233,7 @@ class Job:
             "job_dir": self.job_dir,
             "log_path": self.log_path,
             "pid_file": self.pid_file,
+            "id_file": self.id_file,
             "exit_file": self.exit_file,
         }
 
@@ -194,10 +243,14 @@ class Job:
         """``{"state": "running" | "exited" | "gone", "exit_code": int | None}``.
 
         ``gone`` means the process is not alive and left no exit code — killed as
-        a group, or the pod restarted underneath it.
+        a group, or the pod restarted underneath it (a PID that another process
+        took after the restart does not count as alive: the ``.id`` file decides).
         """
-        result = self._client.exec(self.pod, command=build_status_probe(self.pid, self.exit_file), timeout=30)
+        result = self._client.exec(self.pod, command=self._status_probe(), timeout=30)
         return parse_status(result.get("stdout", ""))
+
+    def _status_probe(self) -> str:
+        return build_status_probe(self.pid, self.exit_file, self.id_file)
 
     def is_running(self) -> bool:
         return self.status()["state"] == "running"
@@ -255,7 +308,7 @@ class Job:
             LiumError: the job ended (or vanished) before the port answered.
             TimeoutError: the port did not answer within ``timeout`` seconds.
         """
-        probe = build_status_probe(self.pid, self.exit_file) + "; " + build_port_probe(port, host)
+        probe = self._status_probe() + "; " + build_port_probe(port, host)
         deadline = time.monotonic() + timeout
         last_error: Optional[str] = None
         while True:
@@ -308,11 +361,18 @@ class Job:
             return ""
 
     def kill(self, signal: str = "TERM") -> bool:
-        """Send ``signal`` to the job's whole process group. Returns whether anything received it."""
+        """Send ``signal`` to the job's whole process group. Returns whether anything received it.
+
+        Nothing is signalled when the PID no longer belongs to the job (the pod
+        restarted and another process took the number); the call returns ``False``.
+        """
         sig = signal.upper().removeprefix("SIG")
         if not re.fullmatch(r"[A-Z0-9]+", sig):
             raise ValueError(f"Invalid signal {signal!r}")
-        command = f"kill -{sig} -- -{self.pid} 2>/dev/null || kill -{sig} {self.pid} 2>/dev/null"
+        command = (
+            f"{identity_matches(str(self.pid), self.id_file)} && "
+            f"{{ kill -{sig} -- -{self.pid} 2>/dev/null || kill -{sig} {self.pid} 2>/dev/null; }}"
+        )
         return bool(self._client.exec(self.pod, command=command, timeout=30).get("success"))
 
     def _pod_label(self) -> str:

@@ -816,7 +816,10 @@ class Lium:
             return None
 
     def _remove_strays(self, name: str, executor_id: str, *, exclude: frozenset) -> None:
-        """Remove pods called ``name`` on ``executor_id`` that were not there before the rent."""
+        """Remove pods called ``name`` on ``executor_id`` that were not there before the rent.
+
+        The executor has to match: a pod whose executor is unknown may be another
+        ``rental()`` running with the default name, and is left alone."""
         try:
             pods = self.ps()
         except Exception:  # noqa: BLE001 - cleanup must not mask the rent's error
@@ -824,7 +827,7 @@ class Lium:
         for pod in pods:
             if pod.id in exclude or pod.name != name:
                 continue
-            if pod.executor is not None and pod.executor.id and pod.executor.id != executor_id:
+            if pod.executor is None or pod.executor.id != executor_id:
                 continue
             self._remove_quietly(pod)
 
