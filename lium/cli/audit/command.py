@@ -16,6 +16,7 @@ from lium.cli.utils import (
     EXIT_CONFIGURATION_ERROR,
     EXIT_PERMISSION_DENIED,
     EXIT_POD_NOT_FOUND,
+    _api_error_data,
     ensure_config,
     handle_errors,
     parse_targets,
@@ -256,11 +257,13 @@ def audit_command(
     try:
         events = lium.events(since=since_at, pod_id=pod_id, api_key_id=api_key_id, limit=limit)
     except LiumAuthError as exc:
-        # same exit code as every other command's 401 (handle_errors → EXIT_API_ERROR); only the hint is added
+        # same exit code as every other command's 401 (handle_errors → EXIT_API_ERROR); only the hint is added,
+        # and the server's code, hint and request_id ride along like on a bare LiumError (DAH-3057)
         raise CliFailure(
-            "auth_error",
+            exc.code or "auth_error",
             f"{exc}. If the key works for 'lium ps', this backend does not yet open /users/me/events to API keys.",
             EXIT_API_ERROR,
+            data=_api_error_data(exc),
         )
 
     if json_output:

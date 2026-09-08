@@ -406,10 +406,16 @@ def _error_context(response: requests.Response) -> dict:
         error = None
     error = error if isinstance(error, dict) else {}
     headers = getattr(response, "headers", None) or {}
+
+    def text(value: Any) -> Optional[str]:
+        # only non-empty strings: the fields are printed and compared as text, and a server
+        # (or a proxy) sending a number or an object here must not break the error path
+        return value if isinstance(value, str) and value else None
+
     return {
-        "code": _response_error_code(response),
-        "hint": error.get("hint") or None,
-        "request_id": error.get("request_id") or headers.get("X-Request-Id") or None,
+        "code": text(error.get("code")),
+        "hint": text(error.get("hint")),
+        "request_id": text(error.get("request_id")) or text(headers.get("X-Request-Id")),
     }
 
 
@@ -1298,8 +1304,10 @@ class Lium:
                 stream=True,
                 timeout=None if follow else 30,
             )
-        except LiumNotFoundError:
-            raise LiumNotFoundError(f"Pod not found: {pod_id}") from None
+        except LiumNotFoundError as e:
+            raise LiumNotFoundError(
+                f"Pod not found: {pod_id}", code=e.code, hint=e.hint, request_id=e.request_id
+            ) from None
 
         with response:
             for line in response.iter_lines():
