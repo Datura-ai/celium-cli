@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 
 from lium.sdk import Template
 
-# cu126, cu130, cuda12.6, cuda-12.6, cuda_12.6, CUDA 12.6, 12.6-cudnn, cuda13.0.2
+# cu126, cu130, cuda12.6, cuda-12.6, cuda_12.6, CUDA 12.6, cuda13.0.2 — a bare leading "12.6.0-…" is not read
 _CUDA = re.compile(r"(?:cu(?:da)?[-_ ]?)(1[1-9])[.]?(\d)(?:\.\d+)?(?![\d.])", re.IGNORECASE)
 _TORCH_IN_TAG = re.compile(r"torch[-_:]?(\d+\.\d+\.\d+)", re.IGNORECASE)
 _LEADING_VERSION = re.compile(r"^(\d+\.\d+\.\d+)(?=[-_+]|$)")
@@ -82,8 +82,15 @@ def describe(template: Template) -> Dict[str, Any]:
 
 def arch_label(support: Optional[str]) -> str:
     return {
-        HOPPER_AND_BLACKWELL: "Hopper, Blackwell",
-        HOPPER_ONLY: "Hopper (not Blackwell)",
+        HOPPER_AND_BLACKWELL: "Hopper+Blackwell",
+        HOPPER_ONLY: "Hopper only",
         PRE_HOPPER: "pre-Hopper",
         None: "?",
     }[support]
+
+
+def runs_on_cell(cuda: Optional[float], support: Optional[str]) -> str:
+    """The table cell: the CUDA build first, then the generations — ``13.0 Hopper+Blackwell``; ``?`` when the tag says nothing."""
+    if cuda is None:
+        return "?"
+    return f"{cuda:.1f} {arch_label(support)}"

@@ -58,6 +58,8 @@ def fake_lium(monkeypatch):
     ("modelscope", "ubuntu22.04-cuda13.0.3-py312-torch2.11.0", 13.0),
     ("elaich/sglang", "latest", None),
     ("something", "cuda_12_6", None),                             # ambiguous separators are not guessed
+    ("vendor/cuda12.8-runtime", "latest", 12.8),                  # tag says nothing: the image name is read
+    ("vendor/cuda12.8-runtime", "cu130", 13.0),                   # the tag wins over the image name
 ])
 def test_cuda_version_from_tag(image, tag, expected):
     assert arch.cuda_version(image, tag) == expected
@@ -126,6 +128,25 @@ def test_templates_table_has_the_runs_on_column_and_a_legend(fake_lium):
     assert result.exit_code == 0, result.output
     assert "Runs on" in result.output and "Blackwell" in result.output
     assert "CUDA 12.8+" in result.output
+    # the cells, not only the header and legend (CliRunner renders at 80 columns, so the cell may fold at a space)
+    assert "13.0" in result.output and "Hopper+Bl" in result.output and "pre-Hoppe" in result.output
+    assert arch.runs_on_cell(13.0, arch.HOPPER_AND_BLACKWELL) == "13.0 Hopper+Blackwell"
+    assert arch.runs_on_cell(12.1, arch.HOPPER_ONLY) == "12.1 Hopper only"
+    assert arch.runs_on_cell(None, None) == "?"
+
+
+def test_templates_table_fits_80_columns():
+    """Two more columns must not bring back the 11-line-per-template fold #217 removed."""
+    from rich.console import Console
+
+    from lium.cli.templates.display import build_templates_table
+
+    table, _ = build_templates_table(TEMPLATES)
+    console = Console(width=80, record=True, force_terminal=False)
+    console.print(table)
+    lines = [line for line in console.export_text().splitlines() if line.strip()]
+    # #217's five-column table renders these six in 19 lines; one more column may cost a line each, not five
+    assert len(lines) <= 19 + len(TEMPLATES), "\n".join(lines)
 
 
 def test_templates_arch_with_no_match_explains_how_it_is_derived(fake_lium, monkeypatch):

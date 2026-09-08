@@ -1,4 +1,3 @@
-
 from lium.cli.actions import ActionResult
 
 
