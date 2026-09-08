@@ -66,7 +66,8 @@ lium = "lium.cli.cli:main"
 [tool.uv]
 # cryptography 49+ ships no macOS Intel (x86_64) wheel — 49.0.0–50.0.1 carry macosx_11_0_arm64 only, 48.0.1 has a
 # universal2 wheel — so the lium-darwin-amd64 binary build (ci.yml, macos-15-intel) breaks the moment the lock moves
-# past 48. Held here, not only as lock state, until the bundle ships its own OpenSSL (release-tooling ticket DAH-3186);
+# past 48. Held here, not only as lock state, until the bundle ships its own OpenSSL (a follow-up of DAH-3186, the
+# Dependabot ticket this constraint belongs to; no release-tooling ticket exists yet);
 # .github/dependabot.yml ignores cryptography >= 49 for the same reason.
 constraint-dependencies = ["cryptography<49"]
 
