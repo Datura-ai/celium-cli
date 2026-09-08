@@ -13,7 +13,7 @@ from lium.cli.utils import (
     ensure_config,
     store_pod_selection,
 )
-from lium.cli.workspaces.context import context_line
+from lium.cli.workspaces.context import show_workspace
 from . import display
 from .actions import GetPodsAction
 
@@ -80,6 +80,7 @@ def ps_command(pod_id: Optional[str], output_format: str):
             click.echo("[]")
         else:
             ui.warning("No active pods")
+            show_workspace(lium)
         return
 
     if output_format == "json":
@@ -102,6 +103,4 @@ def ps_command(pod_id: Optional[str], output_format: str):
         from lium.cli.describe.display import format_event
 
         ui.dim(f"last event: {format_event(last_event)}")
-    workspace = context_line(lium)
-    if workspace:
-        ui.dim(workspace)
+    show_workspace(lium)

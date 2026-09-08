@@ -365,9 +365,10 @@ class Lium:
     """Clean Unix-style SDK for Lium."""
 
     def __init__(self, config: Optional[Config] = None, source: str = "sdk", workspace: Optional[str] = None):
-        """``workspace`` picks the API key configured for that workspace (``[workspace.<name>]`` in
+        """``workspace`` picks the API key saved for that workspace (``[workspace.<name>]`` in
         ~/.lium/config.ini, written by ``lium keys create --workspace … --save``); a key acts in exactly
-        one workspace, so choosing the workspace means choosing the key (lium-platform DAH-2986)."""
+        one workspace, so choosing the workspace means choosing the key (lium-platform DAH-2986), and
+        ``ValueError`` is raised when none is saved for it rather than running as another key."""
         self.config = config or Config.load(workspace=workspace)
         self.source = source
         self.headers = {

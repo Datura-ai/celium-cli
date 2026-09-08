@@ -264,6 +264,8 @@ def test_unreadable_snapshot_counts_as_no_snapshot(config_dir):
 
 class _FakeLium:
     pods: list = []
+    # a server without workspaces: `rm` reads it for its workspace line
+    workspaces = SimpleNamespace(current=lambda: None)
 
     def __init__(self, *args, **kwargs):
         pass

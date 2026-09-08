@@ -228,6 +228,8 @@ def _run_up(monkeypatch, wait_action, args=()):
     )
 
     class _Lium:
+        workspaces = SimpleNamespace(current=lambda: None)  # a server without workspaces: `up` reads it for its workspace line
+
         def get_deployment_estimate(self, *a, **k):
             return {}
 
@@ -319,6 +321,8 @@ def test_up_bounds_the_wait_by_the_default_budget(monkeypatch):
 
 def test_wait_ready_action_reports_a_timeout_as_not_ok():
     class _Lium:
+        workspaces = SimpleNamespace(current=lambda: None)  # a server without workspaces: `up` reads it for its workspace line
+
         def wait_ready(self, pod_id, *, timeout, poll_interval, on_poll=None):
             assert (pod_id, timeout) == ("pod-1", 5)
             return None
@@ -331,6 +335,8 @@ def test_wait_ready_action_reports_a_timeout_as_not_ok():
 
 def test_wait_ready_action_lets_a_start_error_through():
     class _Lium:
+        workspaces = SimpleNamespace(current=lambda: None)  # a server without workspaces: `up` reads it for its workspace line
+
         def wait_ready(self, pod_id, *, timeout, poll_interval, on_poll=None):
             raise PodStartError("dead", pod_id=pod_id, status="FAILED")
 
@@ -356,6 +362,8 @@ def _run_up_with_prompt(monkeypatch, *, answer_takes: float, resolve_takes: floa
     )
 
     class _Lium:
+        workspaces = SimpleNamespace(current=lambda: None)  # a server without workspaces: `up` reads it for its workspace line
+
         def get_deployment_estimate(self, *a, **k):
             return {}
 

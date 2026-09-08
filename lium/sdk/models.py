@@ -288,6 +288,10 @@ class WorkspaceInfo:
     # Only GET /users/me says so; None when read from GET /workspaces
     is_personal: Optional[bool] = None
 
+    def matches(self, name_or_id: str) -> bool:
+        """Whether ``name_or_id`` names this workspace: its id, or its name (case-insensitive)."""
+        return name_or_id == self.id or name_or_id.lower() == self.name.lower()
+
 
 @dataclass
 class WorkspaceMember:

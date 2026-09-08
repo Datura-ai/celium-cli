@@ -5,9 +5,15 @@ is also how this client knows the server has workspaces at all. Reads of the wor
 in work with the key; anything that reshapes a team (create, invite, remove, transfer billing,
 delete) and anything on ``/keys`` is session-only on the server, so those calls need a browser-session
 token (``Lium.workspaces.login`` or LIUM_SESSION_TOKEN) and raise :class:`LiumAuthError` without one.
+
+Workspaces and members come back as :class:`WorkspaceInfo` / :class:`WorkspaceMember`; the write
+acknowledgements (``{"message": …}``), the invitation and the API-key rows are returned as the server's
+JSON, because the CLI shows the server's own message and prints a key once — nothing reshapes them.
 """
 
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+import requests
 
 from .exceptions import LiumAuthError, LiumError
 from .models import WorkspaceInfo, WorkspaceMember
@@ -79,9 +85,13 @@ class WorkspacesClient:
 
     def login(self, email: str, password: str) -> str:
         """Sign in with e-mail and password (``POST /users/login``) and keep the token on this client."""
-        response = self._lium._request(
-            "POST", "/users/login", headers=self._plain_headers(), json={"email": email, "password": password}
-        )
+        try:
+            response = self._lium._request(
+                "POST", "/users/login", headers=self._plain_headers(), json={"email": email, "password": password}
+            )
+        except LiumAuthError as e:
+            # _request maps every 401 to "Invalid API key"; here no key was sent
+            raise LiumAuthError("Login refused: check the e-mail and password") from e
         token = response.json().get("token")
         if not token:
             raise LiumAuthError("Login did not return a session token")
@@ -99,11 +109,9 @@ class WorkspacesClient:
             headers[WORKSPACE_HEADER] = workspace_id
         return headers
 
-    def _read_headers(self) -> Optional[Dict[str, str]]:
-        # a session lists every workspace of the account; a key lists the one it acts in
-        return self._session_headers() if self.session_token else None
-
-    def _session_request(self, method: str, endpoint: str, workspace_id: Optional[str] = None, **kwargs):
+    def _session_request(
+        self, method: str, endpoint: str, workspace_id: Optional[str] = None, **kwargs
+    ) -> requests.Response:
         try:
             return self._lium._request(method, endpoint, headers=self._session_headers(workspace_id), **kwargs)
         except LiumAuthError as e:
@@ -111,23 +119,38 @@ class WorkspacesClient:
                 raise
             raise LiumAuthError("The session token was refused (expired?); run `lium workspaces login` again") from e
 
+    def _read(self, endpoint: str) -> requests.Response:
+        # a session lists every workspace of the account; a key lists the one it acts in
+        if self.session_token:
+            return self._session_request("GET", endpoint)
+        return self._lium._request("GET", endpoint)
+
     # ------------------------------------------------------------------ reads (key or session)
     def list(self) -> List[WorkspaceInfo]:
-        return [_info(d) for d in self._lium._request("GET", "/workspaces", headers=self._read_headers()).json()]
+        return [_info(d) for d in self._read("/workspaces").json()]
 
     def get(self, workspace_id: str) -> WorkspaceInfo:
-        return _info(self._lium._request("GET", f"/workspaces/{workspace_id}", headers=self._read_headers()).json())
+        return _info(self._read(f"/workspaces/{workspace_id}").json())
 
     def members(self, workspace_id: str) -> List[WorkspaceMember]:
-        response = self._lium._request("GET", f"/workspaces/{workspace_id}/members", headers=self._read_headers())
-        return [_member(d) for d in response.json()]
+        return [_member(d) for d in self._read(f"/workspaces/{workspace_id}/members").json()]
 
     def resolve(self, name_or_id: str) -> WorkspaceInfo:
-        """A workspace by name (case-insensitive) or id among those this client can see."""
-        for workspace in self.list():
-            if name_or_id in (workspace.id, workspace.name) or name_or_id.lower() == workspace.name.lower():
-                return workspace
-        raise LiumError(f"No workspace named '{name_or_id}' is visible to this key or session")
+        """A workspace by name (case-insensitive) or id among those this client can see.
+
+        Names are not unique on the server: two visible workspaces with that name is an error that
+        names both ids. On a server without workspaces this says so (:data:`NOT_ENABLED`) instead of
+        reading a route that is not there.
+        """
+        self.require_enabled()
+        found = [workspace for workspace in self.list() if workspace.matches(name_or_id)]
+        if len(found) > 1:
+            # names are not unique on the server; acting on "the first one" would be a guess
+            ids = ", ".join(w.id for w in found)
+            raise LiumError(f"{len(found)} workspaces are named '{name_or_id}' ({ids}); use the id")
+        if not found:
+            raise LiumError(f"No workspace named '{name_or_id}' is visible to this key or session")
+        return found[0]
 
     # ------------------------------------------------------------------ writes (session)
     def create(self, name: str) -> WorkspaceInfo:

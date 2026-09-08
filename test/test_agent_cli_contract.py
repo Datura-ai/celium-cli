@@ -56,10 +56,15 @@ def _executor(huid: str, price_per_hour: float, download: int) -> SimpleNamespac
     )
 
 
+# `Lium.workspaces` on a server without workspaces: `ps`, `ls`, `up` and `rm` read it for their workspace line
+_NO_WORKSPACES = SimpleNamespace(current=lambda: None)
+
+
 class _FakeLium:
     """Stands in for the SDK: one pod, and an exec result the test dictates."""
 
     result: dict[str, object] = {}
+    workspaces = _NO_WORKSPACES
 
     def __init__(self, *args, **kwargs):
         pass
@@ -146,6 +151,7 @@ def test_exec_fails_loudly_when_no_pod_matches(monkeypatch):
 
 class _FakeRmLium:
     removed: list[str] = []
+    workspaces = _NO_WORKSPACES
 
     def __init__(self, *args, **kwargs):
         pass
@@ -266,6 +272,8 @@ def test_rm_named_pod_on_an_empty_account_fails(monkeypatch):
     """A typo must fail even when the account happens to hold no pods."""
 
     class _EmptyLium:
+        workspaces = _NO_WORKSPACES
+
         def __init__(self, *args, **kwargs):
             pass
 
@@ -283,6 +291,8 @@ def test_rm_all_on_an_empty_account_is_a_no_op(monkeypatch):
     """Removing everything when there is nothing is success, not failure."""
 
     class _EmptyLium:
+        workspaces = _NO_WORKSPACES
+
         def __init__(self, *args, **kwargs):
             pass
 
@@ -441,6 +451,8 @@ def _run_up_past_the_rent(monkeypatch, extra_args, break_on):
     from lium.cli.up import command as up_module
 
     class _RentingLium:
+        workspaces = _NO_WORKSPACES
+
         def __init__(self, *args, **kwargs):
             pass
 
@@ -496,6 +508,8 @@ def test_up_reports_an_api_failure_while_resolving_a_node(monkeypatch):
     from lium.cli.up import command as up_module
 
     class _BrokenUpLium:
+        workspaces = _NO_WORKSPACES
+
         def __init__(self, *args, **kwargs):
             pass
 

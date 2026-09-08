@@ -11,10 +11,13 @@ import sys
 from typing import Optional
 
 import click
+from rich.markup import escape
 
-from lium.sdk import Lium
+from lium.sdk import Config, Lium
 from lium.sdk.config import workspace_section
+from lium.sdk.exceptions import LiumAuthError
 from lium.sdk.models import WorkspaceInfo
+from lium.sdk.workspaces import NEEDS_SESSION
 from lium.cli import ui
 from lium.cli.settings import config as settings
 from lium.cli.utils import CliFailure, EXIT_CONFIGURATION_ERROR, ensure_config, handle_errors
@@ -25,17 +28,39 @@ ROLES = click.Choice(["member", "admin", "owner"])
 WORKSPACE_ARG = click.argument("workspace", required=False)
 
 
-def _client() -> Lium:
+def workspace_client() -> Lium:
+    """The SDK client for `lium workspaces` and `lium keys`; the config prompts run first.
+
+    These commands manage teams with the account's key and a session: `--workspace` / LIUM_WORKSPACE
+    names their default target but does not pick their key, so `lium keys create … --save` and
+    `LIUM_API_KEY=… lium workspaces use …` work when no key is saved for that workspace yet.
+    """
     ensure_config()
-    return Lium(source="cli")
+    return Lium(config=Config.load(key_for_workspace=False), source="cli")
 
 
-def _target(lium: Lium, workspace: Optional[str]) -> WorkspaceInfo:
-    """The workspace named on the command line, else the configured one, else the key's own."""
+def target_workspace(lium: Lium, workspace: Optional[str]) -> WorkspaceInfo:
+    """The workspace named on the command line, else the configured one, else the key's own.
+
+    A name with a saved `[workspace.<name>] id` is looked up by that id first, so a workspace renamed
+    on the server is still found under the name it was saved as; the current name is the fallback.
+    """
     name = workspace or lium.config.workspace
-    if name:
-        return lium.workspaces.resolve(name)
-    return lium.workspaces.require_enabled()
+    if not name:
+        return lium.workspaces.require_enabled()
+    saved_id = _saved_id(name)
+    if saved_id:
+        lium.workspaces.require_enabled()
+        found = [w for w in lium.workspaces.list() if w.id == saved_id]
+        if found:
+            return found[0]
+    return lium.workspaces.resolve(name)
+
+
+def require_session(lium: Lium) -> None:
+    """The session-only subcommands stop here, before any request, when there is no session token."""
+    if not lium.workspaces.session_token:
+        raise LiumAuthError(NEEDS_SESSION)
 
 
 def _member_id(lium: Lium, workspace: WorkspaceInfo, who: str) -> str:
@@ -47,10 +72,37 @@ def _member_id(lium: Lium, workspace: WorkspaceInfo, who: str) -> str:
 
 
 def _remember(workspace: WorkspaceInfo, api_key: Optional[str] = None) -> None:
+    """`[workspaces] active`, and — with a key — the `[workspace.<name>]` section (id and key) for `--workspace`."""
+    section = workspace_section(workspace.name)  # refuses a name config.ini cannot hold, before anything is written
     settings.set("workspaces.active", workspace.name)
-    settings.set_in_section(workspace_section(workspace.name), "id", workspace.id)
     if api_key:
-        settings.set_in_section(workspace_section(workspace.name), "api_key", api_key)
+        settings.set_in_section(section, "id", workspace.id)
+        settings.set_in_section(section, "api_key", api_key)
+
+
+def _saved_key(workspace: WorkspaceInfo) -> Optional[str]:
+    return settings.get_in_section(workspace_section(workspace.name), "api_key")
+
+
+def _saved_id(name: str) -> Optional[str]:
+    try:
+        return settings.get_in_section(workspace_section(name), "id")
+    except ValueError:  # a name config.ini cannot hold has no section
+        return None
+
+
+def _forget(workspace: WorkspaceInfo) -> None:
+    """Drop every `[workspace.<name>]` section saved for this workspace — by id, or by its current name — and
+    the `[workspaces] active` default when it names one of them; a deleted workspace's key is dead."""
+    names = {section[len("workspace."):] for section in settings.sections("workspace.")}
+    gone = {name for name in names if settings.get_in_section(f"workspace.{name}", "id") == workspace.id}
+    gone.add(workspace.name.lower())
+    for section in settings.sections("workspace."):
+        if section[len("workspace."):] in gone:
+            settings.remove_section(section)
+    active = settings.get("workspaces.active")
+    if active and active.lower() in gone:
+        settings.unset("workspaces.active")
 
 
 @click.group("workspaces", invoke_without_command=True)
@@ -74,16 +126,17 @@ def workspaces_command(ctx):
 @handle_errors
 def workspaces_list_command(json_output: bool):
     """List workspaces: the one this key acts in, or every one you belong to with a session."""
-    lium = _client()
+    lium = workspace_client()
     current = lium.workspaces.require_enabled()
     workspaces = ui.load("Loading workspaces", lium.workspaces.list) if not json_output else lium.workspaces.list()
     if json_output:
         click.echo(json.dumps([workspace_json(w) for w in workspaces], indent=2))
         return
-    table, header = build_workspaces_table(workspaces, current.id, lium.config.workspace)
+    active = settings.get("workspaces.active")
+    table, header = build_workspaces_table(workspaces, current.id, active, _saved_id(active) if active else None)
     ui.info(header)
     ui.print(table)
-    ui.dim("* = this key acts here" + ("   → = selected with `lium workspaces use`" if lium.config.workspace else ""))
+    ui.dim("* = this key acts here" + ("   → = the default from `lium workspaces use`" if active else ""))
     if not lium.workspaces.session_token:
         ui.dim("A key sees its own workspace only; `lium workspaces login` lists every workspace you belong to")
 
@@ -94,8 +147,8 @@ def workspaces_list_command(json_output: bool):
 @handle_errors
 def workspaces_members_command(workspace: Optional[str], json_output: bool):
     """List the members of a workspace (default: the one this key acts in)."""
-    lium = _client()
-    target = _target(lium, workspace)
+    lium = workspace_client()
+    target = target_workspace(lium, workspace)
     members = lium.workspaces.members(target.id)
     if json_output:
         click.echo(json.dumps([member_json(m) for m in members], indent=2))
@@ -107,26 +160,34 @@ def workspaces_members_command(workspace: Optional[str], json_output: bool):
 
 @workspaces_command.command("use")
 @click.argument("workspace")
-@click.option("--api-key", "api_key", default=None, help="An API key bound to that workspace, kept for `--workspace`")
 @handle_errors
-def workspaces_use_command(workspace: str, api_key: Optional[str]):
+def workspaces_use_command(workspace: str):
     """Make WORKSPACE the default for every command; stored in ~/.lium/config.ini.
 
     A key acts in exactly one workspace, so the default only takes effect for commands that run with a
-    key configured for it: pass --api-key here, or `lium keys create <name> --workspace WORKSPACE --save`.
+    key saved for it. The key this command runs with is saved when it acts in WORKSPACE (GET /users/me
+    says so): `LIUM_API_KEY=<a key bound to WORKSPACE> lium workspaces use WORKSPACE` saves that key —
+    the environment, not an argument, so the key is not in the process arguments (`ps`) — and
+    `lium keys create <name> --workspace WORKSPACE --save` mints and saves one.
     """
-    lium = _client()
+    lium = workspace_client()
     target = lium.workspaces.resolve(workspace)
     current = lium.workspaces.current()
     acts_here = current is not None and current.id == target.id
-    _remember(target, api_key or (lium.config.api_key if acts_here else None))
-    ui.success(f"Default workspace: {target.name} ({target.role})")
-    if not api_key and not acts_here:
-        ui.warning(
-            f"No API key is configured for {target.name}; the current key acts in "
-            f"{current.name if current else 'another workspace'}. "
-            f"Run `lium keys create <name> --workspace {target.name} --save`."
-        )
+    _remember(target, lium.config.api_key if acts_here else None)
+    if acts_here:
+        ui.success(f"Default workspace: {escape(target.name)} ({target.role}); this key is saved for `--workspace`")
+        return
+    ui.success(f"Default workspace: {escape(target.name)} ({target.role})")
+    ran_with = f"the key this command ran with acts in {escape(current.name) if current else 'another workspace'}"
+    if _saved_key(target):
+        ui.dim(f"A key for {escape(target.name)} is already saved and will be used; {ran_with}")
+        return
+    ui.warning(
+        f"No API key is saved for {escape(target.name)}; {ran_with}. "
+        f"Run `lium keys create <name> --workspace {escape(target.name)} --save`, "
+        f"or `LIUM_API_KEY=<a key bound to {escape(target.name)}> lium workspaces use {escape(target.name)}`."
+    )
 
 
 @workspaces_command.command("login")
@@ -140,8 +201,9 @@ def workspaces_login_command(email: str, password_stdin: bool):
 
     Accounts created with GitHub or Google sign-in set a password with "Forgot password" on lium.io first.
     """
+    lium = workspace_client()
+    lium.workspaces.require_enabled()  # nothing to sign in for on a server without workspaces
     password = sys.stdin.readline().rstrip("\n") if password_stdin else click.prompt("Password", hide_input=True)
-    lium = _client()
     token = lium.workspaces.login(email, password)
     settings.set("session.token", token)
     ui.success("Signed in; `lium workspaces` subcommands can now manage your teams")
@@ -153,13 +215,16 @@ def workspaces_login_command(email: str, password_stdin: bool):
 @handle_errors
 def workspaces_create_command(name: str, make_default: bool):
     """Create a workspace; you become its owner and billing owner."""
-    lium = _client()
+    lium = workspace_client()
+    require_session(lium)
     lium.workspaces.require_enabled()
+    if make_default:
+        workspace_section(name)  # a name config.ini cannot hold is refused before the workspace exists
     workspace = lium.workspaces.create(name)
-    ui.success(f"Created {workspace.name} ({workspace.id})")
+    ui.success(f"Created {escape(workspace.name)} ({workspace.id})")
     if make_default:
         _remember(workspace)
-    ui.dim(f"Next: lium keys create <name> --workspace {workspace.name} --save")
+    ui.dim(f"Next: lium keys create <name> --workspace {escape(workspace.name)} --save")
 
 
 @workspaces_command.command("invite")
@@ -169,13 +234,17 @@ def workspaces_create_command(name: str, make_default: bool):
 @handle_errors
 def workspaces_invite_command(email: str, workspace: Optional[str], role: str):
     """E-mail an invitation to join a workspace; the address need not have a Lium account yet."""
-    lium = _client()
-    target = _target(lium, workspace)
+    lium = workspace_client()
+    require_session(lium)
+    target = target_workspace(lium, workspace)
     invitation = lium.workspaces.invite(target.id, email, role)
     if invitation.get("email_sent") is False:
-        ui.warning(f"Invitation recorded but the e-mail to {email} did not leave; revoke it on lium.io and retry")
+        ui.warning(f"Invitation recorded but the e-mail to {escape(email)} did not leave; revoke it on lium.io and retry")
     else:
-        ui.success(f"Invited {email} to {target.name} as {role}; the link expires {invitation.get('expires_at', '')}")
+        ui.success(
+            f"Invited {escape(email)} to {escape(target.name)} as {role}; "
+            f"the link expires {escape(str(invitation.get('expires_at', '')))}"
+        )
 
 
 @workspaces_command.command("remove")
@@ -185,29 +254,35 @@ def workspaces_invite_command(email: str, workspace: Optional[str], role: str):
 @handle_errors
 def workspaces_remove_command(who: str, workspace: Optional[str], yes: bool):
     """Remove a member from a workspace (an owner or the billing owner cannot be removed — the server says so)."""
-    lium = _client()
-    target = _target(lium, workspace)
+    lium = workspace_client()
+    require_session(lium)
+    target = target_workspace(lium, workspace)
     user_id = _member_id(lium, target, who)
-    if not yes and not ui.confirm(f"Remove {who} from {target.name}?"):
+    if not yes and not ui.confirm(f"Remove {escape(who)} from {escape(target.name)}?"):
         ui.warning("Nothing removed")
         return
-    ui.success(lium.workspaces.remove_member(target.id, user_id).get("message", "Member removed"))
+    ui.success(escape(lium.workspaces.remove_member(target.id, user_id).get("message", "Member removed")))
 
 
 @workspaces_command.command("transfer-billing")
 @click.argument("who", metavar="USER_ID_OR_EMAIL")
 @WORKSPACE_ARG
+@click.option("--yes", "-y", is_flag=True, help="Skip the confirmation prompt")
 @handle_errors
-def workspaces_transfer_billing_command(who: str, workspace: Optional[str]):
+def workspaces_transfer_billing_command(who: str, workspace: Optional[str], yes: bool):
     """Hand the bill to another member: at once for an owner or admin, after their acceptance for a member."""
-    lium = _client()
-    target = _target(lium, workspace)
+    lium = workspace_client()
+    require_session(lium)
+    target = target_workspace(lium, workspace)
     user_id = _member_id(lium, target, who)
+    if not yes and not ui.confirm(f"Hand the bill for {escape(target.name)} to {escape(who)}? Their balance pays from then on"):
+        ui.warning("Nothing transferred")
+        return
     after = lium.workspaces.transfer_billing(target.id, user_id)
     if after.pending_billing_owner_user_id:
-        ui.success(f"Transfer requested; {who} pays for {target.name} once they accept on lium.io")
+        ui.success(f"Transfer requested; {escape(who)} pays for {escape(target.name)} once they accept on lium.io")
     else:
-        ui.success(f"{who} now pays for {target.name}")
+        ui.success(f"{escape(who)} now pays for {escape(target.name)}")
 
 
 @workspaces_command.command("delete")
@@ -215,15 +290,19 @@ def workspaces_transfer_billing_command(who: str, workspace: Optional[str]):
 @click.option("--yes", "-y", is_flag=True, help="Skip the confirmation prompt")
 @handle_errors
 def workspaces_delete_command(workspace: Optional[str], yes: bool):
-    """Delete a workspace (owners only; refused while it still has running pods or volumes)."""
-    lium = _client()
-    target = _target(lium, workspace)
-    if not yes and not ui.confirm(f"Delete workspace {target.name} ({target.id})?"):
+    """Delete a workspace (owners only; refused while it still has running pods or volumes).
+
+    Its `[workspace.<name>]` section (id and saved key, under whatever name it was saved) is dropped from
+    ~/.lium/config.ini, and so is `[workspaces] active` when it named this workspace.
+    """
+    lium = workspace_client()
+    require_session(lium)
+    target = target_workspace(lium, workspace)
+    if not yes and not ui.confirm(f"Delete workspace {escape(target.name)} ({target.id})?"):
         ui.warning("Nothing deleted")
         return
-    ui.success(lium.workspaces.delete(target.id).get("message", "Workspace deleted"))
-    if settings.get("workspaces.active") == target.name:
-        settings.unset("workspaces.active")
+    ui.success(escape(lium.workspaces.delete(target.id).get("message", "Workspace deleted")))
+    _forget(target)
 
 
-__all__ = ["workspaces_command"]
+__all__ = ["workspaces_command", "workspace_client", "target_workspace", "require_session"]
