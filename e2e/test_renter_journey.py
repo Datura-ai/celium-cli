@@ -162,7 +162,7 @@ def test_exec_sees_the_gpu_paid_for(session: Session, rental: Rental):
         if "localhost" in API_URL or "127.0.0.1" in API_URL:
             pytest.skip("stub executor (compose stack): no GPU to see")
         pytest.fail(f"nvidia-smi missing on a rented pod: {r}")
-    gpus = [l for l in r.out.splitlines() if l.startswith("GPU ")]
+    gpus = [line for line in r.out.splitlines() if line.startswith("GPU ")]
     assert len(gpus) >= 1, r.out
     billed = int(rental.pod.get("gpu_count") or 1)
     assert len(gpus) >= billed, f"billed {billed} GPU(s), the pod exposes {len(gpus)}"
