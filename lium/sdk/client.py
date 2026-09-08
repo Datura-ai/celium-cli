@@ -34,6 +34,7 @@ from .exceptions import (
     LiumError,
     LiumHostKeyError,
     LiumNotFoundError,
+    LiumInsufficientBalanceError,
     LiumPermissionError,
     LiumRateLimitError,
     LiumServerError,
@@ -282,6 +283,32 @@ def _satisfies_spec(executor: ExecutorInfo, spec: Dict[str, Any]) -> bool:
     return True
 
 
+_USD = r"\$([0-9][0-9,]*(?:\.[0-9]+)?)"
+# The platform's balance refusals: "Insufficient balance" from the auth dependency and
+# "Insufficient balance. This node costs $X/hour, so renting it requires at least $Y
+# (N minutes of runtime). Your balance is $Z." from the rent path.
+_REQUIRED_RE = re.compile(r"requires at least " + _USD, re.I)
+_AVAILABLE_RE = re.compile(r"balance is " + _USD, re.I)
+
+
+def permission_error(detail: str) -> LiumPermissionError:
+    """The exception for a 403: :class:`LiumInsufficientBalanceError` when the server
+    refused for lack of funds (with ``required``/``available`` when it said them),
+    else a plain :class:`LiumPermissionError`."""
+    message = f"Permission denied: {detail}"
+    if "insufficient balance" not in (detail or "").lower():
+        return LiumPermissionError(message)
+
+    def usd(match: Optional[re.Match]) -> Optional[float]:
+        return float(match.group(1).replace(",", "")) if match else None
+
+    return LiumInsufficientBalanceError(
+        message,
+        required=usd(_REQUIRED_RE.search(detail)),
+        available=usd(_AVAILABLE_RE.search(detail)),
+    )
+
+
 def _response_error_message(response: requests.Response) -> str:
     try:
         payload = response.json()
@@ -464,7 +491,7 @@ class Lium:
         if resp.status_code == 401:
             raise LiumAuthError("Invalid API key")
         if resp.status_code == 403:
-            raise LiumPermissionError(f"Permission denied: {_response_error_message(resp)}")
+            raise permission_error(_response_error_message(resp))
         if resp.status_code == 404:
             raise LiumNotFoundError(f"Resource not found: {_response_error_message(resp)}")
         if resp.status_code == 429:
