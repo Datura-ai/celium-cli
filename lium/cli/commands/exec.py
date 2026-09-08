@@ -211,7 +211,11 @@ def exec_command(
             console.info(f"Executing on {len(selected_pods)} pods")
 
         if env_dict:
-            console.dim(f"Environment: {', '.join(f'{k}={v}' for k, v in env_dict.items())}")
+            # Names only, values masked. -e is a common way to pass tokens, and
+            # echoing the values here lands secrets in terminal logs and agent
+            # transcripts. The values still reach the pod unchanged.
+            masked = ", ".join(f"{name}=****" for name in env_dict)
+            console.dim(f"Environment: {masked}")
 
     if len(selected_pods) == 1:
         results = [lium.exec(selected_pods[0], command=command_to_run, env=env_dict)]
