@@ -1371,7 +1371,9 @@ class Lium:
         Returns ``[]`` against a backend that predates the endpoint.
         """
         try:
-            data = self._request("GET", f"/pods/{quote(str(pod_id), safe='')}/events").json()
+            # One attempt: this is read on the failure path, after the wait's budget is spent, so the
+            # retry backoff would only delay the PodStartError the caller is about to see.
+            data = self._request("GET", f"/pods/{quote(str(pod_id), safe='')}/events", retry=False).json()
         except LiumNotFoundError:
             return []
         return data if isinstance(data, list) else []
@@ -1385,7 +1387,7 @@ class Lium:
         try:
             events = self.pod_events(pod_id)
         except Exception:
-            # ``_request(retry=True)`` re-raises ``requests.RequestException`` after its retries, and a
+            # ``_request`` raises ``requests.RequestException`` or a ``LiumError`` on a failed call, and a
             # network blip here must not turn a ``PodStartError`` into "Unexpected error".
             return None
         for event in reversed(events):
@@ -1468,11 +1470,13 @@ class Lium:
                 if on_poll:
                     on_poll(last_seen, "missing", elapsed)
                 if last_seen is not None:
+                    cause = self.pod_failure_cause(pod_id)
                     raise PodStartError(
                         f"Pod {last_seen.huid} ({pod_id}) disappeared while starting; "
-                        f"last status {history[-1] if history else 'unknown'}",
+                        f"last status {history[-1] if history else 'unknown'}"
+                        + (f"; cause: {cause}" if cause else ""),
                         pod_id=pod_id, pod=last_seen, status=history[-1] if history else None,
-                        history=history, cause=self.pod_failure_cause(pod_id),
+                        history=history, cause=cause,
                     )
                 if elapsed >= self.MISSING_GRACE_SECONDS:
                     raise self._never_listed_error(pod_id, missing_polls, elapsed)

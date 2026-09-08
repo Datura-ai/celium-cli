@@ -39,12 +39,21 @@ def _pod(status: str, ssh_cmd: str | None = "ssh user@pod.example -p 20299") -> 
 
 
 class _Client(Lium):
-    """A client whose `ps` replays a scripted sequence of pod lists."""
+    """A client whose `ps` replays a scripted sequence of pod lists and whose event log is empty.
+
+    `pod_events` is answered here so the failure path (`pod_failure_cause`) never opens a
+    connection: a unit test must not reach the API.
+    """
 
     def __init__(self, sequence):
         super().__init__(Config(api_key="test"))
         self.sequence = list(sequence)
         self.calls = 0
+        self.event_requests = 0
+
+    def pod_events(self, pod_id):
+        self.event_requests += 1
+        return []
 
     def ps(self):
         self.calls += 1
@@ -104,6 +113,22 @@ def test_wait_ready_raises_when_a_seen_pod_disappears():
     assert "disappeared" in str(failure.value)
     assert failure.value.pod.huid == "eager-wolf-aa"
     assert failure.value.history == ["PENDING"]
+    assert client.event_requests == 1  # the cause was looked up once, from the double, not the API
+
+
+def test_a_vanished_pods_cause_is_in_the_message_not_only_on_the_error():
+    class _WithCause(_Client):
+        def pod_events(self, pod_id):
+            self.event_requests += 1
+            return [{"error": "executor reclaimed the GPU"}]
+
+    client = _WithCause([[_pod("PENDING", None)], []])
+
+    with pytest.raises(PodStartError) as failure:
+        client.wait_ready({"id": "pod-1"}, timeout=600, poll_interval=1)
+
+    assert str(failure.value).endswith("; cause: executor reclaimed the GPU")
+    assert failure.value.cause == "executor reclaimed the GPU"
 
 
 def test_wait_ready_raises_for_a_pod_that_is_never_listed(monkeypatch):
@@ -257,6 +282,24 @@ def test_up_ready_timeout_is_forwarded_and_names_the_billing_pod(monkeypatch):
     assert result.exit_code == EXIT_GENERAL_ERROR, result.output
     assert "still starting after 90s" in result.output
     assert "pod-1" in result.output and "lium rm train" in result.output
+
+
+def test_up_ready_timeout_with_until_says_termination_was_not_scheduled(monkeypatch):
+    # --until/--ttl are scheduled after the pod is ready; when the wait gives up first the
+    # caller must learn the pod has no end time, not assume it will stop on its own.
+    class _Wait:
+        def execute(self, ctx):
+            return ActionResult(ok=False, data={}, error="still starting")
+
+    result = _run_up(monkeypatch, _Wait, ["--ready-timeout", "90", "--ttl", "2h"])
+
+    assert result.exit_code == EXIT_GENERAL_ERROR, result.output
+    assert "Auto-termination (--ttl/--until) was NOT scheduled" in " ".join(result.output.split())
+
+    result = _run_up(monkeypatch, _Wait, ["--ready-timeout", "90"])
+
+    assert result.exit_code == EXIT_GENERAL_ERROR, result.output
+    assert "NOT scheduled" not in result.output
 
 
 def test_up_bounds_the_wait_by_the_default_budget(monkeypatch):

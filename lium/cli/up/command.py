@@ -469,9 +469,14 @@ def up_command(
         # differently from a stuck pod.
         hint = result.data.get("eta_hint")
         backend = f" (backend: {hint})" if hint else ""
+        # Auto-termination is scheduled only once the pod is ready (below), so say when it was not.
+        not_scheduled = (
+            " Auto-termination (--ttl/--until) was NOT scheduled; it is set once the pod is ready."
+            if termination_time else ""
+        )
         raise CliFailure(
             "pod_not_ready",
-            f"Pod {pod_name} (id: {pod_id}) is still starting after {wait_timeout}s and is billing{backend}. "
+            f"Pod {pod_name} (id: {pod_id}) is still starting after {wait_timeout}s and is billing{backend}.{not_scheduled} "
             f"Wait with 'lium ps', or remove it with 'lium rm {pod_name}'.",
             EXIT_GENERAL_ERROR,
         )
