@@ -155,6 +155,13 @@ def rm_command(
     \b
     Removal is irreversible. Exits non-zero when nothing matched TARGETS, so a
     typo cannot look like a successful teardown.
+    \b
+    Examples:
+      lium rm my-pod
+      lium rm 1,2 --yes                 # no confirmation
+      lium rm my-pod --in 6h            # schedule removal
+      lium rm my-pod --at "23:00"
+      lium rm --all --yes               # every pod on the account
     """
     lium = Lium()
     show_workspace(lium, acting=True)
