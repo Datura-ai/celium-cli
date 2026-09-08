@@ -1278,14 +1278,21 @@ class Lium:
 
         Returns:
             Dict containing stdout, stderr, exit_code, and success flag.
+
+        Raises:
+            ValueError: an ``env`` name is not a shell identifier. Raised before
+                the connection is opened, so nothing reaches the pod.
         """
-        if env:
+        # Build (and so name-check) the exports first: once ``eval "$(cat)" && cmd``
+        # has been sent, a failure here would leave ``cmd`` running with no env.
+        exports = self._env_exports(env) if env else ""
+        if exports:
             command = f"{self._ENV_FROM_STDIN} && {command}"
 
         with self.ssh_connection(pod) as client:
             stdin, stdout, stderr = client.exec_command(command)
-            if env:
-                stdin.write(self._env_exports(env).encode("utf-8"))
+            if exports:
+                stdin.write(exports.encode("utf-8"))
             # Send EOF: a remote command that reads stdin waits forever otherwise,
             # and this call has no stdin to give it.
             stdin.close()

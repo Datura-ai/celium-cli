@@ -3,13 +3,16 @@
 The quoting itself is DAH-2984 (``Lium._env_exports``; ``exec()`` sends the
 block over stdin, ``stream_exec`` keeps it inline through ``_prep_command``).
 This module covers what DAH-2894 adds on top: ``_env_exports`` refuses a name
-``export`` would reject on the pod, the CLI refuses it before building the SDK
-client, the inline form still round-trips values through a real ``sh``, and
-``exec_all`` reports a failed pod in the same shape as a successful one.
+``export`` would reject on the pod, ``exec()`` refuses it before the ssh
+session is opened (nothing is sent, the command does not run), the CLI refuses
+it before building the SDK client, the inline form still round-trips values
+through a real ``sh``, and ``exec_all`` reports a failed pod in the same shape
+as a successful one.
 """
 
 import shlex
 import subprocess
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -19,6 +22,7 @@ from lium.cli.cli import cli
 from lium.cli.commands import exec as exec_module
 from lium.cli.utils import EXIT_CONFIGURATION_ERROR
 from lium.sdk import Lium
+from test_exec_env_stdin import LocalShellSSHClient
 
 
 def _client() -> Lium:
@@ -58,14 +62,60 @@ def test_no_env_leaves_the_command_alone():
     assert _client()._prep_command("ls", env={}) == "ls"
 
 
-@pytest.mark.parametrize("name", ["1ABC", "A-B", "A B", "A=B", "", "$X", "FOO\n"])
-def test_invalid_names_are_rejected_before_anything_is_sent(name):
+INVALID_NAMES = ["1ABC", "A-B", "A B", "A=B", "", "$X", "FOO\n"]
+
+
+@pytest.mark.parametrize("name", INVALID_NAMES)
+def test_prep_command_rejects_invalid_names(name):
     with pytest.raises(ValueError, match="Invalid environment variable name"):
         _client()._prep_command("ls", env={name: "x"})
 
 
 def test_non_string_values_are_stringified():
     assert _client()._prep_command("ls", env={"N": 3}) == "export N=3 && ls"
+
+
+# --- exec(): the check runs before the session is opened ---------------------------------------
+
+@pytest.fixture
+def ssh(monkeypatch):
+    """#167's stand-in for paramiko: the "remote" command runs in a local ``sh``."""
+    fake = LocalShellSSHClient()
+
+    @contextmanager
+    def fake_connection(self, pod, timeout=30):
+        fake.opened = True
+        yield fake
+
+    fake.opened = False
+    monkeypatch.setattr(Lium, "ssh_connection", fake_connection)
+    return fake
+
+
+@pytest.mark.parametrize("name", INVALID_NAMES)
+def test_exec_rejects_invalid_names_before_anything_is_sent(ssh, tmp_path, name):
+    marker = tmp_path / "started"
+    pod = SimpleNamespace(id="pod-1", name="my-pod", huid="eager-wolf-aa")
+
+    with pytest.raises(ValueError, match="Invalid environment variable name"):
+        _client().exec(pod, command=f"echo started > {shlex.quote(str(marker))}", env={name: "x"})
+
+    # Fails on the previous shape: the command had been sent (and had run with no
+    # environment) before the name check raised.
+    assert ssh.commands == []
+    assert ssh.opened is False
+    assert not marker.exists()
+
+
+def test_exec_with_valid_names_still_sends_the_command_once(ssh, tmp_path):
+    marker = tmp_path / "started"
+    pod = SimpleNamespace(id="pod-1", name="my-pod", huid="eager-wolf-aa")
+
+    result = _client().exec(pod, command=f"printenv V > {shlex.quote(str(marker))}", env={"V": "one two"})
+
+    assert result["success"] is True
+    assert len(ssh.commands) == 1
+    assert marker.read_text() == "one two\n"
 
 
 # --- exec_all ------------------------------------------------------------------------------
