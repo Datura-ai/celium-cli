@@ -26,6 +26,10 @@ Example
 -------
 
 The ``@lium.machine`` decorator is the easiest way to offload work to a GPU pod.
+``machine`` is ``"<count>x<gpu>"`` or ``"<gpu>"`` (``"1xH200"``, ``"A100"``, ``"2xRTX4090"``;
+the count defaults to 1) and the cheapest matching node is rented. ``timeout=`` (default one
+hour) bounds the run; the pod is scheduled for removal at ``timeout + 15 min`` regardless of
+what happens to the caller.
 
 .. code-block:: python
 
@@ -41,6 +45,14 @@ The ``@lium.machine`` decorator is the easiest way to offload work to a GPU pod.
        return tokenizer.decode(out[0], skip_special_tokens=True)
 
    print(infer("Who discovered penicillin?"))
+
+``keep_warm=300`` keeps the pod five minutes for the next call or the next run of the
+script; ``infer.map(prompts)`` runs every item on one pod; ``infer.local(...)`` runs the
+function in this process (``local=True`` / ``LIUM_MACHINE_LOCAL=1`` does so for every
+call); ``infer.close()`` removes a warm pod. Arguments and results are pickled; only the
+function's own ``def`` is sent, so import inside it. A remote exception is re-raised with
+its type, with ``lium.RemoteExecutionError`` (remote traceback, exit code, output) as its
+cause. Progress lines go to stderr (``quiet=True`` to silence them).
 
 Direct SDK usage follows the same pattern:
 

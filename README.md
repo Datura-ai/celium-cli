@@ -76,7 +76,7 @@ lium rm <pod-name>
 
 The SDK mirrors the CLI's capabilities for programmatic use. Two entry points: the `@lium.machine` decorator for quickly offloading isolated functions, and the `Lium()` client for long-lived orchestration code.
 
-High-level decorator — annotate a function and offload work to a GPU pod:
+High-level decorator — annotate a function and offload work to a GPU pod. `machine` is `"<count>x<gpu>"` or `"<gpu>"` (`"1xH200"`, `"A100"`, `"2xRTX4090"`; count defaults to 1) and the cheapest matching node is rented; `timeout=` (default 1 h) bounds the run and the pod's lifetime. Arguments and the result are pickled; only the function's own `def` is sent, so import inside it and pass everything else as arguments. A remote exception is re-raised with its type, with `lium.RemoteExecutionError` (remote traceback, exit code, output) as its cause:
 
 ```python
 import lium
@@ -91,6 +91,18 @@ def infer(prompt: str) -> str:
     return tokenizer.decode(out[0], skip_special_tokens=True)
 
 print(infer("Who discovered penicillin?"))
+```
+
+`keep_warm=300` keeps the pod five minutes for the next call or the next run of the script; `infer.map(prompts)` runs every item on one pod; `infer.local(...)` runs the function here (`local=True` / `LIUM_MACHINE_LOCAL=1` does so for every call); `infer.close()` removes a warm pod. Progress goes to stderr (`quiet=True` to silence):
+
+```text
+[lium] infer: renting 1xA100 $1.20/h (swift-fox-c8, US), removal in 1.3h
+[lium] infer: pod ready in 48s
+[lium] infer: preparing environment (3 package(s): torch, transformers, accelerate)
+[lium] infer: environment ready in 21s
+[lium] infer: running
+[lium] infer: done in 96s (~$0.0320)
+[lium] infer: pod removed
 ```
 
 Direct SDK usage follows the same pattern:
