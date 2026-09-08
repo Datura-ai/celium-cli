@@ -148,7 +148,8 @@ def test_wait_ready_raises_for_a_never_listed_pod_when_the_budget_ends_with_the_
 
 
 def test_wait_ready_returns_none_for_a_never_listed_pod_inside_a_short_budget(monkeypatch):
-    """Under 20 s nothing is known: a budget shorter than the grace is a timeout, as before."""
+    """A wait that ends before 20 s have passed knows nothing: a timeout, as before (the rule keys
+    on the seconds elapsed when the loop wakes, not on the budget asked for)."""
     clock = iter([0, 0, 5, 10])
     monkeypatch.setattr("lium.sdk.client.time.time", lambda: next(clock))
     client = _Client([[]])
