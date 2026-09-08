@@ -309,7 +309,7 @@ def _response_error_code(response: requests.Response) -> Optional[str]:
 
 
 def permission_error(
-    detail: str, code: Optional[str] = None, key: Optional[str] = None
+    detail: str, code: Optional[str] = None, key: Optional[str] = None, **context: Optional[str]
 ) -> LiumPermissionError:
     """The exception for a 403: :class:`LiumInsufficientBalanceError` when the server
     refused for lack of funds (with ``required``/``available`` when it said them),
@@ -319,7 +319,8 @@ def permission_error(
     one (:func:`_response_error_code`); it decides. Without it the message text
     decides, which is what every server before lium-platform#210 sends. ``key``
     (the API key's fingerprint and source) is appended so the message says which
-    key the server refused.
+    key the server refused. ``code`` and ``context`` (:func:`_error_context`'s
+    hint/request_id) are carried on the exception.
     """
     message = f"Permission denied: {detail}" + (f" ({key})" if key else "")
     if code is not None:
@@ -327,7 +328,7 @@ def permission_error(
     else:
         insufficient = "insufficient balance" in (detail or "").lower()
     if not insufficient:
-        return LiumPermissionError(message)
+        return LiumPermissionError(message, code=code, **context)
 
     def usd(match: Optional[re.Match]) -> Optional[float]:
         return float(match.group(1).replace(",", "")) if match else None
@@ -336,6 +337,8 @@ def permission_error(
         message,
         required=usd(_REQUIRED_RE.search(detail)),
         available=usd(_AVAILABLE_RE.search(detail)),
+        code=code,
+        **context,
     )
 
 
@@ -392,6 +395,20 @@ def _int_or_none(row: Dict[str, Any], key: str) -> Optional[int]:
 def _pod_gpu_count(row: Dict[str, Any]) -> Optional[int]:
     """The pod's own billed GPU count from a ``/pods`` row (a string in the payload), or None."""
     return _int_or_none(row, "gpu_count")
+def _error_context(response: requests.Response) -> dict:
+    """code/hint/request_id from the API's error envelope (``error: {...}``) and the
+    ``X-Request-Id`` header, for the exception's attributes. Empty when absent (older servers)."""
+    try:
+        error = response.json().get("error")
+    except Exception:
+        error = None
+    error = error if isinstance(error, dict) else {}
+    headers = getattr(response, "headers", None) or {}
+    return {
+        "code": _response_error_code(response),
+        "hint": error.get("hint") or None,
+        "request_id": error.get("request_id") or headers.get("X-Request-Id") or None,
+    }
 
 
 def _get_client_version() -> str:
@@ -525,20 +542,21 @@ class Lium:
         """
         if resp.ok:
             return
+        context = _error_context(resp)
         # Auth failures name the key that was sent: two commands can resolve
         # different keys (environment versus config file), and "invalid API key"
         # alone does not say which one to fix.
         if resp.status_code == 401:
-            raise LiumAuthError(f"Invalid API key ({key})" if key else "Invalid API key")
+            raise LiumAuthError(f"Invalid API key ({key})" if key else "Invalid API key", **context)
         if resp.status_code == 403:
-            raise permission_error(_response_error_message(resp), _response_error_code(resp), key=key)
+            raise permission_error(_response_error_message(resp), key=key, **context)
         if resp.status_code == 404:
-            raise LiumNotFoundError(f"Resource not found: {_response_error_message(resp)}")
+            raise LiumNotFoundError(f"Resource not found: {_response_error_message(resp)}", **context)
         if resp.status_code == 429:
-            raise LiumRateLimitError("Rate limit exceeded")
+            raise LiumRateLimitError("Rate limit exceeded", **context)
         if 500 <= resp.status_code < 600:
-            raise LiumServerError(f"Server error: {resp.status_code}")
-        raise LiumError(f"API error {resp.status_code}: {_response_error_message(resp)}")
+            raise LiumServerError(f"Server error: {resp.status_code}", **context)
+        raise LiumError(f"API error {resp.status_code}: {_response_error_message(resp)}", **context)
 
     def _dict_to_backup_config(self, config_dict: Dict) -> BackupConfig:
         """Convert backup config dict to BackupConfig object."""
