@@ -200,20 +200,24 @@ jobs:
         E2E_API_URL: ${{ vars.LIUM_E2E_API_URL || 'https://staging.lium.io/api' }}
         E2E_API_KEY: ${{ secrets.LIUM_E2E_API_KEY }}
         E2E_MAX_PRICE: "0.50"
-        E2E_EXCLUDE_COUNTRIES: "Russia,Belarus"
+        E2E_EXCLUDE_COUNTRIES: "Russia,Belarus,RU,BY"   # conftest's default too; stated here so the job says it
         E2E_EXCLUDE_EXECUTORS: ${{ vars.LIUM_E2E_EXCLUDE_EXECUTORS }}   # ids/huids of nodes known to be defective (B-119)
       run: ./e2e/run.sh
-    - name: remove this run's pods if the workflow was cancelled mid-rental
-      # the workflow-level group cancels a superseded run; pytest's finalizers do not run under the runner's kill,
-      # so anything named e2e-… that this run rented goes here (the pod's 30-min TTL is the last resort)
-      if: cancelled() && steps.live.outcome != 'skipped'
+    - name: remove this run's pods when the suite did not finish its own cleanup
+      # pytest's finalizers do not run when the runner kills a cancelled run, when run.sh's `timeout` kills a suite
+      # (the step is then `failure`, not `cancelled`) or when pytest-timeout's thread method fires; anything named
+      # e2e-… that this run rented goes here (the pod's 30-min TTL is the last resort). `rm` takes ONE target
+      # argument, so the names are removed one per call. bash → pipefail: a failing `lium ps` fails the step
+      # instead of "removing" nothing.
+      if: always() && (steps.live.outcome == 'failure' || steps.live.outcome == 'cancelled')
+      shell: bash
       env:
         LIUM_API_KEY: ${{ secrets.LIUM_E2E_API_KEY }}
         LIUM_BASE_URL: ${{ vars.LIUM_E2E_API_URL || 'https://staging.lium.io/api' }}
       run: |
         test -n "$LIUM_API_KEY" || exit 0
         export HOME="$(mktemp -d)"
-        ./e2e/.venv/bin/lium ps --format json | jq -r '.[] | select(.name | startswith("e2e-")) | .name' | xargs -r ./e2e/.venv/bin/lium rm -y
+        ./e2e/.venv/bin/lium ps --format json | jq -r '.[] | select(.name | startswith("e2e-")) | .name' | xargs -r -n1 ./e2e/.venv/bin/lium rm -y
     - uses: actions/upload-artifact@v4
       id: artifacts
       if: always()

@@ -12,7 +12,7 @@ Then the SDK, the way `docs/developers/sdk/examples/pod-lifecycle.md` uses it: `
 These are PERSONA_TESTS' renter journeys (7 Sep 2026, 31 + 16 steps by hand on staging) as tests that run on every
 PR. They rent the cheapest ≥1-GPU node under `E2E_MAX_PRICE` (default $0.50/h) for a few minutes — $0.03 a run on
 lium.io (7 Sep 2026: an RTX 4090 at $0.32/h for 6 min plus one at $0.35/h for 30 s), about $0.02 on staging's A4000.
-Nodes in `E2E_EXCLUDE_COUNTRIES` (CI: `Russia,Belarus`) and executors in `E2E_EXCLUDE_EXECUTORS` (ids or huids; CI
+Nodes in `E2E_EXCLUDE_COUNTRIES` (default `Russia,Belarus,RU,BY`; CI states the same) and executors in `E2E_EXCLUDE_EXECUTORS` (ids or huids; CI
 reads the repository variable `LIUM_E2E_EXCLUDE_EXECUTORS`) are never rented: the cheapest listing is deterministic, so
 a defective node — 8 Sep 2026, `brave-shark-ff` billed 2 GPUs and exposed 1 (B-119) — would fail every run until
 it is excluded or fixed.
@@ -47,9 +47,10 @@ variable `LIUM_E2E_API_URL` (staging when unset). Today the variable is `https:/
 a dedicated test account funded with $200, which covers about 6,000 runs at $0.03. Fork PRs have no secrets →
 the job skips and stays green. One run at a time repo-wide (`concurrency: e2e-live-staging`; the job's own group
 queues, it does not cancel): two suites on one account would sweep each other's `e2e-…` pods, and staging has a
-single node. The workflow-level group does cancel a run a newer push supersedes; a cancelled run's `e2e-…` pods are
-removed by the job's last step (pytest's finalizers do not run under the runner's kill), the 30-min TTL being the
-last resort. The job and step time limits (65 / 60 min) sit above `run.sh`'s own budget (5 + 25 + 25 min), so a
+single node. The workflow-level group does cancel a run a newer push supersedes; the `e2e-…` pods of a run whose suite did not
+finish its own cleanup — cancelled by the runner, killed by `run.sh`'s `timeout`, or failed under pytest-timeout — are
+removed one by one by the job's cleanup step (it runs when the suite step failed or was cancelled; pytest's
+finalizers do not run under those kills), the 30-min TTL being the last resort. The job and step time limits (65 / 60 min) sit above `run.sh`'s own budget (5 + 25 + 25 min), so a
 double suite timeout still writes `summary.md`. Artifacts uploaded on every run;
 `summary.md` posted as one sticky PR comment on `pull_request` runs (a `workflow_dispatch` run has no PR to post to).
 

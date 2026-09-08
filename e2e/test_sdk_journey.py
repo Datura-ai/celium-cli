@@ -68,16 +68,16 @@ def test_sdk_up_wait_exec_upload_download_rm(lium, sdk_pod, tmp_path):
     t0 = time.monotonic()
     created = lium.up(executor_id=node.id, name=sdk_pod["name"])
     assert created.get("id") and created.get("status"), created  # {'executor_id','huid','id','name','ssh_cmd','status'}
-    # Recorded before anything can fail, and capped: if wait_ready raises, an assertion trips, or pytest-timeout
-    # kills the process (timeout_method = thread runs no finalizer), the pod still goes — by the fixture, or by
-    # the platform at the deadline.
+    # Recorded before anything can fail, and capped: if wait_ready returns None or raises, an assertion trips, or
+    # pytest-timeout kills the process (timeout_method = thread runs no finalizer), the pod still goes — by the
+    # fixture, or by the platform at the deadline.
     sdk_pod["pod"] = created
     lium.schedule_termination(
         SimpleNamespace(id=created["id"]),
         termination_time=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 30 * 60)),
     )
     ready = lium.wait_ready(created["id"], timeout=600)
-    # wait_ready returns None on timeout (it does not raise): keep the created record so the fixture still removes the pod
+    # on timeout wait_ready returns None rather than raising: keep the created record so the fixture still removes the pod
     assert ready is not None, f"pod {created['id']} was not RUNNING within 600 s (still recorded; the fixture removes it)"
     sdk_pod["pod"] = ready
     assert ready.status == "RUNNING" and ready.ssh_cmd, ready
