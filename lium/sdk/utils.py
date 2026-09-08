@@ -34,6 +34,7 @@ GPU_TYPE_ALIASES = {
     "PRO6000": "RTXPRO6000",
     "RTX6000PRO": "RTXPRO6000",
     "6000PRO": "RTXPRO6000",
+    "PRO6000D": "RTXPRO6000D",
 }
 
 
@@ -46,12 +47,14 @@ def extract_gpu_type(machine_name: str) -> str:
         "NVIDIA RTX 6000 Ada Generation"                   -> "RTX6000"
         "NVIDIA RTX PRO 6000 Blackwell Server Edition"     -> "RTXPRO6000"
         "NVIDIA RTX PRO 6000 Blackwell Workstation Edition"-> "RTXPRO6000"
+        "NVIDIA RTX PRO 6000D Blackwell Workstation Edition"-> "RTXPRO6000D"
         "NVIDIA A100-SXM4-80GB"                            -> "A100"
     """
     patterns = [
         # "RTX PRO 6000 Blackwell ..." must be tried before the plain RTX pattern, otherwise the
         # word "PRO" breaks the match and the type falls through to the last word ("Edition").
-        (r"RTX\s*PRO\s*(\d{4})", lambda m: f"RTXPRO{m.group(1)}"),
+        # The suffix stays: "RTX PRO 6000D" (Blackwell, 84 GB) is a separate SKU from the 96 GB "RTX PRO 6000".
+        (r"RTX\s*PRO\s*(\d{4}D?)", lambda m: f"RTXPRO{m.group(1)}"),
         (r"RTX\s*(\d{4})", lambda m: f"RTX{m.group(1)}"),
         (r"([HBL])(\d{2,3}S?)", lambda m: f"{m.group(1)}{m.group(2)}"),
         (r"A(\d{2,4})", lambda m: f"A{m.group(1)}"),

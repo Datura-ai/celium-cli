@@ -18,6 +18,8 @@ from lium.sdk.utils import extract_gpu_type, normalize_gpu_short
         ("NVIDIA RTX 6000 Ada Generation", "RTX6000"),
         ("NVIDIA RTX PRO 6000 Blackwell Server Edition", "RTXPRO6000"),
         ("NVIDIA RTX PRO 6000 Blackwell Workstation Edition", "RTXPRO6000"),
+        # the 84 GB "6000D" is its own SKU: the suffix stays, so `--gpu pro6000` does not rent it
+        ("NVIDIA RTX PRO 6000D Blackwell Workstation Edition", "RTXPRO6000D"),
         ("NVIDIA RTX A6000", "A6000"),
         ("NVIDIA A100-SXM4-80GB", "A100"),
         ("NVIDIA L40S", "L40S"),
@@ -49,6 +51,7 @@ def test_rtx_pro_6000_is_not_reported_as_edition():
         ("PRO6000", "RTXPRO6000"),
         ("pro 6000", "RTXPRO6000"),
         ("RTX6000PRO", "RTXPRO6000"),
+        ("pro6000d", "RTXPRO6000D"),
         ("h100", "H100"),
         ("RTX 4090", "RTX4090"),
     ],
@@ -66,6 +69,11 @@ def test_normalized_short_matches_extracted_type():
         extract_gpu_type("NVIDIA RTX 6000 Ada Generation")
     )
     assert normalize_gpu_short("RTX6000") != normalize_gpu_short(extract_gpu_type(machine))
+    # `--gpu pro6000` must not pick the 84 GB 6000D, and `pro6000d` must not pick the 96 GB card
+    six_d = extract_gpu_type("NVIDIA RTX PRO 6000D Blackwell Workstation Edition")
+    assert normalize_gpu_short("pro6000") != normalize_gpu_short(six_d)
+    assert normalize_gpu_short("pro6000d") == normalize_gpu_short(six_d)
+    assert normalize_gpu_short("pro6000d") != normalize_gpu_short(extract_gpu_type(machine))
 
 
 @pytest.mark.parametrize(
