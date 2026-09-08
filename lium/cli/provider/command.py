@@ -41,7 +41,22 @@ from lium.cli.settings import ConfigManager
 from lium.provider.errors import ProviderError
 
 
-@click.group("provider")
+class ProviderGroup(click.Group):
+    """``--json`` and ``--yes`` are group options, but the docs and README write them after the
+    subcommand (``lium provider status --json``, ``lium provider config opt-in --yes``), and Click
+    rejected that with ``No such option`` (DAH-2902). Accept them anywhere on the line."""
+
+    HOISTED = ("--json", "--yes", "-y")
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        end = args.index("--") if "--" in args else len(args)
+        head, tail = args[:end], args[end:]
+        hoisted = [arg for arg in head if arg in self.HOISTED]
+        rest = [arg for arg in head if arg not in self.HOISTED]
+        return super().parse_args(ctx, hoisted + rest + tail)
+
+
+@click.group("provider", cls=ProviderGroup)
 @click.option(
     "--coldkey",
     "-w",
