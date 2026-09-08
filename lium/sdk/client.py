@@ -1396,6 +1396,15 @@ class Lium:
                 return f"{event['reason']}: {detail}" if detail else event["reason"]
         return None
 
+    def _never_listed_error(self, pod_id: str, missing_polls: int, elapsed: float) -> PodStartError:
+        """The error for an id that was never in the pod list once :attr:`MISSING_GRACE_SECONDS` are spent."""
+        cause = self.pod_failure_cause(pod_id)
+        return PodStartError(
+            f"Pod {pod_id} is not in the pod list after {missing_polls} checks over {elapsed:.0f} s"
+            + (f"; cause: {cause}" if cause else ""),
+            pod_id=pod_id, cause=cause,
+        )
+
     def wait_ready(
         self,
         pod: Union[str, PodInfo, Dict],
@@ -1449,12 +1458,7 @@ class Lium:
                     # The budget and the grace ran out together: an id that was never listed in
                     # 20 s is a missing pod, not a slow one — say so instead of answering None
                     # (wait_ready('00000000-…', timeout=20), the DAH-1942 audit case).
-                    cause = self.pod_failure_cause(pod_id)
-                    raise PodStartError(
-                        f"Pod {pod_id} is not in the pod list after {missing_polls} checks over {elapsed:.0f} s"
-                        + (f"; cause: {cause}" if cause else ""),
-                        pod_id=pod_id, cause=cause,
-                    )
+                    raise self._never_listed_error(pod_id, missing_polls, elapsed)
                 break
             fresh_pods = self.ps()
             current = next((p for p in fresh_pods if p.id == pod_id), None)
@@ -1471,12 +1475,7 @@ class Lium:
                         history=history, cause=self.pod_failure_cause(pod_id),
                     )
                 if elapsed >= self.MISSING_GRACE_SECONDS:
-                    cause = self.pod_failure_cause(pod_id)
-                    raise PodStartError(
-                        f"Pod {pod_id} is not in the pod list after {missing_polls} checks over {elapsed:.0f} s"
-                        + (f"; cause: {cause}" if cause else ""),
-                        pod_id=pod_id, cause=cause,
-                    )
+                    raise self._never_listed_error(pod_id, missing_polls, elapsed)
                 time.sleep(self.poll_delay(elapsed, poll_interval))
                 continue
 
