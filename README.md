@@ -99,10 +99,12 @@ lium = Lium()
 # the cheapest available 1×A100 with at least 32 CPUs, chosen and rented in one call
 rented = lium.rent(gpu_type="A100", min_cpus=32, name="demo")
 print(f"{rented.executor.huid} at ${rented.price_per_hour:.2f}/h")
-pod = lium.wait_ready(rented.pod, timeout=600)                 # a ready PodInfo
+pod = lium.wait_ready(rented.pod, timeout=600)                 # a ready PodInfo; None only if still starting after 600 s
 print(lium.exec(pod, command="nvidia-smi", timeout=60)["stdout"])
 lium.down(pod)
 ```
+
+`wait_ready()` raises `PodStartError` — with `.pod`, `.status`, `.history` and `.cause` (what the backend recorded, e.g. `Container creation failed due to ... (failure_step: ssh_connect)`) — when the pod reaches `FAILED`/`CREATION_FAILED`/`STOPPED`/`BROKEN` or disappears from the pod list, so a dead pod is not mistaken for a slow one. Pass `on_poll=lambda pod, status, elapsed: ...` to be told about every poll. `lium up` is bounded by `--timeout SECONDS` (default 900) for the whole rent, prints `waiting for <pod>… <STATUS> (<n> s)` while it waits, and exits 1 naming the pod when the budget runs out; `--ready-timeout` caps only the wait.
 
 A long job goes on a pod the caller keeps: `detach=True` starts it in the background and returns at once, and the pod stays up until you remove it. `lium.ls()` lists the nodes when you want to name one; `up(wait=True)` rents it and returns the ready pod.
 
@@ -140,6 +142,13 @@ job = lium.job(pod, "vllm")            # re-attach by name; job.status(), job.ki
 
 Full API reference: https://docs.lium.io/developers/sdk/reference
 
+`lium.ssh(pod)` returns the pod's ssh command with `-i <key>` and the pinned host-key options
+described under Configuration; pass `refresh=True` to rebuild it from the pod's current host and port
+after a restart (`lium.refresh_pod(pod)` re-reads one pod by id or huid; `LiumNotFoundError` when it
+is gone). `lium ps --format json` and `lium describe` (table and `--json`) show the same command
+without `-i` as `ssh_command` (the key path lives in the SDK config, not in the pod record); the
+JSON keeps the API's raw value as `ssh_cmd`.
+
 ## Documentation
 
 - **CLI docs:** https://docs.lium.io/category/cli
@@ -160,14 +169,15 @@ The `lium` CLI exposes the full pod lifecycle. Run `lium --help` to see everythi
 - `lium init` - Initialize configuration (API key, SSH keys)
 - `lium ls [GPU_TYPE]` - List available nodes
 - `lium up [NODE_ID]` - Create a pod (use node ID or filters like `--gpu`, `--count`, `--country`)
-- `lium ps` - List active pods
+- `lium ps` - List active pods; the `#` column is the row number `rm`/`ssh`/`exec`/`scp` accept in the same shell, for 10 minutes, and only while the pod shown on that row is still listed. Use the huid in scripts.
 - `lium describe <POD>` - Full manifest of one pod: ports, GPU, template, billing (add `--json` for machine-readable output)
 - `lium ssh <POD>` - SSH into a pod
 - `lium exec <POD> <COMMAND>` - Execute command on pod (add `-d/--detach` to start it in the background and return immediately)
 - `lium scp <POD> <LOCAL_FILE> [REMOTE_PATH]` - Copy files to pods (add `-d` to download from pods)
 - `lium rsync <POD> <LOCAL_DIR> [REMOTE_PATH]` - Sync directories to pods
-- `lium rm <POD>` - Remove/stop a pod
+- `lium rm <POD>` - Remove/stop a pod (`--name-only` to refuse `lium ps` row numbers in scripts)
 - `lium reboot <POD>` - Reboot a pod
+- `lium audit [--pod POD] [--since 24h] [--key ID]` - Who did what to the account's pods, and when: every rent, reboot, edit and delete with the session or API key that requested it (add `--json` for machine-readable output)
 - `lium update <POD>` - Install Jupyter on a pod
 - `lium templates [SEARCH]` - List available Docker templates
 - `lium fund` - Fund account with TAO from Bittensor wallet
@@ -284,6 +294,10 @@ lium up 1 --until "today 23:00"       # Terminate at 11 PM today
 # Create pod with Jupyter
 lium up 1 --jupyter --yes
 
+# Fail (non-zero exit) if the pod exposes a different GPU count than requested or billed
+lium up --gpu H200 --count 8 --verify-gpus --yes          # also counts GPUs with nvidia-smi over SSH
+lium up --gpu H200 --count 8 --verify-gpus --strict-gpus  # ...and remove the pod on mismatch
+
 # Execute commands
 lium exec my-pod "nvidia-smi"
 lium exec my-pod "python train.py"
@@ -387,6 +401,17 @@ You can also use environment variables:
 ```bash
 export LIUM_API_KEY=your-api-key-here
 ```
+
+SSH host keys of pods are pinned on first use under `~/.lium/known_hosts/<pod-id>`
+(`lium ssh`, `lium up`, and the SDK's `exec`, `stream_exec`, `rsync`). `reboot`, `edit`,
+`switch_template` and `rm` drop the pin themselves (the container, and its key, are replaced).
+A pod that later presents a different key is rejected — the SDK raises `LiumHostKeyError`,
+`lium ssh` stops with OpenSSH's own "host identification has changed" message — after a
+reboot the platform did on its own, or an interception; delete that file if the pod was
+legitimately re-provisioned. Fingerprints are `SHA256:…`, as `ssh-keygen -lf` prints them.
+`LIUM_SSH_INSECURE=1` restores the old accept-anything behaviour (each accepted key is
+reported with its fingerprint). `lium ssh` runs OpenSSH with an argument list built from the
+pod's user, address and port; the API's connection string is never handed to a shell.
 
 ## Requirements
 

@@ -15,6 +15,7 @@ import click
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from lium.sdk import Lium, PodInfo
+from lium.sdk.client import ENV_NAME
 from lium.sdk.detach import (
     DEFAULT_DETACH_LOG_DIR,
     build_detached_command,
@@ -202,6 +203,12 @@ def parse_environment_variables(env: Tuple[str, ...]) -> dict[str, str]:
                 EXIT_CONFIGURATION_ERROR,
             )
         key, value = env_var.split("=", 1)
+        if not ENV_NAME.fullmatch(key):
+            raise CliFailure(
+                "invalid_env",
+                f"Invalid env name {key!r} (letters, digits and underscores; not starting with a digit)",
+                EXIT_CONFIGURATION_ERROR,
+            )
         env_dict[key] = value
     return env_dict
 
@@ -273,8 +280,8 @@ def exec_command(
     
     \b
     TARGETS: Pod identifiers - can be:
-      - Pod name/ID (eager-wolf-aa)
-      - Index from 'lium ps' (1, 2, 3)
+      - Pod huid, name or ID (eager-wolf-aa) — the stable form for scripts
+      - Row number of your last 'lium ps' in this shell (1, 2) — refused if that pod is gone or the listing is >10 min old
       - Comma-separated (1,2,eager-wolf-aa)
       - All pods (all)
     
@@ -314,7 +321,11 @@ def exec_command(
             console.info(f"Executing on {len(selected_pods)} pods")
 
         if env_dict:
-            console.dim(f"Environment: {', '.join(f'{k}={v}' for k, v in env_dict.items())}")
+            # Names only, values masked. -e is a common way to pass tokens, and
+            # echoing the values here lands secrets in terminal logs and agent
+            # transcripts. The values still reach the pod unchanged.
+            masked = ", ".join(f"{name}=****" for name in env_dict)
+            console.dim(f"Environment: {masked}")
 
     if detach:
         token = detach_token()

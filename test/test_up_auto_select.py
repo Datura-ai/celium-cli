@@ -111,6 +111,10 @@ def test_up_names_the_pick_and_its_price_before_renting(monkeypatch):
             return [SimpleNamespace(id="pod-uuid-1", huid="thrifty-node-bb", name="thrifty-node-bb",
                                     status="RUNNING", ssh_cmd="ssh root@1.2.3.4", ports={"22": 10022})]
 
+        def wait_ready(self, pod, *, timeout=None, poll_interval=None, on_poll=None):
+            # the CLI waits through Lium.wait_ready (DAH-2558); the pod here is ready on the first look
+            return self.ps()[0]
+
     monkeypatch.setattr(up_module, "Lium", _RentingLium)
     monkeypatch.setattr(up_module, "ensure_config", lambda: None)
     monkeypatch.setattr("lium.cli.ls.command.ls_store_executor", lambda **kwargs: [])

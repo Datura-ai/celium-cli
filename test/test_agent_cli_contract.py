@@ -360,7 +360,7 @@ def test_ssh_session_connected_reports_only_connection_failure(monkeypatch, retu
         ssh_module.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=returncode)
     )
 
-    assert ssh_module.ssh_session_connected("ssh root@x") is connected
+    assert ssh_module.ssh_session_connected(["ssh", "root@203.0.113.7"]) is connected
 
 
 def test_rm_all_treats_a_lost_terminal_as_no(monkeypatch):
@@ -380,6 +380,7 @@ def _run_ps_raising(monkeypatch, error: Exception):
             raise error
 
     monkeypatch.setattr(ps_module, "Lium", _RaisingLium)
+    monkeypatch.setattr(ps_module, "ensure_config", lambda: None)
     return CliRunner().invoke(cli, ["ps"])
 
 
@@ -401,6 +402,7 @@ def test_other_api_failures_exit_with_the_api_code(monkeypatch):
 def test_ps_named_target_that_matches_nothing_fails(monkeypatch, extra_args):
     """Asking for one pod by name and getting none is a miss in every format."""
     monkeypatch.setattr(ps_module, "Lium", _FakeLium)
+    monkeypatch.setattr(ps_module, "ensure_config", lambda: None)
 
     result = CliRunner().invoke(cli, ["ps", "no-such-pod-zz", *extra_args])
 
@@ -547,11 +549,11 @@ def test_ssh_separates_its_own_failure_from_the_remote_shell(monkeypatch):
         def ps(self):
             return [SimpleNamespace(
                 id="pod-uuid-1", huid="eager-wolf-aa", name="my-pod",
-                status="RUNNING", ssh_cmd="ssh root@1.2.3.4",
+                status="RUNNING", ssh_cmd="ssh root@203.0.113.7",
             )]
 
-        def ssh(self, pod):
-            return "ssh root@1.2.3.4"
+        def ssh_argv(self, pod):
+            return ["ssh", "root@203.0.113.7"]
 
     monkeypatch.setattr(ssh_module, "Lium", _SshLium)
 
@@ -682,6 +684,7 @@ def test_ps_empty_account_is_not_a_failure(monkeypatch):
             return []
 
     monkeypatch.setattr(ps_module, "Lium", _EmptyLium)
+    monkeypatch.setattr(ps_module, "ensure_config", lambda: None)
 
     result = CliRunner().invoke(cli, ["ps"])
 

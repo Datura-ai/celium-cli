@@ -238,9 +238,13 @@ class _Stream:
     def __init__(self, text: str = "", channel=None):
         self._text = text
         self.channel = channel
+        self.written = b""
 
     def read(self):
         return self._text.encode()
+
+    def write(self, data):
+        self.written += data
 
     def close(self):
         pass
@@ -250,11 +254,12 @@ def _ssh_returning(monkeypatch, client, stdout: str, *, exit_code: int = 0, read
     """Replace the SSH session with one that answers every command the same way."""
     channel = _Channel(ready_after, exit_code)
     sent: list[str] = []
+    stdin = _Stream()
 
     class _Ssh:
         def exec_command(self, command, **kwargs):
             sent.append(command)
-            return _Stream(), _Stream(stdout, channel), _Stream("")
+            return stdin, _Stream(stdout, channel), _Stream("")
 
     from contextlib import contextmanager
 
@@ -263,6 +268,7 @@ def _ssh_returning(monkeypatch, client, stdout: str, *, exit_code: int = 0, read
         yield _Ssh()
 
     monkeypatch.setattr(client, "ssh_connection", fake_connection)
+    channel.stdin = stdin  # what exec() wrote to the session before closing it
     return sent, channel
 
 
@@ -336,13 +342,18 @@ def test_two_default_log_paths_in_the_same_second_differ():
     assert Lium.default_detach_log_path() != Lium.default_detach_log_path()
 
 
-def test_exec_detach_exports_env_inside_the_detached_shell(monkeypatch):
+def test_exec_detach_sends_env_over_stdin_not_in_the_launcher_line(monkeypatch):
+    """The detached process inherits the exports from the launching shell; the
+    value never sits in the pod's argv (DAH-2984 applies to detach too)."""
     client = _Client()
-    sent, _ = _ssh_returning(monkeypatch, client, "7\n")
+    sent, channel = _ssh_returning(monkeypatch, client, "7\n")
 
     client.exec(_pod(), command="run", env={"HF_HOME": "/workspace/hf"}, detach=True)
 
-    assert 'export HF_HOME="/workspace/hf" && run' in sent[0]
+    assert sent[0].startswith('eval "$(cat)" && ')
+    assert "/workspace/hf" not in sent[0]
+    assert "nohup setsid bash -lc run" in sent[0]
+    assert channel.stdin.written == b"export HF_HOME=/workspace/hf"
 
 
 def test_exec_detach_fails_loudly_when_no_pid_came_back(monkeypatch):
