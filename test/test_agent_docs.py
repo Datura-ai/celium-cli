@@ -247,6 +247,31 @@ def test_the_documented_capture_reads_the_pid_from_the_envelope_the_cli_emits():
     assert pid == "48213"
 
 
+def test_the_documented_failure_branch_reads_the_remote_failure_from_stdout():
+    """A remote non-zero exit prints the `results[]` envelope on stdout and exits with the remote code; stderr
+    (the page's `err.json`) stays empty (exec.py `report_executions` + `SystemExit`). The page's script pattern
+    reads `$out` first; its jq filter names the pod, the exit code and the remote stderr (arhangel66 on #213)."""
+    import json
+    import shutil
+    import subprocess
+
+    from click.testing import CliRunner
+
+    from lium.cli.commands.exec import PodExecution, report_executions
+
+    text = PAGES["docs/agents.md"]
+    assert 'if [ -n "$out" ]; then' in text, "the failure pattern no longer checks stdout before err.json"
+    jq_filter = re.search(r"jq -r '(\.results\[\] \| [^']+)'", text).group(1)
+    execution = PodExecution(pod="train-1", stdout="", stderr="nvidia-smi: not found\n", exit_code=127, error=None)
+    result = CliRunner().invoke(click.command()(lambda: report_executions([execution], json_output=True)), [])
+    envelope = result.stdout
+    assert json.loads(envelope)["results"][0]["exit_code"] == 127 and result.stderr == ""
+    if shutil.which("jq") is None:
+        pytest.skip("jq not installed here; the envelope was checked with json.loads")
+    line = subprocess.run(["jq", "-r", jq_filter], input=envelope, capture_output=True, text=True, check=True).stdout
+    assert line.startswith("train-1: exit 127: nvidia-smi: not found")
+
+
 def test_guide_does_not_promise_unmerged_features():
     """The page describes this CLI; branch names and features that live elsewhere do not belong on it."""
     text = AGENTS_DOC.read_text()

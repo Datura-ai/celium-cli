@@ -53,12 +53,21 @@ Pattern in a script:
 ```bash
 set -o pipefail
 if ! out=$(lium exec "$POD" --json "nvidia-smi -L" 2>err.json); then
-  code=$(jq -r .error.code err.json)
+  if [ -n "$out" ]; then
+    # the remote command failed: the envelope is on stdout, err.json is empty
+    jq -r '.results[] | "\(.pod): exit \(.exit_code): \(.stderr)"' <<<"$out"
+  else
+    # the CLI itself failed (no such pod, the API refused): stdout is empty, the error is in err.json
+    code=$(jq -r .error.code err.json)
+  fi
   ...
 fi
 ```
 
-`lium exec --json` exits non-zero when the remote command did; the remote `exit_code`, `stdout` and `stderr` are in `results[]`.
+`lium exec --json` exits non-zero in two ways. When the remote command fails, the exit code is the remote one and the
+`{"ok": false, "results": […]}` envelope is on **stdout** (`results[]` carries the remote `exit_code`, `stdout` and
+`stderr`); stderr is empty. When the CLI could not run it at all — pod not found, the API refused — stdout is empty and the
+`{"ok": false, "error": …}` envelope is on **stderr**. Check `$out` first.
 
 ## 3. The lifecycle, end to end
 
