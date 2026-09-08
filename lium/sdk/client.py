@@ -1,12 +1,15 @@
 """Lium SDK - Clean, Unix-style SDK for GPU pod management."""
 
+import base64
 import getpass
+import hashlib
 import os
 import re
 import shlex
 import socket
 import subprocess
 import time
+import uuid
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -14,6 +17,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Dict, Generator, List, Optional, Union
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import paramiko
@@ -26,6 +30,7 @@ from .config import Config
 from .exceptions import (
     LiumAuthError,
     LiumError,
+    LiumHostKeyError,
     LiumNotFoundError,
     LiumPermissionError,
     LiumRateLimitError,
@@ -49,6 +54,92 @@ load_dotenv()
 # Public API key for the pay API (pay-tao-api-v2). Single source of truth so the
 # literal is not re-typed across every pay-API call site.
 _PAY_API_KEY = "6RhXQ788J9BdnqeLua8z7ZSkXBDahclxhwjMB17qW1M"
+
+# Set LIUM_SSH_INSECURE=1 to restore the old behaviour (accept any host key, never pin).
+_SSH_INSECURE_ENV = "LIUM_SSH_INSECURE"
+_POD_ID_SAFE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def ssh_insecure() -> bool:
+    """True when host-key pinning is disabled via ``LIUM_SSH_INSECURE=1``."""
+    return os.getenv(_SSH_INSECURE_ENV, "").strip().lower() in ("1", "true", "yes")
+
+
+def known_hosts_path(pod: Union[PodInfo, str]) -> Path:
+    """Per-pod known_hosts file: ``~/.lium/known_hosts/<pod id>``.
+
+    Pods are ephemeral and executors reuse ``host:port`` for new rentals, so a
+    single OpenSSH-style file keyed by address would flag every new pod on a
+    recycled address as a key change. Keying by pod id pins the key for the
+    lifetime of the pod and lets a fresh pod on the same address start clean.
+    """
+    pod_id = pod if isinstance(pod, str) else pod.id
+    safe_id = _POD_ID_SAFE.sub("_", pod_id or "unknown")
+    return Path.home() / ".lium" / "known_hosts" / safe_id
+
+
+def host_key_fingerprint(key: paramiko.PKey) -> str:
+    """``SHA256:<base64>`` as ``ssh-keygen -lf`` prints it, so a user can compare the two."""
+    digest = hashlib.sha256(key.asbytes()).digest()
+    return "SHA256:" + base64.b64encode(digest).decode().rstrip("=")
+
+
+def forget_host_key(pod: Union[PodInfo, str]) -> None:
+    """Drop the pinned host key of a pod (its container, and so its key, is being replaced)."""
+    try:
+        known_hosts_path(pod).unlink()
+    except FileNotFoundError:
+        pass  # nothing pinned yet: forgetting is idempotent
+    except OSError:
+        pass  # best effort; a pin we cannot delete surfaces as LiumHostKeyError on the next connection, which names the file
+
+
+def _ensure_known_hosts_file(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(path.parent, 0o700)
+    except OSError:
+        pass  # best effort (read-only or foreign filesystem); the per-file 0600 mode below is what protects the pins
+    if not path.exists():
+        path.touch(mode=0o600)
+
+
+class _PinOnFirstUsePolicy(paramiko.MissingHostKeyPolicy):
+    """Trust-on-first-use: record the key of a pod we have never talked to.
+
+    Later connections to the same pod are checked against the recorded key by
+    paramiko itself (``BadHostKeyException`` on mismatch); ``ssh_connection``
+    turns that into :class:`LiumHostKeyError`.
+    """
+
+    def missing_host_key(self, client, hostname, key):  # noqa: D401 - paramiko interface
+        client._host_keys.add(hostname, key.get_name(), key)
+        if client._host_keys_filename is not None:
+            client.save_host_keys(client._host_keys_filename)
+        fp = host_key_fingerprint(key)
+        warnings.warn(
+            f"Pinning {key.get_name()} host key {fp} for {hostname} "
+            f"(first connection to this pod; {_SSH_INSECURE_ENV}=1 disables pinning)",
+            stacklevel=2,
+        )
+
+
+class _InsecureAcceptPolicy(paramiko.MissingHostKeyPolicy):
+    """Accept whatever key the host presents. Installed only under ``LIUM_SSH_INSECURE=1``.
+
+    This is the pre-pinning behaviour (paramiko's ``AutoAddPolicy``) spelled out:
+    the key is kept for the life of this client so the connection proceeds, nothing
+    is written to disk, and every acceptance is reported so the opt-out is never
+    silent. The default path uses :class:`_PinOnFirstUsePolicy`.
+    """
+
+    def missing_host_key(self, client, hostname, key):  # noqa: D401 - paramiko interface
+        client.get_host_keys().add(hostname, key.get_name(), key)
+        warnings.warn(
+            f"Accepting unverified {key.get_name()} host key {host_key_fingerprint(key)} for "
+            f"{hostname}: {_SSH_INSECURE_ENV}=1 disabled host key verification",
+            stacklevel=2,
+        )
 
 
 def _response_error_message(response: requests.Response) -> str:
@@ -128,8 +219,31 @@ class Lium:
             "X-Lium-Client-Version": _get_client_version(),
         }
 
-    @with_retry()
     def _request(
+        self,
+        method: str,
+        endpoint: str,
+        base_url: Optional[str] = None,
+        headers: Optional[Dict[str, str]] = None,
+        retry: bool = True,
+        **kwargs,
+    ) -> requests.Response:
+        """Make API request with error handling.
+
+        Transient failures (429, 5xx, network errors) are retried unless
+        ``retry`` is False. A call that creates something must pass ``False``:
+        a timed-out POST may well have succeeded server-side, and repeating it
+        blindly creates a duplicate.
+        """
+        if retry:
+            return self._request_with_retry(method, endpoint, base_url=base_url, headers=headers, **kwargs)
+        return self._request_once(method, endpoint, base_url=base_url, headers=headers, **kwargs)
+
+    @with_retry()
+    def _request_with_retry(self, method: str, endpoint: str, **kwargs) -> requests.Response:
+        return self._request_once(method, endpoint, **kwargs)
+
+    def _request_once(
         self,
         method: str,
         endpoint: str,
@@ -137,7 +251,6 @@ class Lium:
         headers: Optional[Dict[str, str]] = None,
         **kwargs,
     ) -> requests.Response:
-        """Make API request with error handling."""
         url = f"{base_url or self.config.base_url}/{endpoint.lstrip('/')}"
         request_headers = headers or self.headers
         resp = requests.request(method, url, headers=request_headers, timeout=30, **kwargs)
@@ -451,28 +564,134 @@ class Lium:
             "restore_path": restore_path,
         }
 
-        response = self._request("POST", f"/executors/{executor_info.id}/rent", json=payload).json()
+        # The rent call is not idempotent, so it is never retried blindly. A
+        # timeout or a 5xx may have created the pod anyway; look for it before
+        # sending the request a second time. The Idempotency-Key lets a server
+        # that honours it collapse the two requests; one that does not ignores it.
+        rent_endpoint = f"/executors/{executor_info.id}/rent"
+        rent_headers = {**self.headers, "Idempotency-Key": str(uuid.uuid4())}
+        # Pods that exist before the rent can never be the one this call created.
+        # With GPU splitting a node hosts several pods, and the default pod name
+        # is the node huid, so a stale same-name pod on the same node would
+        # otherwise be handed back for a rent the server never received.
+        known_pod_ids = self._pod_ids_before_rent()
+        try:
+            response = self._request(
+                "POST", rent_endpoint, json=payload, headers=rent_headers, retry=False
+            ).json()
+        except (requests.RequestException, LiumServerError, LiumRateLimitError):
+            # "Could not look" (the network that failed the POST fails ps() the
+            # same way) must fall through to the second POST, not escape here.
+            existing = self._find_pod_by_name(
+                name, executor_info.id, attempts=3, interval=3, exclude=known_pod_ids
+            )
+            if existing:
+                return existing
+            time.sleep(1)
+            response = self._request(
+                "POST", rent_endpoint, json=payload, headers=rent_headers, retry=False
+            ).json()
 
         # API should return pod info
         if response and "id" in response:
             return response
 
+        # The rent route answers {"success": true, "pod_id": ...}: the id is
+        # exact, so the pod is read back by it rather than guessed by name. If
+        # the listing cannot be read, the id alone is still the truth: the pod
+        # exists, and the caller gets its id rather than an error.
+        pod_id = (response or {}).get("pod_id")
+        if pod_id:
+            existing = self._find_pod_by_id(str(pod_id), executor_info.id, attempts=3, interval=2)
+            return existing or {
+                "id": str(pod_id),
+                "name": name,
+                "status": "PENDING",
+                "huid": generate_huid(str(pod_id)),
+                "ssh_cmd": None,
+                "executor_id": executor_info.id,
+            }
+
         # Fallback: find pod by name after creation
-        if name:
-            for _ in range(2):
-                time.sleep(3)
-                for pod in self.ps():
-                    if pod.name == name:
-                        return {
-                            "id": pod.id,
-                            "name": pod.name,
-                            "status": pod.status,
-                            "huid": pod.huid,
-                            "ssh_cmd": pod.ssh_cmd,
-                            "executor_id": executor_info.id
-                        }
+        existing = self._find_pod_by_name(
+            name, executor_info.id, attempts=2, interval=3, exclude=known_pod_ids
+        )
+        if existing:
+            return existing
 
         raise LiumError(f"Failed to create pod{' ' + name if name else ''}")
+
+    def _list_pods_or_none(self) -> Optional[List[PodInfo]]:
+        """``ps()`` for the rent lookups: ``None`` when the listing itself failed,
+        so a network that is down for the POST is not mistaken for "no pod"."""
+        try:
+            return self.ps()
+        except (requests.RequestException, LiumError):
+            return None
+
+    def _find_pod_by_id(
+        self, pod_id: str, executor_id: str, *, attempts: int, interval: float
+    ) -> Optional[Dict[str, Any]]:
+        """The pod ``pod_id`` from ``ps``; the server already committed it, so the
+        listing is read at once and only re-read if the row is not there yet."""
+        for attempt in range(attempts):
+            if attempt:
+                time.sleep(interval)
+            for pod in self._list_pods_or_none() or []:
+                if pod.id == pod_id:
+                    return self._created_pod_record(pod, executor_id)
+        return None
+
+    def _pod_ids_before_rent(self) -> frozenset:
+        """Ids of the pods that exist right now, taken before a rent is sent.
+
+        A listing failure of any kind must not turn into a failed ``up``; an
+        empty snapshot only means the by-name lookup cannot rule out older pods.
+        """
+        try:
+            return frozenset(pod.id for pod in self.ps())
+        except Exception:  # noqa: BLE001 - best effort by design
+            return frozenset()
+
+    def _find_pod_by_name(
+        self,
+        name: Optional[str],
+        executor_id: str,
+        *,
+        attempts: int,
+        interval: float,
+        exclude: frozenset = frozenset(),
+    ) -> Optional[Dict[str, Any]]:
+        """A pod called ``name`` on ``executor_id`` if one shows up in ``ps``.
+
+        Used when the rent response did not say what it created. The executor
+        is matched when the listing includes one, so two pods sharing a generic
+        name on different nodes are not confused, and pods whose id is in
+        ``exclude`` (the ones that existed before the rent) are never returned.
+        """
+        if not name:
+            return None
+        for _ in range(attempts):
+            time.sleep(interval)
+            for pod in self._list_pods_or_none() or []:
+                if pod.id in exclude or pod.name != name:
+                    continue
+                if pod.executor is not None and pod.executor.id and pod.executor.id != executor_id:
+                    continue
+                return self._created_pod_record(pod, executor_id)
+        return None
+
+    @staticmethod
+    def _created_pod_record(pod: PodInfo, executor_id: str) -> Dict[str, Any]:
+        """The dict :meth:`up` returns for a pod read back from the listing."""
+        return {
+            "id": pod.id,
+            "name": pod.name,
+            "status": pod.status,
+            "huid": pod.huid,
+            "ssh_cmd": pod.ssh_cmd,
+            "executor_id": executor_id,
+        }
 
     def pod(
         self,
@@ -559,7 +778,11 @@ class Lium:
             **kwargs,
         }
 
-        return self._request("PUT", f"/templates/{pod['template']['id']}", json=payload).json()
+        result = self._request("PUT", f"/templates/{pod['template']['id']}", json=payload).json()
+        # The backend routes this PUT into a container reboot (pod_service.edit_pod ->
+        # reboot_rental_container), so the pod's SSH host key changes with it.
+        forget_host_key(pod_id)
+        return result
 
     def ls(
         self,
@@ -665,7 +888,9 @@ class Lium:
         Returns:
             API response payload from the delete call.
         """
-        return self._request("DELETE", f"/pods/{pod.id}").json()
+        result = self._request("DELETE", f"/pods/{pod.id}").json()
+        forget_host_key(pod)
+        return result
 
     def rm(self, pod: PodInfo) -> Dict[str, Any]:
         """Remove pod (alias for :meth:`down`).
@@ -692,7 +917,11 @@ class Lium:
         if volume_id is not None:
             payload["volume_id"] = volume_id
 
-        return self._request("POST", f"/pods/{pod.id}/reboot", json=payload or {}).json()
+        result = self._request("POST", f"/pods/{pod.id}/reboot", json=payload or {}).json()
+        # The reboot replaces the container and with it the SSH host key; the next
+        # connection re-pins rather than tripping over the old key.
+        forget_host_key(pod)
+        return result
 
     def get_default_images(self, gpu_model: Optional[str], driver_version: Optional[str]) -> list[dict]:
         """Get default images for GPU type and driver version."""
@@ -927,9 +1156,16 @@ class Lium:
             except (paramiko.SSHException, FileNotFoundError, PermissionError):
                 continue
 
-        # Connect
+        # Connect. Host keys are pinned per pod under ~/.lium/known_hosts/ (trust
+        # on first use, reject on change) unless LIUM_SSH_INSECURE=1.
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        if ssh_insecure():
+            client.set_missing_host_key_policy(_InsecureAcceptPolicy())
+        else:
+            hosts_file = known_hosts_path(pod)
+            _ensure_known_hosts_file(hosts_file)
+            client.load_host_keys(str(hosts_file))
+            client.set_missing_host_key_policy(_PinOnFirstUsePolicy())
         connect_kwargs = {
             "hostname": host,
             "port": port,
@@ -945,7 +1181,19 @@ class Lium:
             # Paramiko cannot parse the private key file directly.
             connect_kwargs["key_filename"] = str(self.config.ssh_key_path)
             connect_kwargs["allow_agent"] = True
-        client.connect(**connect_kwargs)
+        try:
+            client.connect(**connect_kwargs)
+        except paramiko.BadHostKeyException as e:
+            hosts_file = known_hosts_path(pod)
+            raise LiumHostKeyError(
+                f"Host key for pod {pod.name} ({host}:{port}) changed: got "
+                f"{host_key_fingerprint(e.key)}, pinned "
+                f"{host_key_fingerprint(e.expected_key)}. The container, and its key, were "
+                f"replaced: a reboot or template change made outside this SDK, or the platform "
+                f"restarting the pod on its own (it retries failed pods); it can also mean the "
+                f"connection is being intercepted. If you trust the new key, delete {hosts_file} "
+                f"and reconnect; {_SSH_INSECURE_ENV}=1 disables pinning."
+            ) from e
 
         try:
             yield client
@@ -1162,7 +1410,13 @@ class Lium:
         if not pod.ssh_cmd or not self.config.ssh_key_path:
             raise ValueError("No SSH configured")
 
-        ssh_cmd = f"ssh -i {self.config.ssh_key_path} -p {pod.ssh_port} -o StrictHostKeyChecking=no"
+        ssh_cmd = f"ssh -i {shlex.quote(str(self.config.ssh_key_path))} -p {pod.ssh_port}"
+        if ssh_insecure():
+            ssh_cmd += " -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+        else:
+            hosts_file = known_hosts_path(pod)
+            _ensure_known_hosts_file(hosts_file)
+            ssh_cmd += f" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={shlex.quote(str(hosts_file))}"
         cmd = ["rsync", "-avz", "-e", ssh_cmd, local,  f"{pod.username}@{pod.host}:{remote}"]
 
         result = subprocess.run(cmd, capture_output=True, text=True)
@@ -1184,6 +1438,7 @@ class Lium:
         }
         
         response = self._request("PUT", f"/pods/{pod.id}/switch-template", json=payload).json()
+        forget_host_key(pod)  # new container, new host key
         
         # Parse the response into a PodInfo object
         return PodInfo(
