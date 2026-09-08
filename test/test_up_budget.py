@@ -144,6 +144,18 @@ def test_sdk_cap_spend_moves_a_later_scheduled_removal_up(monkeypatch):
     assert scheduled["t"] == deadline.isoformat().replace("+00:00", "Z")
 
 
+def test_sdk_cap_spend_refuses_a_removal_that_has_already_passed(monkeypatch):
+    """A pod still listed after its scheduled removal time is the platform's to remove; re-posting the
+    past time would be a 400 from the API, so it is a ValueError before any call."""
+    client = Lium(Config(api_key="test"))
+    monkeypatch.setattr(client, "schedule_termination", lambda *a, **k: pytest.fail("must not call the API"))
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    pod = _pod(created_at=(now - timedelta(minutes=10)).isoformat(), removal=(now - timedelta(minutes=2)).isoformat().replace("+00:00", "Z"))
+
+    with pytest.raises(ValueError, match="already scheduled for removal"):
+        client.cap_spend(pod, budget_usd=PRICE * 5)
+
+
 def test_sdk_cap_spend_refuses_an_already_spent_budget(monkeypatch):
     client = Lium(Config(api_key="test"))
     monkeypatch.setattr(client, "schedule_termination", lambda *a, **k: pytest.fail("must not schedule"))

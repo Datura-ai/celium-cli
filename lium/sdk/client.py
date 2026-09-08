@@ -3405,20 +3405,25 @@ class Lium:
             removal that was already scheduled.
 
         Raises:
-            ValueError: Budget not positive, price or creation time unknown, or
-                the budget is already spent (the deadline is in the past).
+            ValueError: Budget not positive, price or creation time unknown,
+                the budget is already spent (the deadline is in the past), or the
+                pod's scheduled removal has already passed.
         """
         started_at = parse_api_timestamp(pod.created_at)
         if started_at is None:
             raise ValueError(f"Pod {pod.huid} has no usable created_at; cannot cap spend")
         price = pod.executor.price_per_hour if pod.executor else None
         deadline = spend_cap_deadline(started_at, price or 0.0, budget_usd)
-        if deadline <= datetime.now(timezone.utc):
+        now = datetime.now(timezone.utc)
+        if deadline <= now:
             raise ValueError(
                 f"Pod {pod.huid} has already spent ${budget_usd:.2f} at ${price:.2f}/h since {pod.created_at}"
             )
         existing = parse_api_timestamp(pod.removal_scheduled_at)
-        deadline = min(deadline, existing) if existing else deadline
+        if existing is not None:
+            if existing <= now:
+                raise ValueError(f"Pod {pod.huid} is already scheduled for removal at {pod.removal_scheduled_at}")
+            deadline = min(deadline, existing.astimezone(timezone.utc))
         self.schedule_termination(pod, termination_time=deadline.isoformat().replace("+00:00", "Z"))
         return deadline
 
