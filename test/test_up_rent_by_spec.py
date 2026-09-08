@@ -151,8 +151,13 @@ def _run_up(monkeypatch, lium_cls):
             return {}
 
         def ps(self):
-            return [SimpleNamespace(id="pod-uuid-1", huid="thrifty-node-bb", name="thrifty-node-bb",
+            # gpu_count as a real /pods row has it: the GPU-count check compares it with the rent's
+            return [SimpleNamespace(id="pod-uuid-1", huid="thrifty-node-bb", name="thrifty-node-bb", gpu_count=1,
                                     status="RUNNING", ssh_cmd="ssh root@pod.example", ports={"22": 10022})]
+
+        def wait_ready(self, pod, *, timeout=None, poll_interval=None, on_poll=None):
+            # the CLI waits through Lium.wait_ready (DAH-2558); the pod here is ready on the first look
+            return self.ps()[0]
 
     monkeypatch.setattr(up_module, "Lium", _Ready)
     monkeypatch.setattr(up_module, "ensure_config", lambda: None)
@@ -201,6 +206,8 @@ def test_up_names_the_gpus_rented_not_the_nodes_total_on_a_split(monkeypatch):
     output = " ".join(result.output.split())
     assert "Selected eight-node-dd (1×RTX4090, Germany) at $0.30/h" in output
     assert "8×" not in output
+    # the GPU-count check expects the rent's one GPU, not the node's eight (the pod row says 1)
+    assert "GPU count mismatch" not in output
 
 
 def test_help_states_who_picks():

@@ -41,7 +41,7 @@ def test_request_403_raises_permission_error(monkeypatch):
 
 
 def test_logs_403_raises_permission_error(monkeypatch):
-    monkeypatch.setattr("lium.sdk.client.requests.get", lambda *a, **kw: _Forbidden())
+    monkeypatch.setattr("lium.sdk.client.requests.request", lambda *a, **kw: _Forbidden())
     client = Lium(Config(api_key="test"))
 
     with pytest.raises(LiumPermissionError):

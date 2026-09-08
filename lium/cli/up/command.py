@@ -1,10 +1,21 @@
+import time
 from typing import Optional, Tuple
 import click
+import requests
 
-from lium.sdk import Lium
+from lium.sdk import (
+    Lium,
+    LiumAuthError,
+    LiumError,
+    LiumPermissionError,
+    LiumRateLimitError,
+    LiumServerError,
+    PodStartError,
+)
 from lium.cli import ui
 from lium.cli.utils import (
     CliFailure,
+    EXIT_API_ERROR,
     EXIT_CONFIGURATION_ERROR,
     EXIT_GENERAL_ERROR,
     EXIT_SSH_ERROR,
@@ -21,9 +32,22 @@ from .actions import (
     RentPodAction,
     WaitReadyAction,
     ScheduleTerminationAction,
+    VerifyGpuCountAction,
     InstallJupyterAction,
     PrepareSSHAction,
+    rented_gpu_count,
 )
+
+# The whole command's budget. Rentals start in ~25 s at the median and a cold image pull takes a
+# few minutes; a wait that has passed fifteen minutes is a rent that is not going to come up on its
+# own, and the caller is billed for every one of those minutes.
+DEFAULT_TIMEOUT_SECONDS = 900
+
+
+def _wait_budget(deadline: float, ready_timeout: Optional[int]) -> int:
+    """Seconds the ready wait may take: what --timeout has left, capped by --ready-timeout."""
+    remaining = max(1, int(deadline - time.monotonic()))
+    return min(remaining, ready_timeout) if ready_timeout else remaining
 
 
 @click.command("up")
@@ -40,6 +64,32 @@ from .actions import (
 @click.option("--until", help="Auto-terminate at time in local timezone (e.g., 'today 23:00', 'tomorrow 01:00', '2025-10-20 15:30')")
 @click.option("--jupyter", is_flag=True, help="Install Jupyter Notebook (automatically selects available port)")
 @click.option("--no-ssh", "no_ssh", is_flag=True, help="Create the pod and return instead of opening an SSH session")
+@click.option(
+    "--timeout",
+    "timeout",
+    type=click.IntRange(min=1),
+    default=DEFAULT_TIMEOUT_SECONDS,
+    show_default=True,
+    metavar="SECONDS",
+    help="Time budget for the whole command: finding the node, renting it and waiting for the pod. If it runs out before the rent, exit 1 with no pod created; if it runs out while the pod is still starting, exit 1 with the pod named (it keeps running and billing).",
+)
+@click.option(
+    "--ready-timeout",
+    "ready_timeout",
+    type=click.IntRange(min=1),
+    default=None,
+    metavar="SECONDS",
+    help="Bound only the wait for the pod to become ready (exit 1, pod left running and named). Default: whatever --timeout leaves.",
+)
+@click.option(
+    "--verify-gpus", "verify_gpus", is_flag=True,
+    help="After the pod is ready, count the GPUs nvidia-smi sees over SSH and compare with the billed count",
+)
+@click.option(
+    "--strict-gpus", "strict_gpus", is_flag=True,
+    help="Remove the pod automatically when its GPU count does not match what was requested or billed "
+         "(a pod that could not be checked over SSH is kept)",
+)
 @click.option("--restore-backup", "restore_backup_id", help="Backup ID to restore after the pod starts")
 @click.option("--restore-to", "restore_path", help="New or empty subdirectory for the startup restore")
 @click.option("--image", help="Docker image to run (e.g., pytorch/pytorch:2.0, nvidia/cuda:12.0)")
@@ -69,6 +119,10 @@ def up_command(
     until: Optional[str],
     jupyter: bool,
     no_ssh: bool,
+    timeout: int,
+    ready_timeout: Optional[int],
+    verify_gpus: bool,
+    strict_gpus: bool,
     restore_backup_id: Optional[str],
     restore_path: Optional[str],
     image: Optional[str],
@@ -103,9 +157,12 @@ def up_command(
       lium up 1 --volume new:name=my-data   # Create and attach new volume
       lium up 1 --volume new:name=my-data,desc="Training data"  # With description
       lium up 1 --ttl 6h                    # Auto-terminate after 6 hours
+      lium up --gpu H100 --timeout 600      # Give the whole rent 10 minutes, then exit 1 naming the pod
       lium up 1 --until "today 23:00"       # Auto-terminate at 23:00 local time today
       lium up 1 --until "tomorrow 01:00"    # Auto-terminate at 01:00 local time tomorrow
       lium up 1 --jupyter                   # Install Jupyter Notebook (auto-selects port)
+      lium up --gpu H200 -c 8 --verify-gpus # Fail if the pod exposes fewer GPUs than billed
+      lium up --gpu H200 -c 8 --verify-gpus --strict-gpus  # ...and remove the pod on mismatch
       lium up 1 --restore-backup BACKUP_ID --restore-to /root/restored
       LIUM_DEBUG=1 lium up 1 --jupyter      # Show debug information
     \b
@@ -121,6 +178,7 @@ def up_command(
       lium up cosmic-hawk-f2 --dockerfile ./Dockerfile --name my-build
     """
     ensure_config()
+    deadline = time.monotonic() + timeout
 
     # Check if we're in docker-run mode or custom-Dockerfile build mode
     docker_run_mode = image is not None
@@ -321,8 +379,12 @@ def up_command(
         )
         if restore_backup_id:
             confirm_msg += f" Restore backup {restore_backup_id} to {restore_path} after startup."
+        asked_at = time.monotonic()
         if not ui.confirm(confirm_msg):
             return
+        # The prompt waits on a person, not on Lium: the time spent answering it is not part of
+        # the --timeout budget, or a slow answer would kill the command before it rents.
+        deadline += time.monotonic() - asked_at
 
     if volume_create_params:
         action = CreateVolumeAction()
@@ -336,52 +398,129 @@ def up_command(
 
         volume_id = result.data["volume_id"]
 
+    # --timeout is the whole command's budget. Everything before this line (finding the node and
+    # the template, creating the volume — not the answer at the prompt) counts against it; a budget
+    # that is already spent must not reach the rent, or the pod would be created and then
+    # reported as timed out one second later. The rent is the first thing that bills.
+    if time.monotonic() >= deadline:
+        kept = f" The volume {volume_create_params['name']} was created and is kept." if volume_create_params else ""
+        raise CliFailure(
+            "timeout_before_rent",
+            f"The --timeout budget of {timeout}s ran out before renting {executor.huid}; no pod was created.{kept} "
+            "Run again with a larger --timeout.",
+            EXIT_GENERAL_ERROR,
+        )
+
+    ui.dim(f"renting {executor.huid}…")
     action = RentPodAction()
-    result = ui.load(
-        "Renting machine",
-        lambda: action.execute({
-            "lium": lium,
-            "executor": executor,
-            "spec": spec,
-            "template": template,
-            "dockerfile_content": dockerfile_content,
-            "name": name,
-            "volume_id": volume_id,
-            "ports": ports,
-            "ssh_name": ssh_name,
-            "enable_volume_encryption": volume_encryption,
-            "backup_id": restore_backup_id,
-            "restore_path": restore_path,
-        })
-    )
+    try:
+        result = ui.load(
+            "Renting machine",
+            lambda: action.execute({
+                "lium": lium,
+                "executor": executor,
+                "spec": spec,
+                "template": template,
+                "dockerfile_content": dockerfile_content,
+                "name": name,
+                "volume_id": volume_id,
+                "ports": ports,
+                "ssh_name": ssh_name,
+                "enable_volume_encryption": volume_encryption,
+                "backup_id": restore_backup_id,
+                "restore_path": restore_path,
+            })
+        )
+    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+        # The API did not answer the rent request. Whether a pod was created is unknown, so the
+        # caller must look before renting again — a blind retry is how one `up` made two pods.
+        raise CliFailure(
+            "api_timeout",
+            f"The rent request for {executor.huid} got no answer from the API ({exc.__class__.__name__}). "
+            f"Run 'lium ps' before retrying: a pod named {name or executor.huid} may exist and be billing.",
+            EXIT_API_ERROR,
+        )
+    except (LiumAuthError, LiumPermissionError, LiumServerError, LiumRateLimitError):
+        raise  # handle_errors already names these (bad key, no permission, server down, throttled)
+    except LiumError as exc:
+        # The API answered and said no: the node is no longer rentable (taken, offline, pending
+        # rental) or the request was refused. Usually no pod exists — but Lium.up() sends the
+        # rent a second time when the first request got no answer, and a refusal of that retry
+        # can mean the first one did create a pod. So point at 'lium ps' instead of promising
+        # that nothing was created. (On the spec path Lium.rent posts once and already looked
+        # the pod up by name before raising, so the hint is only conservative there.)
+        raise CliFailure(
+            "rent_rejected",
+            f"Node {executor.huid} could not be rented: {exc}. Run 'lium ps' to check whether a pod was created. "
+            "Run 'lium ls --format json' for the nodes rentable now.",
+            EXIT_API_ERROR,
+        )
 
     pod_id = result.data["pod_id"]
     pod_name = result.data["pod_name"]
     rented = result.data.get("executor") or executor
+    # The GPUs this rental got: on the spec path the server's figure (one GPU unless -c, possibly
+    # a split of a larger node), else the node's count from the dry run. Kept here because
+    # `result` is reused by the actions below, and the GPU-count check needs it.
+    rented_gpus = result.data.get("gpu_count") or gpu_count
     if rented.id != executor.id:
         # The confirmed node was taken between the dry run and the rent; the server took the
         # next candidate at or below the confirmed $/GPU·h.
         ui.info(
             f"{ui.styled(executor.huid, 'id')} was taken meanwhile; rented "
-            f"{ui.styled(rented.huid, 'id')} ({result.data.get('gpu_count') or rented.gpu_count}×{rented.gpu_type}) "
+            f"{ui.styled(rented.huid, 'id')} ({rented_gpus or rented.gpu_count}×{rented.gpu_type}) "
             f"at ${result.data['price_per_hour']:.2f}/h instead"
         )
     executor = rented
+    ui.dim(f"pod {pod_name} (id: {pod_id}) created; waiting for it to become ready")
 
     # The pod is rented and already billing from here on. Every failure below
     # names it before propagating, or the caller cannot clean up what it pays for.
+    wait_timeout = _wait_budget(deadline, ready_timeout)
     action = WaitReadyAction()
     try:
         result = ui.load(
             "Loading image",
             lambda: action.execute({
                 "lium": lium,
-                "pod_id": pod_id
+                "pod_id": pod_id,
+                "timeout": wait_timeout,
+                "report": ui.dim,
             })
+        )
+    except PodStartError as exc:
+        # The pod is dead (FAILED/CREATION_FAILED/STOPPED) or gone; say so with its last status
+        # and the cause the backend recorded, so a script does not retry a rent that will never
+        # come up — and can tell an unreachable host from a bad image.
+        label = exc.pod.huid if exc.pod is not None else pod_name
+        raise CliFailure(
+            "pod_start_failed",
+            f"Pod {label} (id: {pod_id}) failed to start: {exc}. "
+            f"Check 'lium ps' and remove it with 'lium rm {label}' if it is still listed.",
+            EXIT_API_ERROR,
         )
     except Exception:
         ui.error(f"Pod {pod_name} (id: {pod_id}) was created but did not become ready")
         raise
+
+    if not result.ok:
+        # Still starting when the budget ran out: the pod keeps billing, so
+        # name it and hand the decision back to the caller — with the backend's
+        # own estimate and phase when it sent them, so a slow pull reads
+        # differently from a stuck pod.
+        hint = result.data.get("eta_hint")
+        backend = f" (backend: {hint})" if hint else ""
+        # Auto-termination is scheduled only once the pod is ready (below), so say when it was not.
+        not_scheduled = (
+            " Auto-termination (--ttl/--until) was NOT scheduled; it is set once the pod is ready."
+            if termination_time else ""
+        )
+        raise CliFailure(
+            "pod_not_ready",
+            f"Pod {pod_name} (id: {pod_id}) is still starting after {wait_timeout}s and is billing{backend}.{not_scheduled} "
+            f"Wait with 'lium ps', or remove it with 'lium rm {pod_name}'.",
+            EXIT_GENERAL_ERROR,
+        )
 
     pod = result.data["pod"]
     pod_label = f"Pod {ui.styled(pod.huid, 'pod_id')} (name: {pod_name}, id: {pod_id})"
@@ -400,6 +539,43 @@ def up_command(
         except Exception:
             ui.info(f"{pod_label} is running but auto-termination was NOT scheduled")
             raise
+
+    # The GPU count is checked after --ttl is scheduled: a mismatched pod that is
+    # left running (no --strict-gpus) must still terminate when the caller asked.
+    # The requested count is --count, or, when there was none, what the rent got: on the spec
+    # path the server's figure (one GPU unless -c — a correct 1-GPU rent of an 8-GPU node must
+    # not read as a mismatch), else the node's free GPUs, since a rent without a count takes
+    # all of them, not the host total.
+    action = VerifyGpuCountAction()
+    verify_ctx = {
+        "lium": lium,
+        "pod": pod,
+        "expected_count": count if count is not None else (rented_gpus if spec else rented_gpu_count(executor)),
+        "executor_id": executor.id,
+        "verify_via_ssh": verify_gpus,
+    }
+    if verify_gpus:
+        result = ui.load("Verifying GPU count", lambda: action.execute(verify_ctx))
+    else:
+        result = action.execute(verify_ctx)
+    if not result.ok:
+        ui.error(result.error)
+        if strict_gpus and result.data.get("mismatch"):
+            ui.load("Removing pod", lambda: lium.rm(pod))
+            ui.info(f"{pod_label} removed (--strict-gpus)")
+            raise CliFailure(
+                "gpu_count_mismatch",
+                f"{result.error}; pod removed",
+                EXIT_GENERAL_ERROR,
+                data=result.data,
+            )
+        ui.info(f"{pod_label} is running with the GPU count above; remove it with 'lium rm {pod.huid}'")
+        raise CliFailure(
+            "gpu_count_mismatch" if result.data.get("mismatch") else "gpu_verification_failed",
+            result.error,
+            EXIT_GENERAL_ERROR,
+            data=result.data,
+        )
 
     if jupyter:
         action = InstallJupyterAction()
@@ -461,12 +637,12 @@ def up_command(
         })
     )
 
-    ssh_cmd = result.data["ssh_cmd"]
+    ssh_argv = result.data["ssh_argv"]
     pod = result.data["pod"]
 
     from lium.cli.ssh.command import ssh_session_connected
 
-    if not ssh_session_connected(ssh_cmd):
+    if not ssh_session_connected(ssh_argv):
         raise CliFailure(
             "ssh_connection_failed",
             f"Pod {pod.huid} is running but the SSH connection failed",
