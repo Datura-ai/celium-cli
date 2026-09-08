@@ -12,10 +12,12 @@
 # Cut-over: code scanning rejects SARIF from a workflow while default setup is enabled, so until default setup is
 # switched off PR runs analyse but do not upload (the "preflight" step says so in the run summary); a run on main
 # always uploads and fails while default setup is on, so a wedged cut-over is visible. Once this file is on main, the
-# loop runs tools/codeql_cutover.sh (disable default setup → dispatch this workflow on main with force-upload: true →
-# verify); by hand: Settings → Advanced Security → CodeQL analysis → ⋯ → "Switch to advanced", then run this workflow
-# on main with `force-upload: true` (Actions → CodeQL → Run workflow). The preflight's fallback reads the latest
-# analysis key on main, which stays default setup's until the first upload from here, so the first run is forced.
+# loop runs tools/codeql_cutover.sh (disable default setup → dispatch this workflow on main → verify); by hand:
+# Settings → Advanced Security → CodeQL analysis → ⋯ → "Switch to advanced", then run this workflow on main
+# (Actions → CodeQL → Run workflow). That first run uploads because it runs on main, whatever the input says. The
+# `force-upload` input is for a dispatch on any OTHER ref in the window after the switch and before the first upload
+# from here: the preflight's fallback reads the latest analysis key on main, which is still default setup's then, so
+# a branch run would otherwise skip the upload. The cut-over script passes it anyway; on main it changes nothing.
 name: CodeQL
 
 on:
@@ -32,7 +34,7 @@ on:
   workflow_dispatch:
     inputs:
       force-upload:
-        description: Upload results even if the preflight thinks default setup is still enabled (used by the cut-over)
+        description: Upload even when the preflight thinks default setup is still enabled. A run on main uploads regardless; this matters for a dispatch on another ref (see the header).
         type: boolean
         default: false
 
@@ -83,7 +85,7 @@ jobs:
           # uploads, so it fails loudly while default setup is still on instead of the fallback above latching every run.
           if [ "$state" != not-configured ] && [ "$FORCE_UPLOAD" != true ] && [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
             echo "upload=never" >> "$GITHUB_OUTPUT"
-            echo "::notice title=CodeQL default setup is still enabled (or unknown)::Code scanning rejects SARIF from a workflow while default setup is on, so this run analyses but does not upload. Cut-over: tools/codeql_cutover.sh in the loop repo, or Settings → Advanced Security → CodeQL → Switch to advanced, then run this workflow on $DEFAULT_BRANCH with force-upload: true."
+            echo "::notice title=CodeQL default setup is still enabled (or unknown)::Code scanning rejects SARIF from a workflow while default setup is on, so this run analyses but does not upload. Cut-over: tools/codeql_cutover.sh in the loop repo, or Settings → Advanced Security → CodeQL → Switch to advanced, then run this workflow on $DEFAULT_BRANCH (a run there always uploads; force-upload is only needed for a dispatch on another ref)."
             echo "default setup: $state → analyse only, no upload"
           else
             echo "upload=always" >> "$GITHUB_OUTPUT"
