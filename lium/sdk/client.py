@@ -718,6 +718,8 @@ class Lium:
             country: ISO country code.
             docker_in_docker: Require a sysbox host.
             interconnect: ``"nvlink"`` — every GPU pair on NVLink (unreported counts as no).
+                Client-side only: a rent-by-spec backend has no such field, so the call is
+                refused there rather than sent with a constraint the server would not check.
             volume_id, ports, ssh_keys, ssh_name, enable_volume_encryption, backup_id,
                 restore_path: as in :meth:`up`.
             dry_run: Choose and price only; nothing is rented and no SSH key is registered
@@ -734,6 +736,8 @@ class Lium:
                 left no candidate and the best value on offer, e.g.
                 ``min_cpus=64: none of the 12 node(s) matching the earlier constraints
                 satisfies it; the best on offer is 48``.
+            LiumError: ``interconnect`` was given and the backend rents by spec (nothing is
+                registered or rented).
         """
         if template_id is not None and dockerfile_content is not None:
             raise ValueError("Provide either template_id or dockerfile_content, not both")
@@ -772,6 +776,14 @@ class Lium:
         return self._rent_client_side(spec, rental, dry_run)
 
     def _rent_on_server(self, spec: Dict[str, Any], rental: Dict[str, Any], dry_run: bool) -> RentResult:
+        # RentBySpecRequest has no `interconnect` field: the server would drop the key and rent a
+        # node without checking it. Refuse before anything is registered or rented.
+        if "interconnect" in spec:
+            raise LiumError(
+                "interconnect is not a constraint this backend's rent-by-spec accepts, so it would "
+                "rent a node without checking it. Drop interconnect, or pick the node with ls() and "
+                "rent it with up()."
+            )
         # The server's RentBySpecRequest requires user_public_key on a dry run too (it validates
         # the request as a rent), so the key is needed either way; only the registration is skipped.
         ssh_material = rental["ssh_keys"] or self.config.ssh_public_keys
@@ -793,7 +805,9 @@ class Lium:
             "restore_path": rental["restore_path"],
             "dry_run": dry_run,
         }
-        data = self._request("POST", "/executors/rent-by-spec", json=payload).json()
+        # A rent is billable and a lost response may have succeeded server-side, so it is sent
+        # once, as in `up`; a dry run rents nothing and keeps the retries.
+        data = self._request("POST", "/executors/rent-by-spec", json=payload, retry=dry_run).json()
         executor = self._dict_to_executor_info(data.get("selected_executor") or {})
         if executor is None:
             raise LiumError("rent-by-spec returned no node")

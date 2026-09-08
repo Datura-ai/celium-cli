@@ -10,7 +10,8 @@ import json
 import pytest
 import responses
 
-from lium.sdk import Config, Lium, LiumError, RentResult
+from lium.sdk import Config, Lium, LiumError, LiumServerError, RentResult
+from lium.sdk import utils as sdk_utils
 
 BASE = "https://lium.io/api"
 KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIUserKeyForTestingPurposesOnly user@test"
@@ -171,6 +172,49 @@ def test_rent_refuses_contradictory_arguments(client):
         client.rent(gpu_type="H100", backup_id="b", ssh_keys=[KEY])
 
 
+@responses.activate
+def test_a_rent_is_posted_once_even_when_the_server_fails(client, monkeypatch):
+    # a lost response may already have rented a node: the billable POST is never repeated
+    monkeypatch.setattr(sdk_utils.time, "sleep", lambda seconds: None)
+    _version(["rent_by_spec"])
+    responses.add(responses.POST, f"{BASE}/executors/rent-by-spec", status=502)
+    responses.add(responses.POST, f"{BASE}/executors/rent-by-spec", json=RENTED)
+
+    with pytest.raises(LiumServerError):
+        client.rent(gpu_type="H100", ssh_keys=[KEY])
+
+    assert [c.request.url for c in responses.calls].count(f"{BASE}/executors/rent-by-spec") == 1
+
+
+@responses.activate
+def test_a_dry_run_rents_nothing_so_a_transient_failure_is_retried(client, monkeypatch):
+    monkeypatch.setattr(sdk_utils.time, "sleep", lambda seconds: None)
+    _version(["rent_by_spec"])
+    responses.add(responses.POST, f"{BASE}/executors/rent-by-spec", status=502)
+    responses.add(
+        responses.POST, f"{BASE}/executors/rent-by-spec",
+        json={**RENTED, "dry_run": True, "pod_id": None, "attempts": 0},
+    )
+
+    result = client.rent(gpu_type="H100", ssh_keys=[KEY], dry_run=True)
+
+    assert result.dry_run is True and result.executor.id == "exec-cheap"
+    assert [c.request.url for c in responses.calls].count(f"{BASE}/executors/rent-by-spec") == 2
+
+
+@responses.activate
+def test_a_rent_by_spec_backend_refuses_interconnect_before_any_call(client):
+    # RentBySpecRequest has no `interconnect` field (lium-platform test_rent_by_spec.py): the server
+    # would ignore it and rent a node without checking it, so the SDK refuses instead
+    _version(["rent_by_spec"])
+
+    with pytest.raises(LiumError, match="interconnect is not a constraint this backend's rent-by-spec accepts"):
+        client.rent(gpu_type="H100", interconnect="nvlink", ssh_keys=[KEY])
+
+    assert [c.request.url for c in responses.calls] == [f"{BASE}/version"]
+    assert client.registered == []
+
+
 # --- the client-side path (older backend) ------------------------------------------------------
 
 
@@ -226,3 +270,18 @@ def test_older_backend_no_match_names_the_spec_and_what_exists(client):
 
     with pytest.raises(LiumError, match=r"No node matches gpu_type=H100, gpu_count=2\. Available: 1xH100 \$1\.20/h, 1xH100 \$1\.90/h, 8xH100 \$8\.00/h\."):
         client.rent(gpu_type="H100", gpu_count=2, ssh_keys=[KEY])
+
+
+@responses.activate
+def test_older_backend_reads_interconnect_from_the_node_specs(client):
+    # the one constraint the server path refuses is checked here: a node that does not report
+    # NVLink does not qualify, so the dearer node that does is the pick
+    _version(None)
+    responses.add(responses.GET, f"{BASE}/machines", json=[{"name": "NVIDIA H100 NVL"}])
+    linked = _node("linked", price=1.5)
+    linked["specs"]["interconnect"] = {"nvlink": True}
+    responses.add(responses.GET, f"{BASE}/executors", json=[_node("plain", price=1.2), linked])
+
+    result = client.rent(gpu_type="H100", interconnect="nvlink", template_id="tpl-1", ssh_keys=[KEY], dry_run=True)
+
+    assert result.executor.id == "linked" and result.candidates == 1
