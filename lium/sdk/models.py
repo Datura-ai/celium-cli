@@ -24,6 +24,11 @@ class ExecutorInfo:
     effective_download_speed_mbps: Optional[float] = None
     max_cuda_version: Optional[float] = None
     tier: Optional[str] = None  # "spot" or "secure"; reclaim/penalty risk signal
+    # GPUs free to rent on the node right now (the API's ``available_gpu_count``),
+    # None when the API did not send it. ``gpu_count`` is the whole host; on a
+    # partially rented split host this is the smaller number, and a rent that names
+    # no count takes and is billed for exactly these.
+    available_gpu_count: Optional[int] = None
 
     @property
     def driver_version(self) -> str:
