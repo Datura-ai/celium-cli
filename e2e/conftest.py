@@ -6,6 +6,9 @@ Target (env):
   E2E_API_KEY   an API key of a FUNDED account there (the rent tests skip, loudly, on a zero balance).
   E2E_LIUM      the lium executable (default: `lium` on PATH — CI installs this checkout into a venv first).
   E2E_MAX_PRICE the most the suite will rent per hour (default 0.50 $/h); the cheapest listed node is chosen.
+  E2E_EXCLUDE_COUNTRIES  comma-separated countries never rented (CI: Russia,Belarus — the loop's own rule).
+  E2E_EXCLUDE_EXECUTORS  comma-separated executor ids or huids never rented (a node known to be defective — B-119's
+                brave-shark-ff billed 2 GPUs and exposed 1 — would otherwise be the cheapest pick on every run).
   E2E_KEEP_POD  =1 leaves the pod up on failure for a human to look at (never in CI).
 
 Every command runs with HOME set to a temp dir, so `up` mints its SSH key there and the first-run shell-completion
@@ -28,8 +31,19 @@ API_URL = os.environ.get("E2E_API_URL", "https://staging.lium.io/api").rstrip("/
 API_KEY = os.environ.get("E2E_API_KEY", "")
 LIUM = os.environ.get("E2E_LIUM", "lium")
 MAX_PRICE = float(os.environ.get("E2E_MAX_PRICE", "0.50"))
+EXCLUDE_COUNTRIES = {c.strip().lower() for c in os.environ.get("E2E_EXCLUDE_COUNTRIES", "").split(",") if c.strip()}
+EXCLUDE_EXECUTORS = {e.strip().lower() for e in os.environ.get("E2E_EXCLUDE_EXECUTORS", "").split(",") if e.strip()}
 KEEP_POD = os.environ.get("E2E_KEEP_POD", "") == "1"
 ARTIFACTS = Path(os.environ.get("E2E_ARTIFACTS", Path(__file__).parent / "artifacts"))
+
+
+def rentable(gpu_count, price_per_hour, country, executor_id, huid) -> bool:
+    """≥ 1 GPU, within the price cap, not in an excluded country, not an excluded executor (id or huid)."""
+    if int(gpu_count or 0) < 1 or float(price_per_hour or 9e9) > MAX_PRICE:
+        return False
+    if str(country or "").strip().lower() in EXCLUDE_COUNTRIES:
+        return False
+    return not ({str(executor_id or "").lower(), str(huid or "").lower()} & EXCLUDE_EXECUTORS)
 
 
 @dataclass

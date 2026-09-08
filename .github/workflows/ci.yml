@@ -180,7 +180,7 @@ jobs:
   e2e-live:
     name: e2e-live
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 65   # run.sh's own budget is 5 + 25 + 25 min; this and the step below sit above it
     permissions:
       contents: read
       pull-requests: write
@@ -195,12 +195,25 @@ jobs:
     - uses: astral-sh/setup-uv@v6
     - name: install this checkout, CLI journey, SDK journey — each under a hard timeout (e2e/run.sh)
       id: live
-      timeout-minutes: 40
+      timeout-minutes: 60
       env:
         E2E_API_URL: ${{ vars.LIUM_E2E_API_URL || 'https://staging.lium.io/api' }}
         E2E_API_KEY: ${{ secrets.LIUM_E2E_API_KEY }}
         E2E_MAX_PRICE: "0.50"
+        E2E_EXCLUDE_COUNTRIES: "Russia,Belarus"
+        E2E_EXCLUDE_EXECUTORS: ${{ vars.LIUM_E2E_EXCLUDE_EXECUTORS }}   # ids/huids of nodes known to be defective (B-119)
       run: ./e2e/run.sh
+    - name: remove this run's pods if the workflow was cancelled mid-rental
+      # the workflow-level group cancels a superseded run; pytest's finalizers do not run under the runner's kill,
+      # so anything named e2e-… that this run rented goes here (the pod's 30-min TTL is the last resort)
+      if: cancelled() && steps.live.outcome != 'skipped'
+      env:
+        LIUM_API_KEY: ${{ secrets.LIUM_E2E_API_KEY }}
+        LIUM_BASE_URL: ${{ vars.LIUM_E2E_API_URL || 'https://staging.lium.io/api' }}
+      run: |
+        test -n "$LIUM_API_KEY" || exit 0
+        export HOME="$(mktemp -d)"
+        ./e2e/.venv/bin/lium ps --format json | jq -r '.[] | select(.name | startswith("e2e-")) | .name' | xargs -r ./e2e/.venv/bin/lium rm -y
     - uses: actions/upload-artifact@v4
       id: artifacts
       if: always()

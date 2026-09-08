@@ -5,13 +5,17 @@ The renter's first hour, asserted: `balance --json` → `ls --format json` (stab
 as exit 7 and in the JSON; `nvidia-smi -L` lists at least the GPUs billed) → `scp` up and down, byte-exact →
 billing moves while the pod runs → `rm` → gone from `ps` → the final charge fits the wall clock at the node's
 price (per-second, no 15-minute floor). The error contract agents depend on: wrong key exit 3 with a JSON
-error, no key exit 2 naming what to do, unknown pod exit 5 for `exec`/`describe`/`rm`, `ps` with no pods is `[]`.
+error, no key exit 2 naming what to do, unknown pod exit 5 for `exec`/`describe`/`rm`, `ps --format json` is a JSON list.
 Then the SDK, the way `docs/developers/sdk/examples/pod-lifecycle.md` uses it: `ls` → `up` → `wait_ready` → `exec`
 (success and a non-zero exit as a dict) → `upload`/`download` → `ps` → `rm`.
 
 These are PERSONA_TESTS' renter journeys (7 Sep 2026, 31 + 16 steps by hand on staging) as tests that run on every
 PR. They rent the cheapest ≥1-GPU node under `E2E_MAX_PRICE` (default $0.50/h) for a few minutes — $0.03 a run on
 lium.io (7 Sep 2026: an RTX 4090 at $0.32/h for 6 min plus one at $0.35/h for 30 s), about $0.02 on staging's A4000.
+Nodes in `E2E_EXCLUDE_COUNTRIES` (CI: `Russia,Belarus`) and executors in `E2E_EXCLUDE_EXECUTORS` (ids or huids; CI
+reads the repository variable `LIUM_E2E_EXCLUDE_EXECUTORS`) are never rented: the cheapest listing is deterministic, so
+a defective node — 8 Sep 2026, `brave-shark-ff` billed 2 GPUs and exposed 1 (B-119) — would fail every run until
+it is excluded or fixed.
 
 ## Run it
 
@@ -41,8 +45,12 @@ a README- or `test/`-only PR does not run it), on `workflow_dispatch`, and once 
 build jobs skip on the cron) so API drift shows up without a push. Needs the repository secret **`LIUM_E2E_API_KEY`** (the key of a funded account on the target API) and the
 variable `LIUM_E2E_API_URL` (staging when unset). Today the variable is `https://lium.io/api` and the key belongs to
 a dedicated test account funded with $200, which covers about 6,000 runs at $0.03. Fork PRs have no secrets →
-the job skips and stays green. One run at a time repo-wide (`concurrency: e2e-live-staging`, no cancel): two suites
-on one account would sweep each other's `e2e-…` pods, and staging has a single node. Artifacts uploaded on every run;
+the job skips and stays green. One run at a time repo-wide (`concurrency: e2e-live-staging`; the job's own group
+queues, it does not cancel): two suites on one account would sweep each other's `e2e-…` pods, and staging has a
+single node. The workflow-level group does cancel a run a newer push supersedes; a cancelled run's `e2e-…` pods are
+removed by the job's last step (pytest's finalizers do not run under the runner's kill), the 30-min TTL being the
+last resort. The job and step time limits (65 / 60 min) sit above `run.sh`'s own budget (5 + 25 + 25 min), so a
+double suite timeout still writes `summary.md`. Artifacts uploaded on every run;
 `summary.md` posted as one sticky PR comment on `pull_request` runs (a `workflow_dispatch` run has no PR to post to).
 
 A stale pod from a run that died mid-way (name `e2e-…`, older than 30 min) is removed at the start of the next run.

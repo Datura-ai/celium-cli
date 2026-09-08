@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import API_KEY, API_URL, MAX_PRICE
+from conftest import API_KEY, API_URL, MAX_PRICE, rentable
 
 pytestmark = pytest.mark.timeout(900)
 
@@ -61,9 +61,9 @@ def test_sdk_balance_and_ls(lium):
 def test_sdk_up_wait_exec_upload_download_rm(lium, sdk_pod, tmp_path):
     if lium.balance() <= 0.01:
         pytest.skip("the e2e account has no balance")
-    nodes = [n for n in lium.ls() if int(n.gpu_count or 0) >= 1 and float(n.price_per_hour or 9e9) <= MAX_PRICE]
+    nodes = [n for n in lium.ls() if rentable(n.gpu_count, n.price_per_hour, (n.location or {}).get("country"), n.id, n.huid)]
     if not nodes:
-        pytest.skip(f"no node with ≥1 GPU at ≤ ${MAX_PRICE}/h listed right now")
+        pytest.skip(f"no rentable node with ≥1 GPU at ≤ ${MAX_PRICE}/h listed right now (E2E_EXCLUDE_* applied)")
     node = min(nodes, key=lambda n: float(n.price_per_hour))
     t0 = time.monotonic()
     created = lium.up(executor_id=node.id, name=sdk_pod["name"])
@@ -77,6 +77,8 @@ def test_sdk_up_wait_exec_upload_download_rm(lium, sdk_pod, tmp_path):
         termination_time=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 30 * 60)),
     )
     ready = lium.wait_ready(created["id"], timeout=600)
+    # wait_ready returns None on timeout (it does not raise): keep the created record so the fixture still removes the pod
+    assert ready is not None, f"pod {created['id']} was not RUNNING within 600 s (still recorded; the fixture removes it)"
     sdk_pod["pod"] = ready
     assert ready.status == "RUNNING" and ready.ssh_cmd, ready
     t_ready = time.monotonic() - t0
