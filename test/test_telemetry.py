@@ -172,6 +172,26 @@ def test_windows_home_directories_are_scrubbed_too():
     assert telemetry.scrub_text(text) == r"~\AppData\Local\lium\config.ini and ~\x"   # the whole "Renter Two" goes
     assert telemetry.scrub_text("C:\\Users\\Renter Two\nnext line") == "~\nnext line"   # home dir last on its line
     assert telemetry.scrub_text(r"'C:\Users\Renter Two' is not writable") == "'~' is not writable"
+    assert telemetry.scrub_text(r"C:\Users\O'Brien\lium\cli.py and 'C:\Users\D'Souza' too") == r"~\lium\cli.py and '~' too"
+
+
+def test_scrub_patterns_are_linear_on_long_text_and_the_message_is_capped(monkeypatch):
+    """The e-mail pattern's `\b` made scrubbing quadratic on long messages; a 40k-char message must scrub in
+    well under a second, and init() caps the value length so nothing longer reaches the patterns."""
+    import time
+
+    for text in ("a" * 40000 + " no address", "x@" * 20000, "C:\\Users\\" + "y" * 40000):
+        started = time.monotonic()
+        telemetry.scrub_text(text)
+        assert time.monotonic() - started < 0.5
+
+    seen = {}
+    monkeypatch.setenv("LIUM_TELEMETRY", "1")
+    monkeypatch.setenv("LIUM_SENTRY_DSN", "https://public@o0.ingest.sentry.io/0")
+    monkeypatch.setattr(telemetry, "_initialised", False)
+    monkeypatch.setattr(sentry_sdk, "init", lambda **kwargs: seen.update(kwargs))
+    assert telemetry.init("lium up", "0.0.33") is True
+    assert seen["max_value_length"] == 4096 and seen["include_local_variables"] is False
 
 
 def test_windows_frame_paths_are_scrubbed(events):
