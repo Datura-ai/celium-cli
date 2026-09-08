@@ -320,7 +320,7 @@ def test_a_budget_that_runs_out_names_the_billing_pod(monkeypatch):
     assert "lium rm train" in _flat(result.output)
 
 
-def test_a_budget_spent_before_the_rent_rents_nothing(monkeypatch):
+def test_a_budget_spent_before_the_rent_rents_no_pod(monkeypatch):
     clock = {"now": 1000.0}
     monkeypatch.setattr(up_command.time, "monotonic", lambda: clock["now"])
     rented = []
@@ -339,7 +339,32 @@ def test_a_budget_spent_before_the_rent_rents_nothing(monkeypatch):
 
     assert result.exit_code == EXIT_GENERAL_ERROR
     output = _flat(result.output)
-    assert "The --timeout budget of 120s ran out before renting brave-fox-3a; nothing was created" in output
+    assert "The --timeout budget of 120s ran out before renting brave-fox-3a; no pod was created." in output
+    assert "volume" not in output
+    assert rented == []
+
+
+def test_a_budget_spent_creating_the_volume_names_the_volume_it_keeps(monkeypatch):
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(up_command.time, "monotonic", lambda: clock["now"])
+    rented = []
+
+    class _SlowVolume:
+        def execute(self, ctx):
+            clock["now"] += 121  # the volume request retried past the whole --timeout
+            return ActionResult(ok=True, data={"volume": None, "volume_id": "vol-1"})
+
+    class _Rent:
+        def execute(self, ctx):
+            rented.append(ctx)
+            return ActionResult(ok=True, data={"pod_info": {}, "pod_id": "pod-1", "pod_name": "train"})
+
+    monkeypatch.setattr(up_command, "CreateVolumeAction", _SlowVolume)
+    result = _run_up(monkeypatch, rent_action=_Rent, args=["--timeout", "120", "--volume", "new:name=my-data"])
+
+    assert result.exit_code == EXIT_GENERAL_ERROR
+    output = _flat(result.output)
+    assert "ran out before renting brave-fox-3a; no pod was created. The volume my-data was created and is kept." in output
     assert rented == []
 
 

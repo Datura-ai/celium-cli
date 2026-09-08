@@ -69,7 +69,7 @@ def _wait_budget(deadline: float, ready_timeout: Optional[int]) -> int:
     default=DEFAULT_TIMEOUT_SECONDS,
     show_default=True,
     metavar="SECONDS",
-    help="Time budget for the whole command: finding the node, renting it and waiting for the pod. If it runs out before the rent, exit 1 with nothing created; if it runs out while the pod is still starting, exit 1 with the pod named (it keeps running and billing).",
+    help="Time budget for the whole command: finding the node, renting it and waiting for the pod. If it runs out before the rent, exit 1 with no pod created; if it runs out while the pod is still starting, exit 1 with the pod named (it keeps running and billing).",
 )
 @click.option(
     "--ready-timeout",
@@ -343,17 +343,6 @@ def up_command(
         if not ui.confirm(confirm_msg):
             return
 
-    # --timeout is the whole command's budget. Finding the node and the template (and a slow
-    # answer at the prompt) count against it; a budget that is already spent must not reach
-    # the rent, or the pod would be created and then reported as timed out one second later.
-    if time.monotonic() >= deadline:
-        raise CliFailure(
-            "timeout_before_rent",
-            f"The --timeout budget of {timeout}s ran out before renting {executor.huid}; nothing was created. "
-            "Run again with a larger --timeout.",
-            EXIT_GENERAL_ERROR,
-        )
-
     if volume_create_params:
         action = CreateVolumeAction()
         result = ui.load(
@@ -365,6 +354,19 @@ def up_command(
         )
 
         volume_id = result.data["volume_id"]
+
+    # --timeout is the whole command's budget. Everything before this line (finding the node and
+    # the template, a slow answer at the prompt, creating the volume) counts against it; a budget
+    # that is already spent must not reach the rent, or the pod would be created and then
+    # reported as timed out one second later. The rent is the first thing that bills.
+    if time.monotonic() >= deadline:
+        kept = f" The volume {volume_create_params['name']} was created and is kept." if volume_create_params else ""
+        raise CliFailure(
+            "timeout_before_rent",
+            f"The --timeout budget of {timeout}s ran out before renting {executor.huid}; no pod was created.{kept} "
+            "Run again with a larger --timeout.",
+            EXIT_GENERAL_ERROR,
+        )
 
     ui.dim(f"renting {executor.huid}…")
     action = RentPodAction()
