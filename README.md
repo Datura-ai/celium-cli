@@ -178,7 +178,8 @@ Group-level flags inherited by every subcommand: `-w/--coldkey`, `-k/--hotkey`, 
 
 - `lium provider portal {login,logout,whoami}` - Manage the cached portal JWT
 - `lium provider status [--netuid 51]` - Aggregated provider snapshot (registration, portal session, nodes, validator weights)
-- `lium provider node list|get|add|rm|update-price|update-gpu` - Node lifecycle on the portal
+- `lium provider node list [--all | --miner-hotkey HK] [--page N] [--limit N]` - Your nodes on the portal (active hotkey by default; `--all` for every provider's)
+- `lium provider node get|add|rm|update-price|update-gpu` - Node lifecycle on the portal
 - `lium provider node min-gpu set|unset <NODE_ID> [COUNT]` - Min GPU count for rental matchmaking
 - `lium provider node pods <NODE_ID>` - Pods currently rented on a node
 - `lium provider node machine-requests <NODE_ID>` - Pending tenant requests on a node
@@ -186,7 +187,7 @@ Group-level flags inherited by every subcommand: `-w/--coldkey`, `-k/--hotkey`, 
 - `lium provider node notify-added <NODE_ID> --request-id <REQ>` - Mark a tenant machine request fulfilled
 - `lium provider config show|opt-in|opt-out|set-email|set-subscriptions` - Portal-account configuration (incl. lium.io central miner server toggle)
 - `lium provider sync from-miner-server|to-miner-server` - Batch node-state sync between portal and the central miner server
-- `lium provider billing list [--miner-hotkey HK] [--page N] [--limit N]` - Paginated billing history
+- `lium provider billing list [--all | --miner-hotkey HK] [--page N] [--limit N]` - Paginated billing history (active hotkey by default; `--all` for every provider's)
 - `lium provider machine-request list|get` - Pending tenant machine requests
 - `lium provider machine list|estimate` - Machine catalogue + reward estimates
 
