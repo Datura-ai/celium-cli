@@ -63,20 +63,26 @@ def ps_command(pod_id: Optional[str], output_format: str, json_output: bool):
         # Only a full listing defines what "pod 1" means; a filtered one does not.
         store_pod_selection(pods)
 
-    # Check if empty
-    if not pods:
-        if output_format == "json":
-            click.echo("[]")
-        else:
-            ui.warning("No active pods")
-        return
+    # The table always says which account answered. Two shells can hold different keys (a stale
+    # LIUM_API_KEY vs ~/.lium/config.ini), and a pod list without its account is ambiguous —
+    # an empty one even reads as an outage. JSON output carries no such line (see below).
+    key_config = getattr(lium, "config", None)
+    account = f"Account: {key_config.api_key_description}" if key_config is not None else None
 
     if output_format == "json":
+        # No account line here: the machine contract is a bare JSON array on stdout and, on
+        # failure, one JSON object on stderr — a script reading stderr must not find prose.
         payload = [
             display.compact_pod(p, index=None if pod_id else position)
             for position, p in enumerate(pods, start=1)
         ]
         click.echo(json.dumps(payload, indent=2, ensure_ascii=False))
+        return
+
+    if not pods:
+        ui.warning("No active pods")
+        if account:
+            ui.dim(account)
         return
 
     # Build table
@@ -85,3 +91,5 @@ def ps_command(pod_id: Optional[str], output_format: str, json_output: bool):
     # Display
     ui.info(header)
     ui.print(table)
+    if account:
+        ui.dim(account)

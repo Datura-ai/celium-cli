@@ -375,6 +375,8 @@ You can also use environment variables:
 export LIUM_API_KEY=your-api-key-here
 ```
 
+`LIUM_API_KEY` takes precedence over the config file. To see which key a shell is using, run `lium balance` or `lium config get api.api_key`: both print the key's fingerprint and source (`env:LIUM_API_KEY` or `config:~/.lium/config.ini [api] api_key`), and authentication errors name the same key.
+
 SSH host keys of pods are pinned on first use under `~/.lium/known_hosts/<pod-id>`
 (`lium ssh`, `lium up`, and the SDK's `exec`, `stream_exec`, `rsync`). `reboot`, `edit`,
 `switch_template` and `rm` drop the pin themselves (the container, and its key, are replaced).

@@ -27,14 +27,23 @@ def balance_command(output_format: str, json_output: bool):
       lium balance --format json
     """
     output_format = resolve_output_format(output_format, json_output)
-    balance = Lium().balance()
+    lium = Lium()
+    balance = lium.balance()
+
+    # Name the key: a balance that does not match `up`'s "insufficient balance"
+    # usually means the two commands resolved different keys.
+    key_config = getattr(lium, "config", None)
 
     if output_format == "json":
         # ``balance_usd`` is kept for existing consumers; ``balance`` + ``currency``
         # is the shape shared with the other commands.
-        click.echo(json.dumps(
-            {"balance": balance, "balance_usd": balance, "currency": "USD"}, sort_keys=True
-        ))
+        payload = {"balance": balance, "balance_usd": balance, "currency": "USD"}
+        if key_config is not None:
+            payload["api_key_fingerprint"] = key_config.api_key_fingerprint
+            payload["api_key_source"] = key_config.api_key_source
+        click.echo(json.dumps(payload, sort_keys=True))
         return
 
     ui.info(f"Current balance: {balance} USD")
+    if key_config is not None:
+        ui.dim(f"Account: {key_config.api_key_description}")
