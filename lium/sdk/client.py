@@ -1310,7 +1310,23 @@ class Lium:
     # Statuses a pod never leaves. Seeing one while waiting means "stop waiting",
     # not "keep polling until the timeout".
     TERMINAL_POD_STATUSES = frozenset(
-        {"FAILED", "STOPPED", "ERROR", "TERMINATED", "DELETED", "REMOVED", "CANCELLED"}
+        {
+            "FAILED",
+            "STOPPED",
+            "ERROR",
+            "TERMINATED",
+            "DELETED",
+            "REMOVED",
+            "CANCELLED",
+            # The backend's own names for a rent that will not come up (lium-platform PodStatus):
+            # a failed create is CREATION_FAILED for three minutes before its row is deleted, a
+            # force-closed pod is BROKEN, a reboot the host never came back from is REBOOT_FAILED,
+            # a delete in flight is DELETING.
+            "CREATION_FAILED",
+            "BROKEN",
+            "REBOOT_FAILED",
+            "DELETING",
+        }
     )
     # How many consecutive ``ps`` calls may omit a pod that was never listed
     # before it is declared missing (a wrong id, or a rent the backend dropped).

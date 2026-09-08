@@ -84,7 +84,7 @@ def test_wait_ready_raises_on_a_terminal_status_with_the_history():
     assert client.calls == 2, "a dead pod must not be polled until the timeout"
 
 
-@pytest.mark.parametrize("status", ["STOPPED", "failed", "TERMINATED"])
+@pytest.mark.parametrize("status", ["STOPPED", "failed", "TERMINATED", "CREATION_FAILED", "BROKEN", "REBOOT_FAILED", "DELETING"])
 def test_wait_ready_treats_every_terminal_status_alike(status):
     client = _Client([[_pod(status, None)]])
 
@@ -106,7 +106,11 @@ def test_wait_ready_raises_when_a_seen_pod_disappears():
 
 
 def test_wait_ready_raises_for_a_pod_that_is_never_listed():
-    """The audit case: wait_ready('00000000-…', timeout=20) burned 21.5 s and returned None."""
+    """The audit case: wait_ready('00000000-…', timeout=20) burned 21.5 s and returned None.
+
+    Three polls must fit in the budget for the error to fire (timeout > 2 × poll_interval);
+    the audit's own parameters (20 s, 10 s polls) still return None here — #172 makes the
+    rule a 20 s time budget and raises at expiry."""
     client = _Client([[]])
 
     with pytest.raises(PodStartError) as failure:

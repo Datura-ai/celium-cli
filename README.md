@@ -103,7 +103,7 @@ print(lium.exec(ready, command="nvidia-smi")["stdout"])
 lium.down(ready)
 ```
 
-`wait_ready()` raises `PodStartError` — with `.pod`, `.status` and `.history` — when the pod reaches `FAILED`/`STOPPED` or disappears from the pod list, so a dead pod is not mistaken for a slow one. `lium up --ready-timeout SECONDS` bounds the CLI's wait the same way (exit 1, pod named).
+`wait_ready()` raises `PodStartError` — with `.pod`, `.status` and `.history` — when the pod reaches `FAILED`/`CREATION_FAILED`/`STOPPED`/`BROKEN` or disappears from the pod list, so a dead pod is not mistaken for a slow one. `lium up --ready-timeout SECONDS` bounds the CLI's wait the same way (exit 1, pod named).
 
 Full API reference: https://docs.lium.io/developers/sdk/reference
 
