@@ -25,6 +25,7 @@ from .client import Lium
 from .exceptions import LiumError, RemoteExecutionError
 from .models import ExecutorInfo
 from .result_codec import ResultEncodingError
+from .utils import gpu_short_matches
 
 # How long the pod may outlive the call before the server removes it on its own.
 # It covers the boot wait, the result download and a caller that dies mid-call.
@@ -56,22 +57,29 @@ def _parse_machine(spec: str) -> Tuple[int, str]:
 
 
 def _select_executor(executors: List[ExecutorInfo], spec: str) -> ExecutorInfo:
-    """Cheapest node with exactly ``count`` GPUs of the requested type."""
+    """Cheapest node with exactly ``count`` GPUs of the requested type.
+
+    The type is matched the way ``lium ls --gpu`` matches it (:func:`gpu_short_matches` on the
+    node's extracted ``gpu_type``): whole, never as a substring of the machine name — ``"A100"``
+    names an A100 and not an RTX A1000, ``"H100"`` takes an ``H100 NVL`` and an ``H100 80GB``
+    alike, a bare ``"4090"`` names the RTX 4090. A bare number that names several types
+    (``"100"``: A100 and H100, as ``lium ls --gpu 100`` lists both) picks the cheapest across them.
+
+    When nothing matches, the error names what the listing has: the same type at other counts
+    (``Available: 1xA100 $1.20/h, 8xA100 $3.60/h``), else the GPU types on the listing.
+    """
     count, gpu = _parse_machine(spec)
-    matches = [
-        e for e in executors
-        if e.gpu_count == count
-        and (
-            e.gpu_type.replace(" ", "").upper() == gpu
-            or gpu in e.machine_name.replace(" ", "").upper()
-        )
-    ]
+    matches = [e for e in executors if e.gpu_count == count and gpu_short_matches(gpu, e.gpu_type)]
     if not matches:
         same_type = sorted(
             {f"{e.gpu_count}x{e.gpu_type} ${e.price_per_hour:.2f}/h"
-             for e in executors if gpu in e.machine_name.replace(" ", "").upper()}
+             for e in executors if gpu_short_matches(gpu, e.gpu_type)}
         )
-        hint = f" Available: {', '.join(same_type)}." if same_type else ""
+        if same_type:
+            hint = f" Available: {', '.join(same_type)}."
+        else:
+            types = sorted({e.gpu_type for e in executors if e.gpu_type})
+            hint = f" GPU types on the listing: {', '.join(types)}." if types else ""
         raise LiumError(f"No node found matching machine type: {spec}.{hint}")
     return min(matches, key=lambda e: e.price_per_hour)
 
@@ -119,6 +127,15 @@ def _code_names(code) -> Set[str]:
     return names
 
 
+def _name_loads(node) -> Set[str]:
+    """Identifiers the def reads as plain names (``ast.Name`` in Load context), nested functions included.
+
+    ``co_names`` also lists attribute names, so ``x.data`` would count as a use of a module global ``data``
+    and the function would be refused for nothing; an attribute is not an ``ast.Name``.
+    """
+    return {sub.id for sub in ast.walk(node) if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load)}
+
+
 def _imported_modules(node) -> Set[str]:
     """Top-level module names the function imports itself (those exist on the pod)."""
     found = set()
@@ -149,7 +166,7 @@ def _check_portable(func) -> None:
     except (OSError, TypeError):
         return  # _function_source reports unreadable source
     module_names = set(func.__globals__) - {"__builtins__", func.__name__} - _imported_modules(node)
-    used = _code_names(code) & module_names
+    used = _code_names(code) & module_names & _name_loads(node)
     if used:
         raise LiumError(
             f"{func.__name__} uses module-level names {sorted(used)}, which do not exist on the pod: "
@@ -438,8 +455,11 @@ def machine(
 
     Args:
         machine: ``"<count>x<gpu>"`` or ``"<gpu>"`` — e.g. ``"1xH200"``, ``"RTX4090"``,
-            ``"2xA100"``. The count defaults to 1. The cheapest available node with
-            exactly that many GPUs of that type is rented.
+            ``"2xA100"``. The count defaults to 1. The GPU is named as ``lium ls --gpu``
+            takes it (``H100``, ``RTX4090``, ``rtx pro 6000``, a bare ``4090``) and has
+            to match the node's type whole — ``"A100"`` never rents an RTX A1000. The
+            cheapest available node with exactly that many GPUs of that type is rented;
+            when none matches, the error names the types the listing has.
         template_id: Docker template ID (optional, uses the node's default if not specified)
         cleanup: Whether to delete the pod after execution (default: True)
         requirements: Optional iterable of pip-installable packages to install on the pod.

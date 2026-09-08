@@ -4,6 +4,7 @@ import subprocess
 import sys
 import uuid
 from contextlib import contextmanager
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -168,13 +169,60 @@ def test_select_matches_spaced_names():
     assert D._select_executor(EXECUTORS, "RTX4090").huid == "rtx"
 
 
+def _typed(machine_name, count, price, huid):
+    """A node as the API lists it: ``gpu_type`` is what ``extract_gpu_type`` makes of the name."""
+    from lium.sdk.utils import extract_gpu_type
+
+    return _executor(extract_gpu_type(machine_name), count, price, huid, machine_name)
+
+
+LOOKALIKES = [
+    _typed("NVIDIA RTX A1000", 1, 0.20, "a1000"),             # cheaper, and "A100" is a substring of its name
+    _typed("NVIDIA A100-SXM4-80GB", 1, 1.20, "a100-80"),
+    _typed("NVIDIA A100-PCIE-40GB", 1, 1.10, "a100-40"),
+    _typed("NVIDIA H100 NVL", 1, 2.10, "h100-nvl"),
+    _typed("NVIDIA H100 80GB HBM3", 1, 2.40, "h100-80"),
+    _typed("NVIDIA GeForce RTX 4090", 1, 0.30, "rtx4090"),
+    _typed("NVIDIA RTX 4090 D", 1, 0.25, "rtx4090d"),
+]
+
+
+def test_select_matches_the_gpu_type_whole_not_as_a_substring_of_the_name():
+    # 7f49b67 ORed `gpu in machine_name` and rented the cheaper RTX A1000 for "A100"
+    assert D._select_executor(LOOKALIKES, "A100").huid == "a100-40"
+    assert D._select_executor(LOOKALIKES, "1xA100").huid == "a100-40"
+    with pytest.raises(LiumError, match="No node found matching machine type: A1000"):
+        # the A1000 is typed A1000 by the extractor and only "A1000" names it
+        D._select_executor([e for e in LOOKALIKES if e.huid != "a1000"], "A1000")
+    assert D._select_executor(LOOKALIKES, "A1000").huid == "a1000"
+
+
+def test_select_takes_every_variant_of_the_type_and_the_bare_number():
+    # the same rule as `lium ls --gpu`: H100 NVL and H100 80GB are both H100; 4090 names the RTX 4090
+    assert D._select_executor(LOOKALIKES, "H100").huid == "h100-nvl"
+    assert D._select_executor([e for e in LOOKALIKES if e.huid != "h100-nvl"], "H100").huid == "h100-80"
+    assert D._select_executor(LOOKALIKES, "4090").huid == "rtx4090d"
+    assert D._select_executor(LOOKALIKES, "rtx 4090").huid == "rtx4090d"
+
+
+def test_select_a_variant_string_is_not_a_type_and_the_error_names_the_types_listed():
+    # "A100-80GB" / "H100 NVL" are machine-name fragments, not GPU types; nothing is picked, and since no type
+    # matches at any count the message names the listing's types (the same-type "Available:" hint has nothing to say)
+    with pytest.raises(LiumError, match=r"No node found matching machine type: A100-80GB\. GPU types on the listing: A100, A1000, H100, RTX4090\.$"):
+        D._select_executor(LOOKALIKES, "A100-80GB")
+    with pytest.raises(LiumError, match=r"No node found matching machine type: H100 NVL\. GPU types on the listing: A100, A1000, H100, RTX4090\.$"):
+        D._select_executor(LOOKALIKES, "H100 NVL")
+    with pytest.raises(LiumError, match=r"No node found matching machine type: B200\.$"):
+        D._select_executor([], "B200")   # an empty listing: nothing to name
+
+
 def test_select_names_what_exists_when_count_is_missing():
     with pytest.raises(LiumError, match=r"2xA100.*Available: 1xA100 \$1.20/h, 1xA100 \$1.50/h, 8xA100 \$3.60/h"):
         D._select_executor(EXECUTORS, "2xA100")
 
 
 def test_select_unknown_type():
-    with pytest.raises(LiumError, match="No node found matching machine type: B200"):
+    with pytest.raises(LiumError, match=r"No node found matching machine type: B200\. GPU types on the listing: A100, H200, RTX4090\.$"):
         D._select_executor(EXECUTORS, "B200")
 
 
@@ -293,6 +341,7 @@ def test_failed_install_is_reported_with_pip_output(fake):
 # --- what travels to the pod (DAH-3015) ---------------------------------------------------------
 
 SCALE = 3
+data = "a module global whose name a function may read as an attribute (x.data) without using it"
 
 
 def helper(x):
@@ -726,6 +775,17 @@ def test_module_level_names_are_refused_before_renting(fake):
         def uses_globals(x):
             return helper(x) * SCALE
     assert fake.calls == []
+
+
+def test_an_attribute_named_like_a_module_global_is_not_a_module_global(fake):
+    # co_names lists attribute names too: `x.data` in a module with a global `data` used to be refused as
+    # "uses module-level names ['data']" — an attribute read needs nothing from this module
+    @D.machine(machine="A100", quiet=True)   # decoration is where the refusal used to come from
+    def read_attr(x):
+        return len(x.data) * 2
+
+    assert read_attr(SimpleNamespace(data="ab")) == 4
+    assert data.startswith("a module global")   # the global exists and is not what the function used
 
 
 def test_recursion_and_inner_functions_are_fine(fake):

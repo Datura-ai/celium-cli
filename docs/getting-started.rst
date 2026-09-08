@@ -27,7 +27,8 @@ Example
 
 The ``@lium.machine`` decorator is the easiest way to offload work to a GPU pod.
 ``machine`` is ``"<count>x<gpu>"`` or ``"<gpu>"`` (``"1xH200"``, ``"A100"``, ``"2xRTX4090"``;
-the count defaults to 1) and the cheapest matching node is rented. ``timeout=`` (default one
+the count defaults to 1; the GPU is named as ``lium ls --gpu`` takes it and matched whole, so
+``"A100"`` never rents an RTX A1000) and the cheapest matching node is rented. ``timeout=`` (default one
 hour) bounds the run; the pod is scheduled for removal at ``timeout + 15 min`` regardless of
 what happens to the caller.
 
