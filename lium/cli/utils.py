@@ -17,6 +17,7 @@ from lium.sdk import (
     Lium,
     LiumAuthError,
     LiumError,
+    LiumHostKeyError,
     LiumInsufficientBalanceError,
     LiumNotFoundError,
     LiumPermissionError,
@@ -317,6 +318,9 @@ _HINTS_BY_CODE: Dict[str, str] = {
     "ssh_unavailable": "Wait for 'lium ps' to show the pod RUNNING with an SSH command, then retry",
     "ssh_connection_failed": "Check 'lium config get ssh.key_path' points at the key registered with "
                              "'lium ssh-keys', and that the pod is RUNNING in 'lium ps'",
+    # not a retry: the message names the pinned file to delete once the new key is trusted
+    "ssh_host_key_changed": "Do not retry blindly; if the pod was rebooted or re-templated and you trust the "
+                            "new key, delete the known_hosts file named in the message and reconnect",
     "unexpected_error": "Re-run with LIUM_DEBUG=1 for details and report the issue",
 }
 
@@ -433,6 +437,10 @@ def _wants_json(kwargs: dict) -> bool:
 
 def _classify_sdk_error(error: LiumError) -> tuple[str, int]:
     """``(code, exit_code)`` for an SDK exception, most specific class first."""
+    if isinstance(error, LiumHostKeyError):
+        # the pod's pinned ssh host key changed (client.py ssh_connection): an ssh failure the
+        # user must look at, not an API call to retry — exit 4 like the other ssh errors
+        return "ssh_host_key_changed", EXIT_SSH_ERROR
     if isinstance(error, LiumInsufficientBalanceError):
         return "insufficient_balance", EXIT_PERMISSION_DENIED
     if isinstance(error, LiumPermissionError):
