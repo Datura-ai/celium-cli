@@ -2166,7 +2166,9 @@ class Lium:
 
     def backup_cancel(self, backup_id: str) -> Dict[str, Any]:
         """Request cancellation of an active backup while retaining its history."""
-        return self._request("POST", f"/backup-logs/{backup_id}/cancel").json()
+        # Idempotent payload: a repeat after the first cancel took is answered with an error, never a
+        # second action, so a 5xx or a lost response is retried.
+        return self._request("POST", f"/backup-logs/{backup_id}/cancel", retry=True).json()
 
     def backup_log_delete(self, backup_id: str) -> Dict[str, Any]:
         """Delete the stored data for a completed backup and retain its audit row."""
@@ -2242,7 +2244,9 @@ class Lium:
 
     def restore_cancel(self, restore_id: str) -> Dict[str, Any]:
         """Request cancellation of an active restore."""
-        return self._request("POST", f"/restore-logs/{restore_id}/cancel").json()
+        # Idempotent payload: a repeat after the first cancel took is answered with an error, never a
+        # second action, so a 5xx or a lost response is retried.
+        return self._request("POST", f"/restore-logs/{restore_id}/cancel", retry=True).json()
 
     def get_deployment_estimate(self, executor_id: str, template_id: str) -> dict:
         """Estimate deployment time for a template on a node.
@@ -2389,7 +2393,9 @@ class Lium:
             Response from the schedule termination API
         """
         payload = {"removal_scheduled_at": termination_time}
-        return self._request("POST", f"/pods/{pod.id}/schedule-removal", json=payload).json()
+        # Idempotent payload: the same removal time twice is one schedule, so a 5xx or a lost response
+        # is retried — one blip after `lium up --ttl` must not leave the pod without its auto-stop.
+        return self._request("POST", f"/pods/{pod.id}/schedule-removal", json=payload, retry=True).json()
 
     def cancel_scheduled_termination(self, pod: PodInfo) -> Dict[str, Any]:
         """Cancel a scheduled termination for a pod.

@@ -210,6 +210,33 @@ def test_rm_sends_one_request_when_the_server_fails(client, monkeypatch):
     assert [c["method"] for c in calls] == ["DELETE"]
 
 
+# --- idempotent payloads that keep the old behaviour --------------------------------------
+
+def test_schedule_termination_is_repeated_after_a_server_error(client, monkeypatch):
+    # one 5xx after `lium up --ttl` must not leave the pod without its auto-stop
+    calls = _outcomes(monkeypatch, _ServerError(), _Ok({"removal_scheduled_at": "2026-09-09T00:00:00Z"}))
+
+    result = client.schedule_termination(SimpleNamespace(id="pod-uuid-1"), termination_time="2026-09-09T00:00:00Z")
+
+    assert result == {"removal_scheduled_at": "2026-09-09T00:00:00Z"}
+    assert [c["method"] for c in calls] == ["POST", "POST"]
+    assert calls[0]["json"] == calls[1]["json"] == {"removal_scheduled_at": "2026-09-09T00:00:00Z"}
+
+
+def test_backup_cancel_is_repeated_after_a_timeout(client, monkeypatch):
+    calls = _outcomes(monkeypatch, requests.Timeout("read timed out"), _Ok({"status": "cancelling"}))
+
+    assert client.backup_cancel("backup-1") == {"status": "cancelling"}
+    assert [c["method"] for c in calls] == ["POST", "POST"]
+
+
+def test_restore_cancel_is_repeated_after_a_server_error(client, monkeypatch):
+    calls = _outcomes(monkeypatch, _ServerError(), _Ok({"status": "cancelling"}))
+
+    assert client.restore_cancel("restore-1") == {"status": "cancelling"}
+    assert [c["method"] for c in calls] == ["POST", "POST"]
+
+
 def test_ps_still_retries(client, monkeypatch):
     calls = _outcomes(monkeypatch, _ServerError(), _Ok([]))
 
