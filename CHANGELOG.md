@@ -5,11 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Security
-- `lium exec -e KEY=VALUE` no longer prints environment *values* in text mode. The status line now shows `KEY=****`, so secrets passed as environment variables no longer land in terminal logs or agent transcripts. The values still reach the pod unchanged.
-
 ## [0.4.3] - 2025-10-23
 
 ### Added
