@@ -623,6 +623,72 @@ def test_keys_create_binds_the_key_to_the_workspace_and_saves_it_for_the_flag(ho
 
 
 @responses.activate
+def test_keys_create_save_refuses_a_section_another_same_named_workspace_holds(home, monkeypatch):
+    """Two workspaces named Research (one in another team): the second's --save must not overwrite the first's key."""
+    other = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+    monkeypatch.setenv("LIUM_SESSION_TOKEN", "eyJ.fixture.session")
+    write_config(
+        home,
+        "[api]\napi_key = sk_test_default\n[ssh]\nkey_path = /dev/null\n"
+        f"[workspace.research]\nid = {other}\napi_key = sk_test_first_research\n",
+    )
+    me()
+    responses.add(responses.GET, f"{API}/workspaces", json=fixture("workspaces_session"))
+
+    result = run("keys", "create", "ci", "--workspace", RESEARCH, "--save")
+
+    assert result.exit_code == EXIT_CONFIGURATION_ERROR, result.output
+    assert "another workspace named 'Research'" in result.output and other in result.output
+    assert not any(c.request.method == "POST" for c in responses.calls)  # refused before a key was minted
+    assert f"[workspace.research]\nid = {other}\napi_key = sk_test_first_research" in config_text(home)  # untouched
+    # the same id saved again is fine: the section is this workspace's own
+    write_config(
+        home,
+        "[api]\napi_key = sk_test_default\n[ssh]\nkey_path = /dev/null\n"
+        f"[workspace.research]\nid = {RESEARCH}\napi_key = sk_test_first_research\n",
+    )
+    me()
+    responses.add(responses.GET, f"{API}/workspaces", json=fixture("workspaces_session"))
+    responses.add(responses.POST, f"{API}/keys", json=fixture("key_created"))
+
+    again = run("keys", "create", "ci", "--workspace", RESEARCH, "--save")
+
+    assert again.exit_code == 0, again.output
+    assert f"[workspace.research]\nid = {RESEARCH}\napi_key = sk_test_fixture_key_not_a_secret_0000000000" in config_text(home)
+
+
+@responses.activate
+def test_workspaces_use_and_create_refuse_a_section_another_same_named_workspace_holds(home, monkeypatch):
+    """`use` would write `active = Research` over a section holding another id, and `Config.load` would then run
+    with that other workspace's key; `create --use` is refused before the POST so no workspace is left behind."""
+    other = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+    before = (
+        "[api]\napi_key = sk_test_default\n[ssh]\nkey_path = /dev/null\n"
+        f"[workspace.research]\nid = {other}\napi_key = sk_test_first_research\n"
+    )
+    write_config(home, before)
+    me()
+    responses.add(responses.GET, f"{API}/workspaces", json=fixture("workspaces_key"))
+
+    used = run("workspaces", "use", RESEARCH)
+
+    assert used.exit_code == EXIT_CONFIGURATION_ERROR, used.output
+    assert "another workspace named 'Research'" in used.output and other in used.output
+    assert config_text(home) == before  # neither `active` nor the section was written
+
+    monkeypatch.setenv("LIUM_SESSION_TOKEN", "eyJ.fixture.session")
+    me()
+    responses.add(responses.GET, f"{API}/workspaces", json=fixture("workspaces_session"))
+
+    created = run("workspaces", "create", "research", "--use")
+
+    assert created.exit_code == EXIT_CONFIGURATION_ERROR, created.output
+    assert "another workspace named 'research'" in created.output
+    assert not any(c.request.method == "POST" for c in responses.calls)  # refused before the workspace exists
+    assert config_text(home) == before
+
+
+@responses.activate
 def test_workspace_flag_on_the_team_commands_reads_with_the_saved_key(home):
     write_config(
         home,

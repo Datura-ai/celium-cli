@@ -394,7 +394,7 @@ api_key = the-key-bound-to-that-workspace
 token = …
 ```
 
-Key resolution: an explicit `--workspace` / `LIUM_WORKSPACE` uses the key saved for it and nothing else (exit 2 when none is saved). Otherwise, first match wins: `LIUM_API_KEY`, the key saved for `[workspaces] active`, `[api] api_key`. The `[workspace.<name>]` section is written when a key is saved (`lium keys create --save`, or `lium workspaces use` run with a key that acts there); `lium workspaces delete` drops it.
+Key resolution: an explicit `--workspace` / `LIUM_WORKSPACE` uses the key saved for it and nothing else (exit 2 when none is saved). Otherwise, first match wins: `LIUM_API_KEY`, the key saved for `[workspaces] active`, `[api] api_key`. The `[workspace.<name>]` section is written when a key is saved (`lium keys create --save`, or `lium workspaces use` run with a key that acts there); `lium workspaces delete` drops it. Sections are keyed by the lower-cased name, so a save into a section that already holds another workspace's id (two workspaces with one name) is refused (exit 2) rather than overwriting the first one's key — drop that section or rename one of the workspaces first.
 
 SSH host keys of pods are pinned on first use under `~/.lium/known_hosts/<pod-id>`
 (`lium ssh`, `lium up`, and the SDK's `exec`, `stream_exec`, `rsync`). `reboot`, `edit`,

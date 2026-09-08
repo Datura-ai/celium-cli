@@ -71,9 +71,34 @@ def _member_id(lium: Lium, workspace: WorkspaceInfo, who: str) -> str:
     raise CliFailure("member_not_found", f"No member '{who}' in {workspace.name}", EXIT_CONFIGURATION_ERROR)
 
 
+def section_for(workspace: WorkspaceInfo) -> str:
+    """The `[workspace.<name>]` section a key for ``workspace`` may be saved in.
+
+    Sections are keyed by the lower-cased name, so a second workspace with the same name (or the same
+    name in another case) would land in the first one's section and overwrite its saved key without a
+    word. A section that already holds another workspace's id is refused before anything is minted or
+    written; a name config.ini cannot hold is refused by ``workspace_section`` the same way.
+    """
+    return _free_section(workspace.name, workspace.id)
+
+
+def _free_section(name: str, workspace_id: Optional[str]) -> str:
+    """``section_for`` by name: with no id yet (`workspaces create --use`, before the POST) any held id is another workspace's."""
+    section = workspace_section(name)
+    held = settings.get_in_section(section, "id")
+    if held and held != workspace_id:
+        raise CliFailure(
+            "workspace_section_taken",
+            f"config.ini already holds another workspace named '{name}' (id {held}); "
+            f"drop its [{section}] section from ~/.lium/config.ini, or rename one of the two on lium.io, first",
+            EXIT_CONFIGURATION_ERROR,
+        )
+    return section
+
+
 def _remember(workspace: WorkspaceInfo, api_key: Optional[str] = None) -> None:
     """`[workspaces] active`, and — with a key — the `[workspace.<name>]` section (id and key) for `--workspace`."""
-    section = workspace_section(workspace.name)  # refuses a name config.ini cannot hold, before anything is written
+    section = section_for(workspace)  # refuses a name config.ini cannot hold, or a section another workspace holds, before anything is written
     settings.set("workspaces.active", workspace.name)
     if api_key:
         settings.set_in_section(section, "id", workspace.id)
@@ -219,7 +244,9 @@ def workspaces_create_command(name: str, make_default: bool):
     require_session(lium)
     lium.workspaces.require_enabled()
     if make_default:
-        workspace_section(name)  # a name config.ini cannot hold is refused before the workspace exists
+        # a name config.ini cannot hold, or a section another workspace already holds, is refused before the
+        # workspace exists: a refusal after the POST would leave a workspace a retry on exit 2 duplicates
+        _free_section(name, None)
     workspace = lium.workspaces.create(name)
     ui.success(f"Created {escape(workspace.name)} ({workspace.id})")
     if make_default:
@@ -305,4 +332,4 @@ def workspaces_delete_command(workspace: Optional[str], yes: bool):
     _forget(target)
 
 
-__all__ = ["workspaces_command", "workspace_client", "target_workspace", "require_session"]
+__all__ = ["workspaces_command", "workspace_client", "target_workspace", "require_session", "section_for"]

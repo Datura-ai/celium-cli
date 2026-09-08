@@ -8,11 +8,10 @@ from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
 
-from lium.sdk.config import workspace_section
 from lium.cli import ui
 from lium.cli.settings import config as settings
 from lium.cli.utils import format_date, handle_errors
-from lium.cli.workspaces.command import require_session, target_workspace, workspace_client
+from lium.cli.workspaces.command import require_session, section_for, target_workspace, workspace_client
 
 
 @click.group("keys", invoke_without_command=True)
@@ -62,7 +61,8 @@ def keys_create_command(name: str, workspace: Optional[str], save: bool, json_ou
     lium = workspace_client()
     require_session(lium)
     target = target_workspace(lium, workspace)
-    section = workspace_section(target.name) if save else None  # a name config.ini cannot hold is refused before minting
+    # a name config.ini cannot hold, or a section already holding another same-named workspace's key, is refused before minting
+    section = section_for(target) if save else None
     key = lium.workspaces.create_key(name, target.id)
     if section:
         settings.set_in_section(section, "id", target.id)
