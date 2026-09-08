@@ -3391,16 +3391,18 @@ class Lium:
 
         The API caps a rental by time only. This computes the time at which the
         pod, billed at its hourly price since ``created_at``, reaches the budget
-        (:func:`lium.sdk.utils.spend_cap_deadline`) and schedules removal then.
-        Client-side: the pod keeps running if the schedule is cancelled or the
-        price changes.
+        (:func:`lium.sdk.utils.spend_cap_deadline`) and schedules removal then —
+        unless a removal is already scheduled earlier (a ``--ttl``), which stays,
+        as ``lium up --budget --ttl`` keeps the earlier of the two. Client-side:
+        the pod keeps running if the schedule is cancelled or the price changes.
 
         Args:
             pod: A running pod with ``created_at`` and an executor price.
             budget_usd: Total spend allowed for the pod's lifetime.
 
         Returns:
-            The scheduled removal time (UTC).
+            The scheduled removal time (UTC): the budget deadline, or the earlier
+            removal that was already scheduled.
 
         Raises:
             ValueError: Budget not positive, price or creation time unknown, or
@@ -3415,6 +3417,8 @@ class Lium:
             raise ValueError(
                 f"Pod {pod.huid} has already spent ${budget_usd:.2f} at ${price:.2f}/h since {pod.created_at}"
             )
+        existing = parse_api_timestamp(pod.removal_scheduled_at)
+        deadline = min(deadline, existing) if existing else deadline
         self.schedule_termination(pod, termination_time=deadline.isoformat().replace("+00:00", "Z"))
         return deadline
 

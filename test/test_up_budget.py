@@ -115,6 +115,35 @@ def test_sdk_cap_spend_schedules_removal_at_the_deadline(monkeypatch):
     assert scheduled["t"] == deadline.isoformat().replace("+00:00", "Z")
 
 
+def test_sdk_cap_spend_keeps_an_earlier_scheduled_removal(monkeypatch):
+    """A pod with a TTL removal in one hour and a budget worth five hours is capped at one hour, not
+    extended to five — the same rule `lium up --budget --ttl` applies (arhangel66 on #218)."""
+    client = Lium(Config(api_key="test"))
+    scheduled = {}
+    monkeypatch.setattr(client, "schedule_termination", lambda pod, *, termination_time: scheduled.update(t=termination_time) or {})
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    in_one_hour = (now + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+    pod = _pod(created_at=(now - timedelta(minutes=10)).isoformat(), removal=in_one_hour)
+
+    deadline = client.cap_spend(pod, budget_usd=PRICE * 5)
+
+    assert deadline == now + timedelta(hours=1)
+    assert scheduled["t"] == in_one_hour
+
+
+def test_sdk_cap_spend_moves_a_later_scheduled_removal_up(monkeypatch):
+    client = Lium(Config(api_key="test"))
+    scheduled = {}
+    monkeypatch.setattr(client, "schedule_termination", lambda pod, *, termination_time: scheduled.update(t=termination_time) or {})
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    pod = _pod(created_at=(now - timedelta(minutes=10)).isoformat(), removal=(now + timedelta(hours=5)).isoformat().replace("+00:00", "Z"))
+
+    deadline = client.cap_spend(pod, budget_usd=PRICE * 2)
+
+    assert deadline == now - timedelta(minutes=10) + timedelta(hours=2)
+    assert scheduled["t"] == deadline.isoformat().replace("+00:00", "Z")
+
+
 def test_sdk_cap_spend_refuses_an_already_spent_budget(monkeypatch):
     client = Lium(Config(api_key="test"))
     monkeypatch.setattr(client, "schedule_termination", lambda *a, **k: pytest.fail("must not schedule"))
