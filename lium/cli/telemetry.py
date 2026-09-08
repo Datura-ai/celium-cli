@@ -13,7 +13,8 @@ paths under the home directory, e-mails, API keys; the values the command was gi
 ``DEFAULT_SENTRY_DSN`` is the Lium CLI project's public client key (org datura-gc,
 project lium-cli — DAH-3121). A DSN only lets a client *send* events to that
 project; it reads nothing. ``LIUM_SENTRY_DSN`` overrides it (self-hosted GlitchTip,
-testing); ``LIUM_SENTRY_DSN=`` (empty) disables reporting even when opted in.
+testing); ``LIUM_SENTRY_DSN=`` (empty) disables reporting even when opted in; a value that
+is not a DSN is one warning on stderr and reporting stays off — never a failed command.
 
 The Sentry ``environment`` follows the API the CLI talks to (``LIUM_BASE_URL``):
 ``prod`` for lium.io (the name the platform stacks report too — Pulumi stack ``prod`` — so one
@@ -142,7 +143,13 @@ def _scrub_event(event: Dict[str, Any], hint: Any) -> Optional[Dict[str, Any]]:
 
 
 def init(command: Optional[str], version: str) -> bool:
-    """Start the SDK for this invocation. False when off, or when there is no DSN."""
+    """Start the SDK for this invocation. False when off, when there is no DSN, or when the DSN is malformed.
+
+    Runs in the ``lium`` group callback, before every subcommand and outside ``handle_errors``,
+    so nothing here may raise: a malformed ``LIUM_SENTRY_DSN`` (``sentry_sdk.utils.BadDsn``) is
+    one warning on stderr — never on stdout, which ``--json`` callers parse — and reporting stays
+    off for this run.
+    """
     global _initialised
     if _initialised:
         return True
@@ -151,20 +158,35 @@ def init(command: Optional[str], version: str) -> bool:
     import sentry_sdk
 
     host = api_host()
-    sentry_sdk.init(
-        dsn=dsn(),
-        release=f"lium-cli@{version}",
-        environment=environment(host),
-        # explicit capture only: no excepthook, no logging or HTTP breadcrumbs, no module list
-        default_integrations=False,
-        max_breadcrumbs=0,
-        include_local_variables=False,
-        send_default_pii=False,
-        max_request_body_size="never",   # the CLI makes requests but never serves them; nothing request-shaped may travel
-        max_value_length=MAX_VALUE_LENGTH,   # the exception message is capped before _scrub_event sees it
-        traces_sample_rate=0,
-        before_send=_scrub_event,
-    )
+    try:
+        sentry_sdk.init(
+            dsn=dsn(),
+            release=f"lium-cli@{version}",
+            environment=environment(host),
+            # explicit capture only: no excepthook, no logging or HTTP breadcrumbs, no module list
+            default_integrations=False,
+            max_breadcrumbs=0,
+            include_local_variables=False,
+            send_default_pii=False,
+            max_request_body_size="never",   # the CLI makes requests but never serves them; nothing request-shaped may travel
+            max_value_length=MAX_VALUE_LENGTH,   # the exception message is capped before _scrub_event sees it
+            traces_sample_rate=0,
+            before_send=_scrub_event,
+        )
+    except Exception as exc:  # BadDsn, or anything else the SDK refuses: crash reporting never takes a command down
+        from rich.markup import escape
+
+        from .utils import notice_console
+
+        # the message quotes the DSN back (`Invalid project in DSN ('…')`): escaped, or a `[/x]` in it is Rich markup
+        # and the warning itself would raise; the variable is blamed only when the user set it
+        reason = escape(str(exc))
+        if os.environ.get("LIUM_SENTRY_DSN") is not None:
+            text = f"LIUM_SENTRY_DSN is not a valid DSN ({reason}); crash reporting is off"
+        else:
+            text = f"crash reporting could not start ({reason}); it is off for this run"
+        notice_console().warning(text, soft_wrap=True)
+        return False
     sentry_sdk.set_tag("command", command or "lium")
     sentry_sdk.set_tag("cli_version", version)
     sentry_sdk.set_tag("api_host", host)

@@ -93,6 +93,47 @@ def test_environment_follows_the_api_host(monkeypatch, base_url, host, env):
     assert telemetry.environment() == env
 
 
+@pytest.mark.parametrize("bad_dsn", ["garbage", "https://x", "https://public@/0", "https://k@h/[/x]1"])
+def test_a_malformed_dsn_override_warns_on_stderr_and_reporting_stays_off(monkeypatch, capsys, bad_dsn):
+    # the last one: the SDK quotes the DSN in its message, and `[/x]` is Rich markup — unescaped, the warning itself raised
+    monkeypatch.setenv("LIUM_TELEMETRY", "1")
+    monkeypatch.setenv("LIUM_SENTRY_DSN", bad_dsn)
+
+    assert telemetry.init("lium ls", "0.0.33") is False
+    assert telemetry.report(RuntimeError("x")) is False
+
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "LIUM_SENTRY_DSN" in err and "crash reporting is off" in err
+    if "[/x]" in bad_dsn:
+        assert "[/x]" in err   # printed as text, not eaten as a tag
+
+
+def test_a_failing_shipped_dsn_does_not_blame_a_variable_the_user_never_set(monkeypatch, capsys):
+    monkeypatch.setenv("LIUM_TELEMETRY", "1")
+    monkeypatch.setattr(telemetry, "DEFAULT_SENTRY_DSN", "garbage")
+
+    assert telemetry.init("lium ls", "0.0.33") is False
+    err = capsys.readouterr().err
+    assert "crash reporting could not start" in err and "LIUM_SENTRY_DSN" not in err
+
+
+def test_a_malformed_dsn_override_does_not_take_the_command_down(monkeypatch):
+    # init() runs in the `lium` group callback, before every subcommand and outside handle_errors: on
+    # e8ed5e1 `LIUM_SENTRY_DSN=garbage lium ls --help` died with sentry_sdk.utils.BadDsn, exit 1
+    from lium.cli.cli import cli
+
+    monkeypatch.setenv("LIUM_TELEMETRY", "1")
+    monkeypatch.setenv("LIUM_SENTRY_DSN", "garbage")
+
+    result = CliRunner().invoke(cli, ["ls", "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "Usage: cli ls" in result.output
+    assert "LIUM_SENTRY_DSN" in result.stderr and "LIUM_SENTRY_DSN" not in result.stdout
+    assert telemetry._initialised is False
+
+
 def test_disabled_never_touches_the_sdk(monkeypatch):
     monkeypatch.setenv("LIUM_SENTRY_DSN", "https://public@o0.ingest.sentry.io/0")
     monkeypatch.setattr(sentry_sdk, "init", lambda **kwargs: pytest.fail("SDK initialised while telemetry is off"))
@@ -221,6 +262,7 @@ def test_scrub_patterns_are_linear_on_long_text_and_the_message_is_capped(monkey
     monkeypatch.setattr(telemetry, "_initialised", False)
     monkeypatch.setattr(sentry_sdk, "init", lambda **kwargs: seen.update(kwargs))
     assert telemetry.init("lium up", "0.0.33") is True
+    assert seen["max_value_length"] == telemetry.MAX_VALUE_LENGTH   # the cap the docstring names
     assert seen["include_local_variables"] is False
 
 

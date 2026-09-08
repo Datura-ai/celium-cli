@@ -372,7 +372,8 @@ usage errors, arguments, option values and local variables are never sent; the e
 sent with the values you passed on the command line (a pod name, a path), home-directory paths
 (macOS, Linux and Windows), e-mails and API keys cut out of it. Reports go to Lium's Sentry project;
 `LIUM_SENTRY_DSN` points them somewhere else (a self-hosted GlitchTip, for example) and
-`LIUM_SENTRY_DSN=` (empty) keeps them off even when enabled.
+`LIUM_SENTRY_DSN=` (empty) keeps them off even when enabled. A value that is not a DSN prints one
+warning on stderr and keeps reporting off; the command itself still runs.
 
 ## Requirements
 
