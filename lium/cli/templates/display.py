@@ -42,7 +42,9 @@ def build_templates_table(templates: List[Template]) -> tuple[Table, str]:
         padding=(0, 1),
     )
 
-    table.add_column("ID", justify="left", width=36, no_wrap=True)
+    # The id folds rather than pinning 36 columns: at 80 columns a fixed id left
+    # ~16 for Name/Image/Tag and one template took 11 lines.
+    table.add_column("ID", justify="left", ratio=3, min_width=14, overflow="fold")
     table.add_column("Name", justify="left", ratio=3, min_width=20, overflow="fold")
     table.add_column("Image", justify="left", ratio=4, min_width=25, overflow="fold")
     table.add_column("Tag", justify="left", ratio=3, min_width=20, overflow="fold")
