@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- SDK: `Lium.up(image="repo/name:tag")` — rent a pod from a Docker image alone, the way `lium up --image` does: a private one-time template (port 22, the image's own entrypoint/command) is created and used for the rent. Mutually exclusive with `template_id` and `dockerfile_content`.
+
 ## [0.4.3] - 2025-10-23
 
 ### Added
