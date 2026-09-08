@@ -119,7 +119,13 @@ class AlphaQuote:
 
 # Main SDK Class
 def _remote_file_path(sftp: Any, local: str, remote: str) -> str:
-    """Resolve an SFTP upload destination: a directory becomes ``<dir>/<basename(local)>``."""
+    """Resolve an SFTP upload destination: a directory becomes ``<dir>/<basename(local)>``.
+
+    Relative paths stay relative (the SFTP session starts in the login home);
+    a leading ``~/`` is dropped because SFTP does not expand it.
+    """
+    if remote.startswith("~/"):
+        remote = remote[2:] or "."
     if remote.endswith("/"):
         _sftp_mkdir_p(sftp, remote)
     else:
@@ -132,9 +138,9 @@ def _remote_file_path(sftp: Any, local: str, remote: str) -> str:
 
 
 def _sftp_mkdir_p(sftp: Any, path: str) -> None:
-    current = ""
+    current = "/" if path.startswith("/") else ""
     for part in [p for p in path.split("/") if p]:
-        current += "/" + part
+        current = posixpath.join(current, part)
         try:
             sftp.stat(current)
         except IOError:

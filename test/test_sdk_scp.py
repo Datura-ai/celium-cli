@@ -88,6 +88,20 @@ def test_scp_trailing_slash_creates_the_directory(monkeypatch):
     assert sftp.puts == [("./data.csv", "/root/datasets/2026/data.csv")]
 
 
+def test_scp_relative_directory_stays_relative_to_the_sftp_home(monkeypatch):
+    sftp = FakeSFTP(dirs={"/root"})
+    _client_with(sftp, monkeypatch).scp(_pod(), local="./data.csv", remote="out/2026/")
+    assert sftp.mkdirs == ["out", "out/2026"]
+    assert sftp.puts == [("./data.csv", "out/2026/data.csv")]
+
+
+def test_scp_tilde_prefix_means_the_sftp_home(monkeypatch):
+    sftp = FakeSFTP(dirs={"/root"})
+    _client_with(sftp, monkeypatch).scp(_pod(), local="./data.csv", remote="~/data/")
+    assert sftp.mkdirs == ["data"]
+    assert sftp.puts == [("./data.csv", "data/data.csv")]
+
+
 def test_scp_overwrites_an_existing_file(monkeypatch):
     sftp = FakeSFTP(dirs={"/root"}, files={"/root/data.csv"})
     _client_with(sftp, monkeypatch).scp(_pod(), local="./data.csv", remote="/root/data.csv")
