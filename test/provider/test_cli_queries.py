@@ -173,7 +173,8 @@ def test_machine_request_list_renders_the_aggregate_tier(patched_build_client) -
     assert result.exit_code == 0, result.output
     assert portal.gets[0][0] == "/machine-requests"
     assert "3 open" in result.output
-    assert "validator-verified node" in result.output
+    # the portal answers the aggregate to no token / an expired one as well, so the hint names both remedies
+    assert "portal login and a validator-verified node" in result.output
     assert "NVIDIA H200" in result.output and "$10+/h" in result.output
 
 

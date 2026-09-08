@@ -102,7 +102,7 @@ def _machine_request_summary_line(body: object) -> str:
     if isinstance(body, dict) and body.get("tier") == "aggregate":
         return (
             f"machine requests: {body.get('open_requests') or 0} open "
-            "(aggregate — per-request detail needs a validator-verified node)"
+            "(aggregate — per-request detail needs a portal login and a validator-verified node)"
         )
     rows = body.get("data") if isinstance(body, dict) else body
     count = len(rows) if isinstance(rows, list) else 0
