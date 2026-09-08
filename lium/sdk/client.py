@@ -18,7 +18,7 @@ from decimal import Decimal
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Callable, Dict, Generator, List, Optional, Union
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import paramiko
 import requests
@@ -1340,7 +1340,7 @@ class Lium:
         this is read on a failure path, after the wait's budget is already spent.
         """
         try:
-            data = self._request("GET", f"/pods/{pod_id}/events", retry=False).json()
+            data = self._request("GET", f"/pods/{quote(str(pod_id), safe='')}/events", retry=False).json()
         except LiumNotFoundError:
             return []
         return [e for e in data if isinstance(e, dict)] if isinstance(data, list) else []

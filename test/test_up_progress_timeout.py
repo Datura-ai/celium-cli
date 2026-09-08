@@ -155,6 +155,20 @@ def test_pod_failure_cause_survives_a_network_error_on_the_failure_path():
     assert client.pod_failure_cause("pod-1") is None
 
 
+def test_pod_events_quotes_the_pod_id_in_the_path():
+    client = _Client([[]], events=[])
+    client.event_endpoint = None
+
+    def _request(method, endpoint, **kwargs):
+        client.event_endpoint = (method, endpoint, kwargs.get("retry"))
+        return SimpleNamespace(json=lambda: [])
+
+    client._request = _request
+
+    assert client.pod_events("../admin?x=1") == []
+    assert client.event_endpoint == ("GET", "/pods/..%2Fadmin%3Fx%3D1/events", False)
+
+
 def test_pod_failure_cause_prefers_the_latest_readable_event():
     client = _Client([[]], events=[LIFECYCLE_EVENT, {"sub_event_type": "pod-add-ssh-key.success"}, CREATE_FAILED_EVENT])
 
