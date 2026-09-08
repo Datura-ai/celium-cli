@@ -348,18 +348,33 @@ def _validate_executor(extra_args=None):
         raise Exception(message)
 
 
-def _mine_status(args: list) -> int:
-    """Run `lium provider node status <args>`; `--json` may come after the node id here."""
-    from lium.cli.provider.command import provider_command
+_MINE_STATUS_PROG = "lium mine status"
 
+
+def _mine_status(args: list) -> int:
+    """Run `lium provider node status <args>`; `--json` may come after the node id here.
+
+    Help and usage errors are rendered under the name the user typed: click would otherwise compose
+    ``lium mine status node status`` from the provider group's path.
+    """
+    from lium.cli.provider.command import provider_command
+    from lium.cli.provider.node import status_node
+
+    own_ctx = click.Context(status_node, info_name=_MINE_STATUS_PROG)
+    if "--help" in args:
+        click.echo(status_node.get_help(own_ctx))
+        return 0
     group_args = ["--json"] if "--json" in args else []
     sub_args = [a for a in args if a != "--json"]
     try:
         code = provider_command.main(
             args=[*group_args, "node", "status", *sub_args],
-            prog_name="lium mine status",
+            prog_name=_MINE_STATUS_PROG,
             standalone_mode=False,
         )
+    except click.UsageError as e:   # a missing node id, an unknown option: usage under our own name
+        click.echo(f"{own_ctx.get_usage()}\nTry '{_MINE_STATUS_PROG} --help' for help.\n\nError: {e.format_message()}", err=True)
+        return e.exit_code
     except click.ClickException as e:
         e.show()
         return e.exit_code
@@ -369,20 +384,25 @@ def _mine_status(args: list) -> int:
 # --------------------------
 # CLI
 # --------------------------
-@click.command("mine", context_settings=dict(ignore_unknown_options=True, allow_extra_args=True))
+@click.command("mine", context_settings=dict(ignore_unknown_options=True, allow_extra_args=True), add_help_option=False)
 @click.option("--hotkey", "-k", help="Miner hotkey SS58 address")
 @click.option("--dir", "-d", "dir_", default="compute-subnet", help="Target directory")
 @click.option("--branch", "-b", default="main")
 @click.option("--auto", "-a", is_flag=True)
 @click.option("--verbose", "-v", is_flag=True, help="Show the plan banner")
+# not click's eager --help: `lium mine status --help` must reach the status command below, not this one's help
+@click.option("--help", "help_", is_flag=True, help="Show this message and exit.")
 @click.pass_context
 @handle_errors
-def mine_command(ctx, hotkey, dir_, branch, auto, verbose):
+def mine_command(ctx, hotkey, dir_, branch, auto, verbose, help_):
     if ctx.args and ctx.args[0] == "status":
         # `lium mine` is the provider's first command; `lium mine status <node>` is where they look
         # next, so it is the same command as `lium provider node status` (auth from
         # LIUM_PROVIDER_HOTKEY / ~/.lium/config.ini). Extra args are otherwise the validator's.
-        raise SystemExit(_mine_status(ctx.args[1:]))
+        raise SystemExit(_mine_status(ctx.args[1:] + (["--help"] if help_ else [])))
+    if help_:
+        click.echo(ctx.get_help())
+        raise SystemExit(0)   # not ctx.exit(): handle_errors would report click's Exit as an unexpected error
 
     if verbose:
         _show_setup_summary()   # keep the banner only when asked

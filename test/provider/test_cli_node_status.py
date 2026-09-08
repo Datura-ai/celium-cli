@@ -184,6 +184,25 @@ def test_mine_status_is_the_same_command(patched_client, monkeypatch):
     assert result.output.splitlines()[0].startswith("idle · last run failed (VERIFYX_FAILED_NETWORK_SPEED_TOO_SLOW)")
 
 
+def test_mine_status_help_and_usage_carry_the_typed_name(patched_client, monkeypatch):
+    """`lium mine status --help` is the status command's help, not `lium mine`'s; a missing node id is a
+    usage error under `lium mine status`, not click's composed `lium mine status node status`."""
+    monkeypatch.setenv("LIUM_PROVIDER_HOTKEY", "hk1")
+
+    result = CliRunner().invoke(cli, ["mine", "status", "--help"])
+    assert result.exit_code == 0, result.output
+    assert result.output.startswith("Usage: lium mine status [OPTIONS] NODE_ID") and "--watch" in result.output
+    assert "node status node status" not in result.output
+
+    result = CliRunner().invoke(cli, ["mine", "status"])
+    assert result.exit_code == 2
+    assert "Usage: lium mine status [OPTIONS] NODE_ID" in result.output and "Try 'lium mine status --help'" in result.output
+    assert "Missing argument 'NODE_ID'" in result.output and "node status node status" not in result.output
+
+    result = CliRunner().invoke(cli, ["mine", "--help"])   # `lium mine --help` itself still prints mine's help
+    assert result.exit_code == 0 and result.output.splitlines()[0].endswith("mine [OPTIONS]") and "--help" in result.output
+
+
 def test_mine_status_json_after_the_node_id(patched_client, monkeypatch):
     patched_client(IDLE_FAILED)
     monkeypatch.setenv("LIUM_PROVIDER_HOTKEY", "hk1")
