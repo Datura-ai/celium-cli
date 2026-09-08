@@ -574,7 +574,11 @@ def machine(
                             say(f"environment ready in {time.time() - t_env:.0f}s")
 
                         # Step 6: Execute runner via virtual environment python, bounded by `timeout`,
-                        # relaying its output live (-u: no block buffering behind the ssh channel)
+                        # relaying its output live (-u: no block buffering behind the ssh channel).
+                        # The TTL armed at rent time has been running since `up()`; boot, upload and
+                        # pip install may have eaten most of its 15 min margin, so it is armed again
+                        # here and the run gets its full window.
+                        _schedule_removal(sdk, pod_info, ttl, say)  # setup is done: give the run its full window
                         say("running")
                         run_cmd = f"{shlex.quote(venv_python)} -u {remote_runner}"
                         if timeout:

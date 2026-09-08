@@ -264,6 +264,24 @@ def test_call_rents_cheapest_sets_ttl_bounds_run_and_cleans_up(fake, capsys):
     assert "[lium] double: pod removed" in err
 
 
+def test_the_ttl_is_re_armed_after_setup_so_the_run_gets_its_full_window(fake):
+    # armed at rent time, the TTL runs while the pod boots and pip installs; a setup longer than the
+    # 15 min margin would remove the pod mid-run, so it is armed again right before the runner starts
+    remote = D.machine(machine="A100", timeout=600)(double)
+
+    assert remote(21) == 42
+
+    kinds = [c[0] for c in fake.calls]
+    first_arm = kinds.index("schedule_termination")
+    runner = next(i for i, c in enumerate(fake.calls) if c[0] in ("exec", "stream_exec") and c[1].endswith(".py"))
+    setup = next(i for i, c in enumerate(fake.calls) if c[0] == "exec" and "LIUM_ENV_CACHED" in c[1])
+    re_arm = [i for i, c in enumerate(fake.calls) if c[0] == "schedule_termination" and setup < i < runner]
+    assert first_arm < setup < re_arm[0] < runner
+    for i in (first_arm, re_arm[0]):
+        ttl = datetime.fromisoformat(fake.calls[i][2]) - datetime.now(timezone.utc)
+        assert 600 + 14 * 60 < ttl.total_seconds() <= 600 + 15 * 60
+
+
 def test_timeout_none_means_no_kill_and_24h_ttl(fake):
     assert D.machine(machine="A100", timeout=None, quiet=True)(one)() == 1
     run = next(cmd for cmd in _execs(fake) if cmd.endswith(".py"))
@@ -868,12 +886,14 @@ def test_keep_warm_reuses_the_pod_and_rearms_its_ttl(fake, capsys):
     assert _rents(fake)[0][1]["name"] == f"lium-fn-{D._warm_key('A100', None)}"   # findable by the next run
     assert not any(c[0] == "down" for c in fake.calls)
     ttls = [c for c in fake.calls if c[0] == "schedule_termination"]
-    # rent: timeout + keep_warm + 15 min; after call: keep_warm + 2 min; before call 2: re-armed; after: again
+    # rent: timeout + keep_warm + 15 min; again once setup is done; after call: keep_warm + 2 min;
+    # call 2 on the found pod: re-armed, again after its setup; after: keep_warm + 2 min again
     delays = [(datetime.fromisoformat(c[2]) - datetime.now(timezone.utc)).total_seconds() for c in ttls]
-    assert len(delays) == 4
-    assert 600 + 300 + 14 * 60 < delays[0] <= 600 + 300 + 15 * 60
-    assert 300 + 60 < delays[1] <= 300 + 120
-    assert 600 + 300 + 14 * 60 < delays[2] <= 600 + 300 + 15 * 60
+    assert len(delays) == 6
+    for full in (delays[0], delays[1], delays[3], delays[4]):
+        assert 600 + 300 + 14 * 60 < full <= 600 + 300 + 15 * 60
+    for warm in (delays[2], delays[5]):
+        assert 300 + 60 < warm <= 300 + 120
     err = capsys.readouterr().err
     assert "pod stays warm 300s" in err
     assert err.count("renting") == 1
