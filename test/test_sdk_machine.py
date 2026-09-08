@@ -479,6 +479,36 @@ def test_a_function_named_like_the_runner_or_the_codec_still_runs(fake):
     assert encode(1) == [1] and args() == "called" and sys() == "ok"
 
 
+def test_a_function_named_like_a_builtin_the_runner_uses_still_runs(fake):
+    """The runner writes the envelope with `open`, `bool`, `type`, `str` and catches `BaseException` after the
+    user's `def` has run — it reads them from the `builtins` module, so a function with one of those names
+    neither breaks the write nor turns its own exception into `runner did not finish`."""
+    @D.machine(machine="A100", quiet=True)
+    def open(x):
+        return x * 2
+
+    @D.machine(machine="A100", quiet=True)
+    def bool(x):
+        raise ValueError(f"bool refused {x}")
+
+    @D.machine(machine="A100", quiet=True)
+    def type(x):
+        raise KeyError(x)
+
+    @D.machine(machine="A100", quiet=True)
+    def str(x):
+        return {"echo": x}
+
+    assert open(21) == 42 and str("s") == {"echo": "s"}
+    with pytest.raises(ValueError, match=r"bool refused 7"):
+        bool(7)
+    with pytest.raises(KeyError, match="k"):
+        type("k")
+    for runner in fake.uploaded.values():
+        assert "_lium_builtins.open(" in runner and "_lium_builtins.bool(" in runner
+        assert "except _lium_builtins.BaseException" in runner
+
+
 def test_a_malformed_envelope_is_refused_not_a_key_error(tmp_path):
     path = tmp_path / "result.json"
     for text, why in [

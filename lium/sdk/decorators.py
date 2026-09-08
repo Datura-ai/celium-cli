@@ -176,11 +176,13 @@ def _runner_script(source: str, func_name: str, is_async: bool, args, kwargs, re
     call = f"{func_name}(*_lium_args, **_lium_kwargs)"
     if is_async:
         call = f"_lium_asyncio.run({call})"
-    # The user's `def` shares the runner's module namespace, so everything of ours is prefixed `_lium_` and the
-    # codec lives in its own module object: a function named `encode`, `args` or `sys` must not break the runner.
+    # The user's `def` shares the runner's module namespace, so everything of ours is prefixed `_lium_`, the
+    # codec lives in its own module object, and the builtins the runner uses after the user's code (`type`,
+    # `str`, `bool`, `open`, `BaseException`) are read from the `builtins` module: a function named `encode`,
+    # `args`, `sys`, `open` or `bool` must not break the runner.
     return f'''#!/usr/bin/env python3
-import asyncio as _lium_asyncio, base64 as _lium_base64, pickle as _lium_pickle, sys as _lium_sys
-import traceback as _lium_traceback, types as _lium_types
+import asyncio as _lium_asyncio, base64 as _lium_base64, builtins as _lium_builtins, pickle as _lium_pickle
+import sys as _lium_sys, traceback as _lium_traceback, types as _lium_types
 
 _lium_codec = _lium_types.ModuleType("lium_result_codec")   # lium/sdk/result_codec.py, shipped as text
 exec(compile({_codec_source()!r}, "lium/sdk/result_codec.py", "exec"), _lium_codec.__dict__)
@@ -194,17 +196,18 @@ try:
     _lium_args, _lium_kwargs = _lium_pickle.loads(_lium_base64.b64decode({blob!r}))
     _lium_result = {call}
     _lium_payload = {{'ok': True, 'result': _lium_codec.encode(_lium_result, _lium_arrays, 'the result of {func_name}')}}
-except BaseException as _lium_e:
+except _lium_builtins.BaseException as _lium_e:
     # type/message/traceback always arrive; the args only when they are plain data (encode_exception_args)
     _lium_arrays = {{}}
-    _lium_payload = {{'ok': False, 'type': type(_lium_e).__name__, 'module': type(_lium_e).__module__,
-                     'message': str(_lium_e), 'traceback': _lium_traceback.format_exc(),
+    _lium_payload = {{'ok': False, 'type': _lium_builtins.type(_lium_e).__name__,
+                     'module': _lium_builtins.type(_lium_e).__module__,
+                     'message': _lium_builtins.str(_lium_e), 'traceback': _lium_traceback.format_exc(),
                      'args': _lium_codec.encode_exception_args(_lium_e.args)}}
 finally:
-    _lium_payload['npz'] = bool(_lium_arrays)
+    _lium_payload['npz'] = _lium_builtins.bool(_lium_arrays)
     if _lium_arrays:
         _lium_codec.save_arrays({result_path + ".npz"!r}, _lium_arrays)
-    with open({result_path!r}, 'w', encoding='utf-8') as _lium_f:
+    with _lium_builtins.open({result_path!r}, 'w', encoding='utf-8') as _lium_f:
         _lium_f.write(_lium_codec.dumps(_lium_payload))
     if not _lium_payload['ok']:
         _lium_sys.exit(1)
