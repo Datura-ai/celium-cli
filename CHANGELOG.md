@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `lium exec` prints a one-line hint when the remote command failed with PEP 668's `externally-managed-environment`: `pip install --break-system-packages <pkg>` or a `--system-site-packages` venv under `/workspace`, which keeps the image's torch. Text mode only; `--json` is unchanged.
+
 ## [0.4.3] - 2025-10-23
 
 ### Added
