@@ -185,6 +185,68 @@ def test_the_json_flag_command_list_matches_the_cli():
         assert absent not in named, f"`lium {absent}` has no --json (ls/ps use --format json)"
 
 
+CAPTURED_EXEC = re.compile(r"\$\(\s*lium\s+exec\s+(?P<line>[^\n]*)")
+
+
+def _captured_exec_lines(text: str):
+    """Every `$(lium exec …)` on a page: (line no, the text from `lium exec` on, the invocation's own tokens).
+
+    The tokens come from `_lium_invocations`, cut at the first `|`, `)`, `;` … outside quotes, so a `--json` in the
+    remote command string or on a later command of the same line does not count."""
+    out = []
+    for no, line in enumerate(text.splitlines(), 1):
+        for m in CAPTURED_EXEC.finditer(line):
+            rest = "lium exec " + m.group("line")
+            tokens = next((toks for _, toks in _lium_invocations(rest) if toks[:1] == ["exec"]), [])
+            out.append((no, m.group("line"), tokens))
+    return out
+
+
+def test_a_captured_exec_goes_through_json_and_jq():
+    """`lium exec <pod> "cmd"` prints `Executing on <pod>` on stdout before the remote output (exec.py, the
+    non-`--json` branch), so `PID=$(lium exec …)` without `--json` is two lines, not a PID — 669f554 shipped
+    exactly that. A capture on the page reads the envelope: `--json … | jq -r '.results[0].stdout'`."""
+    captures = [(page, no, line, toks) for page, text in PAGES.items() for no, line, toks in _captured_exec_lines(text)]
+    assert captures, "docs/agents.md no longer shows a captured `$(lium exec …)` (the background-job recipe)"
+    for page, no, line, toks in captures:
+        assert "--json" in toks, f"{page}:{no}: `$(lium exec …)` without --json captures `Executing on <pod>` too"
+    pid_lines = [line for _, _, line, _ in captures if "echo \\$!" in line]
+    assert pid_lines, "docs/agents.md no longer shows the `… & echo \\$!` PID capture"
+    for line in pid_lines:
+        assert "jq -r '.results[0].stdout'" in line, f"a PID capture reads the envelope's `.results[0].stdout`: {line}"
+
+
+def test_the_capture_check_fails_the_plain_form():
+    plain = 'PID=$(lium exec "$POD" "nohup setsid bash -lc train.sh > /root/logs/t.log 2>&1 < /dev/null & echo \\$!")'
+    (no, _, toks), = _captured_exec_lines(plain)
+    assert no == 1 and "--json" not in toks
+    # a --json elsewhere on the line, or inside the remote command string, does not make the capture a JSON one
+    elsewhere = 'PID=$(lium exec "$POD" "echo --json & echo \\$!" | tr -d "[:space:]"); lium balance --json'
+    (_, _, toks), = _captured_exec_lines(elsewhere)
+    assert "--json" not in toks
+
+
+def test_the_documented_capture_reads_the_pid_from_the_envelope_the_cli_emits():
+    """The jq path on the page against what `report_executions(json_output=True)` writes: the remote stdout alone."""
+    import json
+    import shutil
+    import subprocess
+
+    from click.testing import CliRunner
+
+    from lium.cli.commands.exec import PodExecution, report_executions
+
+    (line,) = [captured for _, text in PAGES.items() for _, captured, _ in _captured_exec_lines(text) if "echo \\$!" in captured]
+    jq_filter = re.search(r"jq -r '([^']+)'", line).group(1)
+    execution = PodExecution(pod="swift-fox-c8", stdout="48213\n", stderr="", exit_code=0, error=None)
+    envelope = CliRunner().invoke(click.command()(lambda: report_executions([execution], json_output=True)), []).output
+    assert json.loads(envelope)["results"][0]["stdout"] == "48213\n"
+    if shutil.which("jq") is None:
+        pytest.skip("jq not installed here; the envelope path was checked with json.loads")
+    pid = subprocess.run(["jq", "-r", jq_filter], input=envelope, capture_output=True, text=True, check=True).stdout.strip()
+    assert pid == "48213"
+
+
 def test_guide_does_not_promise_unmerged_features():
     """The page describes this CLI; branch names and features that live elsewhere do not belong on it."""
     text = AGENTS_DOC.read_text()

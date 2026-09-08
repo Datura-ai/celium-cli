@@ -5,7 +5,7 @@ One page for an LLM agent (or any unattended script) that has to rent a GPU pod,
 The rules of the road:
 
 1. **Authenticate from the environment.** `LIUM_API_KEY` wins over `~/.lium/config.ini`. Never run `lium init` from an agent.
-2. **Ask for JSON.** `--format json` on `ls`/`ps`, `--json` on `exec`/`describe`/`balance`: the result is on stdout and the exit code says whether it worked. On a `--json` command an error is one JSON object on stderr; on `ls`/`ps --format json` it is plain text (§2).
+2. **Ask for JSON.** `--format json` on `ls`/`ps`, `--json` on `exec`/`describe`/`balance`: the result is on stdout and the exit code says whether it worked. On a `--json` command a runtime error is one JSON object on stderr; a usage error is click's plain text with exit 2; on `ls`/`ps --format json` errors are plain text on stdout (§2).
 3. **Never let a command wait for a human.** Pass `--yes` to anything that would confirm (`up`, `rm`); `reboot` never asks.
 4. **Always give a pod a lifetime** (`--ttl`) and always remove it when finished, including on failure.
 
@@ -32,7 +32,9 @@ Failure on a renter command that takes `--json` (`exec`, `describe`, `balance`; 
 {"ok": false, "error": {"code": "pod_not_found", "message": "No pods match targets: train-1"}}
 ```
 
-Failure on `ls --format json` / `ps --format json`: the exit code is the signal; stderr carries the error as plain text, not JSON (the envelope on `--format json` comes with lium#217, not released).
+A usage error on any command — an unknown option, a missing argument — is click's plain-text `Usage: … Error: No such option '--bogus'` on stderr with exit 2, not the envelope: read exit 2 with non-JSON stderr as "fix the invocation".
+
+Failure on `ls --format json` / `ps --format json`: the exit code is the signal; the error is plain text on **stdout** (not JSON, and not stderr — `lium ps no-such-pod --format json` prints `Pod 'no-such-pod' not found` there and exits 5), so check the exit code (`set -o pipefail`) before handing stdout to `jq`. The envelope on `--format json` comes with lium#217, not released.
 
 Exit codes:
 
@@ -110,10 +112,10 @@ lium exec "$POD" --json "python -c 'import torch; print(torch.cuda.device_count(
 Background, so a long training run survives the end of the SSH session — `exec` blocks until the remote command exits and prints its output then, so start the job detached and poll its log:
 
 ```bash
-PID=$(lium exec "$POD" "mkdir -p /root/logs && nohup setsid bash -lc 'cd /root/project && python train.py' > /root/logs/train.log 2>&1 < /dev/null & echo \$!")
+PID=$(lium exec "$POD" --json "mkdir -p /root/logs; nohup setsid bash -lc 'cd /root/project && python train.py' > /root/logs/train.log 2>&1 < /dev/null & echo \$!" | jq -r '.results[0].stdout' | tr -d '[:space:]')
 ```
 
-The `setsid`, the `< /dev/null` and the redirection all matter: without them the process is tied to the SSH session and dies when `exec` returns.
+The `setsid`, the `< /dev/null` and the redirection all matter: without them the process is tied to the SSH session and dies when `exec` returns. The `;` after `mkdir` matters too: with `&&` the `&` would background the whole `mkdir … && nohup …` list as a subshell, and `$!` would be that subshell's PID, not the job's. Capture through `--json`: without it `exec` prints `Executing on <pod>` on stdout before the remote output, so a plain capture holds two lines, not a PID; the JSON envelope's `.results[0].stdout` is the remote stdout alone.
 
 Poll it (`tail -f` would never return — `exec` reads the output after the command exits):
 
@@ -133,10 +135,11 @@ A pod that shows 0 % utilisation for several minutes after the job started is us
 
 ```bash
 lium rsync "$POD" ./data /root/data                              # mirrors rsync -avz
-lium scp "$POD" /root/out/model.safetensors ./out -d             # single files; -d/--download pulls from the pod
+lium scp "$POD" /root/out/model.safetensors ./out -d             # one file per call; -d/--download pulls from the pod
+lium exec "$POD" --json "tar czf /root/out.tgz -C /root out" >/dev/null && lium scp "$POD" /root/out.tgz . -d   # a directory: pack it first
 ```
 
-`lium rsync` installs `rsync` on the pod when it is missing (`apt-get install -y rsync`, so the first run on a minimal image takes longer). A failed `rsync` is simply re-run.
+`lium rsync` uploads only (`TARGETS LOCAL_PATH [REMOTE_PATH]`) and installs `rsync` on the pod when it is missing (`apt-get install -y rsync`, so the first run on a minimal image takes longer). A failed `rsync` is simply re-run. `lium scp -d` downloads one file per call — a results directory is packed on the pod first, as above.
 
 ### Remove the pod
 
@@ -154,7 +157,7 @@ trap 'lium rm "$POD" --yes >/dev/null 2>&1 || true' EXIT
 
 ## 4. Pod gotchas
 
-- **Know which disk persists.** On the standard templates the pod's volume is mounted at `/root` — that is what `lium bk` backs up, what encryption covers and what survives the pod; `/workspace` and `/tmp` are plain container filesystem and are gone with the pod. Keep the project, the venv, weights, datasets, checkpoints and the Hugging Face cache on the volume (the same rule as the README and "First hour" pages); use `/workspace` only for scratch you can re-download.
+- **Know which disk persists.** On the standard templates the pod's volume is mounted at `/root` — that is what `lium bk` backs up and what encryption covers (only an attached Volume, `--volume`, outlives `lium rm`); `/workspace` and `/tmp` are plain container filesystem and are gone with the pod. Keep the project, the venv, weights, datasets, checkpoints and the Hugging Face cache on the volume (the same rule as the README and "First hour" pages); use `/workspace` only for scratch you can re-download.
 - **Point Hugging Face at the volume before the first download:** `mkdir -p /root/hf && export HF_HOME=/root/hf` (and `HF_HUB_ENABLE_HF_TRANSFER=1` after `pip install hf_transfer`).
 - **PEP 668 on Ubuntu 24.04 images:** a bare `pip install` fails with "externally managed environment". Use `python -m venv /root/venv && . /root/venv/bin/activate`, or `export PIP_BREAK_SYSTEM_PACKAGES=1`.
 - **Blackwell needs a recent PyTorch build.** B200, B300, RTX PRO 6000 and RTX 5090 are not supported by wheels built for CUDA ≤ 12.4; install a cu128 or cu130 wheel (`pip install torch --index-url https://download.pytorch.org/whl/cu130`). A template built on cu126 on a Blackwell executor produces "no kernel image is available" at the first CUDA call.
@@ -183,7 +186,8 @@ trap 'lium rm "$POD" --yes >/dev/null 2>&1 || true' EXIT
 lium rsync "$POD" ./project /root/project
 lium exec "$POD" --json "cd /root/project && python -m venv .venv && . .venv/bin/activate && pip install -q -r requirements.txt" >/dev/null
 lium exec "$POD" --json "cd /root/project && . .venv/bin/activate && python train.py --epochs 1"
-lium scp "$POD" /root/project/out ./out -d
+lium exec "$POD" --json "tar czf /root/out.tgz -C /root/project out" >/dev/null
+lium scp "$POD" /root/out.tgz ./out.tgz -d
 ```
 
 ## See also
