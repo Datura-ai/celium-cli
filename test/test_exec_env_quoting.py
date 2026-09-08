@@ -144,6 +144,25 @@ def test_exec_all_failure_entries_carry_the_pod_id_like_successes(monkeypatch):
     }
 
 
+def test_exec_all_rejects_an_invalid_name_before_any_pod_is_contacted(monkeypatch):
+    client = _client()
+    touched = []
+
+    def fake_exec(pod, *, command, env=None):
+        touched.append(pod.id)
+        return {"stdout": "", "stderr": "", "exit_code": 0, "success": True}
+
+    monkeypatch.setattr(client, "exec", fake_exec)
+
+    # Fails on the previous shape: exec_all caught the ValueError from every pod's
+    # exec() and returned one {"pod": ..., "error": "Invalid environment variable
+    # name ...", "success": False} entry per pod instead of raising.
+    with pytest.raises(ValueError, match="Invalid environment variable name"):
+        client.exec_all([SimpleNamespace(id="pod-1"), SimpleNamespace(id="pod-2")], command="true", env={"1BAD": "x"})
+
+    assert touched == []
+
+
 # --- lium exec -e ----------------------------------------------------------------------------
 
 def test_cli_rejects_an_invalid_env_name_with_a_configuration_error(monkeypatch):

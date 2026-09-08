@@ -1363,7 +1363,15 @@ class Lium:
             ``{"pod": <id>, "error": <message>, "success": False}`` — same key,
             same type as the successful entries, so callers can index results
             by pod id without checking which shape they got.
+
+        Raises:
+            ValueError: an ``env`` name is not a shell identifier. Checked once,
+                before any pod is contacted — a caller's mistake is not one
+                failure entry per pod.
         """
+        if env:
+            self._env_exports(env)  # the name check; exec() builds the exports again per pod
+
         def exec_single(pod: PodInfo):
             try:
                 result = self.exec(pod, command=command, env=env)
