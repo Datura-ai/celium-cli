@@ -24,9 +24,11 @@ def install_command() -> str:
             "this lium binary should ship it prebuilt; reinstall it with "
             "`curl -fsSL https://lium.io/install.sh | bash`"
         )
-    executable = Path(sys.executable).resolve().as_posix()
+    # No resolve(): a uv tool venv's bin/python is a symlink to uv's shared interpreter and a
+    # pipx venv's to the system one, so the resolved path loses the /uv/tools/ or /pipx/venvs/ mark.
+    executable = Path(sys.executable).as_posix()
     uv_tool_dir = os.environ.get("UV_TOOL_DIR")
-    if "/uv/tools/" in executable or (uv_tool_dir and executable.startswith(Path(uv_tool_dir).resolve().as_posix())):
+    if "/uv/tools/" in executable or (uv_tool_dir and executable.startswith(Path(uv_tool_dir).as_posix())):
         return 'uv tool install --force "lium.io[provider]"'
     if "/pipx/venvs/" in executable:
         return 'pipx install --force "lium.io[provider]"'

@@ -34,6 +34,41 @@ def test_relocated_uv_tool_dir_is_recognised(monkeypatch, tmp_path):
     assert chain_stack.install_command() == 'uv tool install --force "lium.io[provider]"'
 
 
+def _symlinked_python(tmp_path, venv_python: str, target: str):
+    """A venv's bin/python that is a real symlink to an interpreter outside the venv, as uv and pipx lay it out."""
+    shared = tmp_path / target
+    shared.parent.mkdir(parents=True, exist_ok=True)
+    shared.write_text("")
+    link = tmp_path / venv_python
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(shared)
+    return link
+
+
+def test_uv_tool_python_symlinked_to_the_shared_interpreter_still_gets_uv(monkeypatch, tmp_path):
+    link = _symlinked_python(
+        tmp_path,
+        ".local/share/uv/tools/lium-io/bin/python",
+        ".local/share/uv/python/cpython-3.12.3-linux-x86_64-gnu/bin/python3.12",
+    )
+    assert link.resolve() != link and "/uv/tools/" not in link.resolve().as_posix()
+    monkeypatch.setattr(sys, "executable", str(link))
+    assert chain_stack.install_command() == 'uv tool install --force "lium.io[provider]"'
+
+
+def test_relocated_uv_tool_dir_with_symlinked_python(monkeypatch, tmp_path):
+    monkeypatch.setenv("UV_TOOL_DIR", str(tmp_path / "tools"))
+    link = _symlinked_python(tmp_path, "tools/lium-io/bin/python", "uv-python/bin/python3.12")
+    monkeypatch.setattr(sys, "executable", str(link))
+    assert chain_stack.install_command() == 'uv tool install --force "lium.io[provider]"'
+
+
+def test_pipx_python_symlinked_to_the_system_interpreter_still_gets_pipx(monkeypatch, tmp_path):
+    link = _symlinked_python(tmp_path, ".local/pipx/venvs/lium-io/bin/python", "usr/bin/python3.12")
+    monkeypatch.setattr(sys, "executable", str(link))
+    assert chain_stack.install_command() == 'pipx install --force "lium.io[provider]"'
+
+
 def test_pipx_install_gets_a_pipx_command(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "executable", str(tmp_path / ".local/pipx/venvs/lium-io/bin/python"))
     assert chain_stack.install_command() == 'pipx install --force "lium.io[provider]"'
