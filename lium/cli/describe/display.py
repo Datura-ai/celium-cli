@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from rich.table import Table
 
-from lium.sdk import PodInfo
+from lium.sdk import PodInfo, pod_ssh_command
 from lium.cli.utils import console
 # Reused rather than reimplemented: the same timestamp handling and cost rounding
 # `lium ps` already applies, so describe and ps never disagree on spend.
@@ -88,7 +88,8 @@ def build_manifest(pod: PodInfo) -> dict:
         } if executor else None,
         "ports": _ports_section(pod.ports),
         "access": {
-            "ssh_command": pod.ssh_cmd,
+            "ssh_cmd": pod.ssh_cmd,
+            "ssh_command": pod_ssh_command(pod),
             "jupyter_url": pod.jupyter_url,
         },
         "template": {

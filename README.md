@@ -107,6 +107,13 @@ lium.down(ready)
 
 Full API reference: https://docs.lium.io/developers/sdk/reference
 
+`lium.ssh(pod)` returns the pod's ssh command with `-i <key>` and the pinned host-key options
+described under Configuration; pass `refresh=True` to rebuild it from the pod's current host and port
+after a restart (`lium.refresh_pod(pod)` re-reads one pod by id or huid; `LiumNotFoundError` when it
+is gone). `lium ps --format json` and `lium describe` (table and `--json`) show the same command
+without `-i` as `ssh_command` (the key path lives in the SDK config, not in the pod record); the
+JSON keeps the API's raw value as `ssh_cmd`.
+
 ## Documentation
 
 - **CLI docs:** https://docs.lium.io/category/cli

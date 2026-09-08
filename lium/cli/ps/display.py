@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 from rich.table import Table
 
-from lium.sdk import PodInfo
+from lium.sdk import PodInfo, pod_ssh_command
 from lium.cli.utils import console
 
 
@@ -104,6 +104,7 @@ def compact_pod(pod: PodInfo, index: Optional[int] = None) -> dict:
         "ip": executor.ip if executor else None,
         "ports": pod.ports or {},
         "ssh_cmd": pod.ssh_cmd,
+        "ssh_command": pod_ssh_command(pod),
         "removal_scheduled_at": pod.removal_scheduled_at,
         "jupyter_url": pod.jupyter_url,
     }
