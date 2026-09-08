@@ -139,8 +139,14 @@ def ls_command(
                 f"ingress ≥ {min_download_mbps:g} Mbps" if min_download_mbps is not None else None,
             ) if w]
             ui.error(f"No available node reports {' and '.join(wanted)}")
-            ui.info("Nodes whose validator has not reported topology or a CDN probe yet are excluded; "
-                    f"drop the filter and check on the pod: {ui.styled('nvidia-smi topo -m', 'success')}")
+            # each filter's rule, as the help text states it: --nvlink needs a topology report; --min-download
+            # judges the CDN probe when there is one, else the Download (Mbps) figure
+            rules = [r for r in (
+                "--nvlink excludes nodes with no topology report yet" if nvlink else None,
+                "--min-download judges the CDN probe, else Download (Mbps)" if min_download_mbps is not None else None,
+            ) if r]
+            ui.info(f"{'; '.join(rules)}. "
+                    f"Drop the filter and check on the pod: {ui.styled('nvidia-smi topo -m', 'success')}")
             return
         if gpu_type:
             ui.error(f"All {gpu_type} GPUs are currently rented out")

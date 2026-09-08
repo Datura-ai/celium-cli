@@ -318,7 +318,23 @@ def test_ls_explains_an_empty_result_caused_by_the_new_filters(monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert "NVLink between every GPU pair" in result.output
+    assert "--nvlink excludes nodes with no topology report yet" in result.output
+    assert "--min-download" not in result.output
     assert "nvidia-smi topo -m" in result.output
+    assert "rented out" not in result.output
+
+
+def test_ls_explains_an_empty_result_caused_by_min_download(monkeypatch):
+    # the fixture's Download is 300 Mbps and it has no CDN probe: the floor is judged on Download, so the hint
+    # must say so rather than claim probe-less nodes were excluded
+    fleet = [_map(_executor_dict("old"))]
+
+    result, _ = _run_ls(monkeypatch, fleet, "--min-download", "1000")
+
+    assert result.exit_code == 0, result.output
+    assert "ingress ≥ 1000 Mbps" in result.output
+    assert "--min-download judges the CDN probe, else Download (Mbps)" in result.output
+    assert "--nvlink" not in result.output
     assert "rented out" not in result.output
 
 
