@@ -50,7 +50,9 @@ def test_envelope_fields_land_on_the_exception(monkeypatch):
         client._request("POST", "/executors/x/rent")
 
     e = raised.value
-    assert str(e) == "Permission denied: Insufficient balance"  # unchanged for callers matching on it
+    # the text callers match on is unchanged; main (#217) appends which key the server refused
+    assert str(e).startswith("Permission denied: Insufficient balance")
+    assert str(e).endswith("from explicit)")  # the key's fingerprint and source (main, #217)
     assert (e.code, e.hint, e.request_id) == (
         "insufficient_balance",
         ENVELOPE["error"]["hint"],
