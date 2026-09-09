@@ -51,13 +51,34 @@ def _parse_machine(spec: str) -> Tuple[int, str]:
     first eight-GPU node the API happens to list.
     """
     m = _SPEC_RE.match(spec or "")
-    if not m or not m.group(2):
+    count = int(m.group(1) or 1) if m else 0
+    if not m or not m.group(2) or count == 0:
         raise ValueError(f"Invalid machine spec {spec!r}; use e.g. '1xH200', 'RTX4090', '2xA100'")
-    return int(m.group(1) or 1), m.group(2).replace(" ", "").upper()
+    return count, m.group(2).replace(" ", "").upper()
+
+
+def _rentable(executor: ExecutorInfo) -> int:
+    """The GPUs a rent that names no count gets: the node's free GPUs (``available_gpu_count``),
+    the whole host when the API did not say. On a partially rented split host this is fewer than
+    ``gpu_count`` — the same rule as ``lium up`` (``rented_gpu_count``)."""
+    return executor.available_gpu_count if executor.available_gpu_count is not None else executor.gpu_count
+
+
+def _rent_price(executor: ExecutorInfo) -> float:
+    """What the pod bills per hour: ``price_per_gpu`` × the GPUs rented; the host price when the
+    API gave no per-GPU price."""
+    if executor.price_per_gpu:
+        return executor.price_per_gpu * _rentable(executor)
+    return executor.price_per_hour
 
 
 def _select_executor(executors: List[ExecutorInfo], spec: str) -> ExecutorInfo:
-    """Cheapest node with exactly ``count`` GPUs of the requested type.
+    """Cheapest node that rents exactly ``count`` GPUs of the requested type.
+
+    The count is the node's rentable GPUs (:func:`_rentable`): ``Lium.up()`` names no count, so
+    the pod gets the node's free GPUs and is billed for those — a split host with 2 of 8 free is a
+    ``2xA100`` here, never an ``8xA100``. The price compared and shown is that rental's
+    (:func:`_rent_price`), not the whole host's.
 
     The type is matched the way ``lium ls --gpu`` matches it (:func:`gpu_short_matches` on the
     node's extracted ``gpu_type``): whole, never as a substring of the machine name — ``"A100"``
@@ -69,11 +90,12 @@ def _select_executor(executors: List[ExecutorInfo], spec: str) -> ExecutorInfo:
     (``Available: 1xA100 $1.20/h, 8xA100 $3.60/h``), else the GPU types on the listing.
     """
     count, gpu = _parse_machine(spec)
-    matches = [e for e in executors if e.gpu_count == count and gpu_short_matches(gpu, e.gpu_type)]
+    offered = [e for e in executors if _rentable(e) > 0]   # a fully rented split host has nothing to rent
+    matches = [e for e in offered if _rentable(e) == count and gpu_short_matches(gpu, e.gpu_type)]
     if not matches:
         same_type = sorted(
-            {f"{e.gpu_count}x{e.gpu_type} ${e.price_per_hour:.2f}/h"
-             for e in executors if gpu_short_matches(gpu, e.gpu_type)}
+            {f"{_rentable(e)}x{e.gpu_type} ${_rent_price(e):.2f}/h"
+             for e in offered if gpu_short_matches(gpu, e.gpu_type)}
         )
         if same_type:
             hint = f" Available: {', '.join(same_type)}."
@@ -81,7 +103,7 @@ def _select_executor(executors: List[ExecutorInfo], spec: str) -> ExecutorInfo:
             types = sorted({e.gpu_type for e in executors if e.gpu_type})
             hint = f" GPU types on the listing: {', '.join(types)}." if types else ""
         raise LiumError(f"No node found matching machine type: {spec}.{hint}")
-    return min(matches, key=lambda e: e.price_per_hour)
+    return min(matches, key=_rent_price)
 
 
 def _say(quiet: bool, func_name: str, msg: str) -> None:
@@ -166,7 +188,17 @@ def _check_portable(func) -> None:
     except (OSError, TypeError):
         return  # _function_source reports unreadable source
     module_names = set(func.__globals__) - {"__builtins__", func.__name__} - _imported_modules(node)
-    used = _code_names(code) & module_names & _name_loads(node)
+    # A default value (`k=SCALE`, `s=os.sep`) is evaluated by the enclosing module at `def` time, so its
+    # names are not in the body's co_names — yet the pod re-executes the `def` and fails on that line,
+    # before any import inside the body has run (so an in-body import does not excuse a default).
+    defaults = [d for d in node.args.defaults + node.args.kw_defaults if d is not None]
+    default_names: Set[str] = set()
+    for d in defaults:   # plain-name reads, minus what the expression binds itself (a lambda's parameter, a comprehension variable)
+        bound = {a.arg for a in ast.walk(d) if isinstance(a, ast.arg)}
+        bound |= {n.id for n in ast.walk(d) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
+        default_names |= _name_loads(d) - bound
+    # a default's name that is not a builtin — a module global or a local of the enclosing function — is not on the pod
+    used = ((_code_names(code) & module_names) | (default_names - set(dir(builtins)))) & _name_loads(node)
     if used:
         raise LiumError(
             f"{func.__name__} uses module-level names {sorted(used)}, which do not exist on the pod: "
@@ -348,9 +380,12 @@ class _Warm:
     unless a call asks for warmth again."""
 
     def __init__(self, sdk: Lium, pod, executor: ExecutorInfo, keep_warm: float, quiet: bool = False,
-                 owned: bool = True, previous_removal: Optional[str] = None):
+                 owned: bool = True, previous_removal: Optional[str] = None, *, hourly: float):
         self.sdk, self.pod, self.executor, self.keep_warm, self.quiet = sdk, pod, executor, keep_warm, quiet
         self.owned = owned
+        # what the pod bills per hour: the `renting …` figure for a pod this process rented, the pod row's
+        # own price (``ps()`` anchors ``executor.price_per_hour`` on it) for one found by name
+        self.hourly = hourly
         self.previous_removal = previous_removal   # the found pod's removal time before this call re-armed it
 
 
@@ -389,8 +424,11 @@ def _find_warm(sdk: Lium, key: str, say):
     _WARM.pop(key, None)
     for pod in live.values():
         if pod.name == f"lium-fn-{key}" and pod.executor:
-            say(f"reusing warm pod {pod.huid} ({pod.executor.gpu_count}x{pod.executor.gpu_type} ${pod.executor.price_per_hour:.2f}/h)")
-            return _Warm(sdk, pod, pod.executor, 0, owned=False, previous_removal=getattr(pod, "removal_scheduled_at", None))
+            rented = pod.gpu_count if pod.gpu_count is not None else pod.executor.gpu_count
+            hourly = pod.executor.price_per_hour   # ps() anchors it on the pod row's own price: what this pod bills
+            say(f"reusing warm pod {pod.huid} ({rented}x{pod.executor.gpu_type} ${hourly:.2f}/h)")
+            return _Warm(sdk, pod, pod.executor, 0, owned=False, previous_removal=getattr(pod, "removal_scheduled_at", None),
+                         hourly=hourly)
     return None
 
 
@@ -458,8 +496,9 @@ def machine(
             ``"2xA100"``. The count defaults to 1. The GPU is named as ``lium ls --gpu``
             takes it (``H100``, ``RTX4090``, ``rtx pro 6000``, a bare ``4090``) and has
             to match the node's type whole — ``"A100"`` never rents an RTX A1000. The
-            cheapest available node with exactly that many GPUs of that type is rented;
-            when none matches, the error names the types the listing has.
+            cheapest node with exactly that many GPUs of that type free to rent is rented
+            (a split host with 2 of 8 free is a ``2xA100``) and billed for those; when none
+            matches, the error names the types the listing has.
         template_id: Docker template ID (optional, uses the node's default if not specified)
         cleanup: Whether to delete the pod after execution (default: True)
         requirements: Optional iterable of pip-installable packages to install on the pod.
@@ -515,16 +554,17 @@ def machine(
                 # used whatever this call's keep_warm is; it is left as warm as it was found.
                 warm = _find_warm(sdk, key, say) if cleanup else None
                 if warm:
-                    sdk, pod_info, executor = warm.sdk, warm.pod, warm.executor
+                    sdk, pod_info, executor, hourly = warm.sdk, warm.pod, warm.executor, warm.hourly
                     _schedule_removal(sdk, pod_info, ttl, say)  # re-arm: this call may run up to `timeout`
                 else:
-                    # Step 1: Pick the cheapest node matching "<count>x<gpu>"
+                    # Step 1: Pick the cheapest node renting "<count>x<gpu>" (its free GPUs, not the whole host)
                     executor = _select_executor(sdk.ls(), machine)
+                    hourly = _rent_price(executor)
 
                     # Step 2: Create pod (a fixed name lets the next run of the script find it)
                     pod_name = f"lium-fn-{key}" if keep else f"remote-{func.__name__}-{int(time.time())}"
                     say(
-                        f"renting {executor.gpu_count}x{executor.gpu_type} ${executor.price_per_hour:.2f}/h "
+                        f"renting {_rentable(executor)}x{executor.gpu_type} ${hourly:.2f}/h "
                         f"({executor.huid}, {(executor.location or {}).get('country', '?')}), "
                         f"removal in {ttl.total_seconds() / 3600:.1f}h"
                     )
@@ -619,7 +659,7 @@ def machine(
 
                         if payload and payload.get('ok'):
                             elapsed = time.time() - started
-                            say(f"done in {elapsed:.0f}s (~${executor.price_per_hour * elapsed / 3600:.4f})")
+                            say(f"done in {elapsed:.0f}s (~${hourly * elapsed / 3600:.4f})")
                             return payload['result']
                         _raise_remote(payload, func.__name__, exec_result, timeout)
 
@@ -640,7 +680,7 @@ def machine(
                     owned = warm.owned if warm else True   # a pod this call rented is ours
                     stay = max(keep_warm, warm.keep_warm if warm else 0)
                     _WARM[key] = _Warm(sdk, pod_info, executor, stay, quiet, owned=owned,
-                                       previous_removal=warm.previous_removal if warm else None)
+                                       previous_removal=warm.previous_removal if warm else None, hourly=hourly)
                     if stay and (owned or keep_warm):
                         # ours: re-arm the window; found by name: only when this call asked for warmth
                         _schedule_removal(sdk, pod_info, timedelta(seconds=stay) + _WARM_MARGIN, say)

@@ -1,5 +1,6 @@
 """`@lium.machine` against a fake client: node selection, TTL, timeout and cleanup."""
 
+import os
 import subprocess
 import sys
 import uuid
@@ -167,6 +168,27 @@ def test_select_honours_count():
 def test_select_matches_spaced_names():
     assert D._select_executor(EXECUTORS, "RTX 4090").huid == "rtx"
     assert D._select_executor(EXECUTORS, "RTX4090").huid == "rtx"
+
+
+def test_select_counts_and_prices_a_split_host_by_its_free_gpus():
+    # `Lium.up()` names no count: the pod gets the node's free GPUs and bills for those (models.py
+    # `available_gpu_count`, `lium up`'s rented_gpu_count). An 8-GPU host with 2 free is a 2xA100 at
+    # 2 × price_per_gpu — not the cheapest 8xA100 at the host price.
+    # matching on gpu_count and pricing by price_per_hour picked `taken` ($3.00) or `split` ($3.20) for 8xA100, never `eight`
+    split = _executor("A100", 8, 3.20, "split", "NVIDIA A100-SXM4-80GB")   # price_per_gpu = 0.40
+    split.available_gpu_count = 2
+    taken = _executor("A100", 8, 3.00, "taken", "NVIDIA A100-SXM4-80GB")   # every GPU rented: offers nothing
+    taken.available_gpu_count = 0
+    nodes = EXECUTORS + [split, taken]
+    assert D._select_executor(nodes, "8xA100").huid == "eight"            # the split host is not an 8xA100
+    assert D._select_executor(nodes, "2xA100").huid == "split"
+    assert D._rentable(split) == 2 and D._rent_price(split) == pytest.approx(0.80)
+    assert D._rentable(EXECUTORS[0]) == 8 and D._rent_price(EXECUTORS[0]) == 3.60   # None → the whole host
+    with pytest.raises(LiumError, match=r"Available: 1xA100 \$1\.20/h, 1xA100 \$1\.50/h, 2xA100 \$0\.80/h, 8xA100 \$3\.60/h\."):
+        D._select_executor(nodes, "4xA100")                                # the fully rented host is not offered
+    for zero in ("0xA100", "00xA100"):
+        with pytest.raises(ValueError, match="Invalid machine spec"):
+            D._parse_machine(zero)
 
 
 def _typed(machine_name, count, price, huid):
@@ -795,6 +817,38 @@ def test_module_level_names_are_refused_before_renting(fake):
     assert fake.calls == []
 
 
+def test_a_default_value_naming_a_module_global_is_refused_before_renting(fake):
+    # `k=SCALE` is evaluated by this module at `def` time, so SCALE is not in the body's co_names;
+    # the pod re-executes the `def` and fails on that line before the runner's try block
+    with pytest.raises(LiumError, match=r"module-level names \['SCALE'\]"):
+        @D.machine(machine="A100", quiet=True)
+        def scaled(x, k=SCALE):
+            return x * k
+    with pytest.raises(LiumError, match=r"module-level names \['helper'\]"):
+        @D.machine(machine="A100", quiet=True)
+        def keyworded(x, *, f=helper):
+            return f(x)
+    with pytest.raises(LiumError, match=r"module-level names \['os'\]"):
+        # the import inside the body runs after the `def` line the default is evaluated on
+        @D.machine(machine="A100", quiet=True)
+        def imported_too_late(x, sep=os.sep):
+            import os
+            return os.path.join(x, sep)
+    K = 3
+    with pytest.raises(LiumError, match=r"module-level names \['K'\]"):
+        # a local of the enclosing function is no more on the pod than a module global
+        @D.machine(machine="A100", quiet=True)
+        def scaled_by_local(x, k=K):
+            return x * k
+    assert fake.calls == []
+
+    @D.machine(machine="A100", quiet=True)   # literal and builtin defaults name nothing from this module
+    def literal_default(x, *, a, k=2, names=None, f=len, g=lambda os: len(os)):   # the lambda's own `os` is not this module's
+        return x * k + a + f(names or []) + g("")
+
+    assert literal_default(3, a=0) == 6
+
+
 def test_an_attribute_named_like_a_module_global_is_not_a_module_global(fake):
     # co_names lists attribute names too: `x.data` in a module with a global `data` used to be refused as
     # "uses module-level names ['data']" — an attribute read needs nothing from this module
@@ -924,6 +978,23 @@ def test_a_new_process_finds_the_warm_pod_by_name(fake, capsys):
     assert not any(c[0] == "down" for c in fake.calls)
 
 
+def test_a_found_split_pod_is_announced_and_costed_by_its_own_figures(fake, capsys):
+    """`ps()` anchors `executor.price_per_hour` on the pod row's own price and `PodInfo.gpu_count` is the
+    split it holds; the host's `gpu_count` / derived `price_per_gpu` would say 8xA100 or $0.20/h."""
+    warm = _pod("pod-9")
+    warm.name = f"lium-fn-{D._warm_key('2xA100', None)}"
+    warm.executor = _executor("A100", 8, 0.80, "split")   # as ps() builds it: $0.80/h is the pod's own price
+    warm.executor.price_per_gpu = 0.10                    # derived over the host's 8, not the pod's 2
+    warm.gpu_count = 2
+    fake.pods["pod-9"] = warm
+
+    assert D.machine(machine="2xA100")(double)(4) == 8
+    err = capsys.readouterr().err
+    assert "reusing warm pod swift-fox-c8 (2xA100 $0.80/h)" in err
+    assert D._WARM[D._warm_key('2xA100', None)].hourly == 0.80
+    D._close_all()
+
+
 def test_a_found_pod_is_re_armed_only_when_the_call_asks_for_warmth(fake):
     warm = _pod("pod-9")
     warm.name = f"lium-fn-{D._warm_key('1xA100', None)}"
@@ -1006,8 +1077,8 @@ def test_env_var_forces_local(fake, monkeypatch):
 
 
 def test_atexit_removes_held_pods_but_leaves_keep_warm_ones(fake, capsys):
-    D._WARM["held"] = D._Warm(fake, fake.pods.setdefault("pod-h", _pod("pod-h")), EXECUTORS[2], 0)
-    D._WARM["warm"] = D._Warm(fake, fake.pods.setdefault("pod-w", _pod("pod-w")), EXECUTORS[2], 120)
+    D._WARM["held"] = D._Warm(fake, fake.pods.setdefault("pod-h", _pod("pod-h")), EXECUTORS[2], 0, hourly=1.20)
+    D._WARM["warm"] = D._Warm(fake, fake.pods.setdefault("pod-w", _pod("pod-w")), EXECUTORS[2], 120, hourly=1.20)
 
     D._close_all()
 

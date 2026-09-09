@@ -343,6 +343,8 @@ def test_edit_forgets_the_pinned_host_key(monkeypatch, tmp_path):
         ("PUT", "/templates/tpl-1", {"id": "tpl-1", "docker_image": "a", "startup_commands": "python main.py"}),
     ]
     assert not hosts_file.exists()
+
+
 def test_ssh_session_reuses_one_connection_for_every_operation_inside(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("LIUM_SSH_INSECURE", "1")  # no known_hosts file to load in this fake
