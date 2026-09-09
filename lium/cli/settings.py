@@ -88,6 +88,23 @@ class ConfigManager:
         except Exception:  # Catch all configparser exceptions
             return default
     
+    def get_source(self, key: str) -> Optional[str]:
+        """Where :meth:`get` would read ``key`` from, in the same precedence order.
+
+        ``env:<VAR>`` or ``config:<path> [section] option``; None when unset.
+        """
+        section, option = self._parse_key(key)
+
+        env_key = f"LIUM_{key.upper().replace('.', '_')}"
+        if os.environ.get(env_key) is not None:
+            return f"env:{env_key}"
+        if key == "api.api_key" and os.environ.get("LIUM_API_KEY") is not None:
+            return "env:LIUM_API_KEY"
+
+        if self._config.has_option(section, option):
+            return f"config:{self.config_file} [{section}] {option}"
+        return None
+
     def set(self, key: str, value: str) -> None:
         """Set configuration value."""
         section, option = self._parse_key(key)

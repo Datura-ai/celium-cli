@@ -19,6 +19,7 @@ from .logs import logs_command
 from .reboot import reboot_command
 from .scp.command import scp_command
 from .rsync import rsync_command
+from .whoami import whoami_command
 from .theme import theme_command
 
 # from .commands.compose import compose_command  # Disabled for beta.1
@@ -91,6 +92,7 @@ cli.add_command(logs_command)
 cli.add_command(reboot_command)
 cli.add_command(scp_command)
 cli.add_command(rsync_command)
+cli.add_command(whoami_command)
 cli.add_command(theme_command)
 cli.add_command(config_command)
 # cli.add_command(image_command)  # Disabled for beta.1

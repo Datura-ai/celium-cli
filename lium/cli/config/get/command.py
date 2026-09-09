@@ -38,3 +38,6 @@ def config_get_command(key: str):
     value = result.data.get("value")
     styled_value = mask_value(value, key)
     ui.info(styled_value)
+    source = result.data.get("source")
+    if source:
+        ui.dim(f"from {source}")

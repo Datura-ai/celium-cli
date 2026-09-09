@@ -4,11 +4,49 @@ import os
 from configparser import ConfigParser
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
+
+API_KEY_ENV_VAR = "LIUM_API_KEY"
+API_KEY_SOURCE_EXPLICIT = "explicit"
 
 
 def config_file_path() -> Path:
     return Path.home() / ".lium" / "config.ini"
+
+
+def resolve_api_key() -> Tuple[Optional[str], Optional[str]]:
+    """The API key the SDK will use and where it came from.
+
+    Returns ``(api_key, source)``; both are ``None`` when no key is configured.
+    ``source`` is ``env:LIUM_API_KEY`` or ``config:<path> [api] api_key``. The
+    source is recorded because two commands run in different shells can pick up
+    different keys, and an auth error that does not say which key it used sends
+    the caller to the wrong place.
+    """
+    api_key = os.getenv(API_KEY_ENV_VAR)
+    if api_key:
+        return api_key, f"env:{API_KEY_ENV_VAR}"
+
+    config_file = config_file_path()
+    if config_file.exists():
+        from configparser import ConfigParser
+
+        config = ConfigParser()
+        config.read(config_file)
+        api_key = config.get("api", "api_key", fallback=None)
+        if api_key:
+            return api_key, f"config:{config_file} [api] api_key"
+
+    return None, None
+
+
+def api_key_fingerprint(api_key: Optional[str]) -> str:
+    """A short, non-secret handle for a key: first six and last four characters."""
+    if not api_key:
+        return "none"
+    if len(api_key) <= 12:
+        return "***"
+    return f"{api_key[:6]}…{api_key[-4:]}"
 
 
 def _read_config_file() -> ConfigParser:
@@ -50,6 +88,9 @@ class Config:
     # A browser-session token for the few routes that refuse API keys (``/workspaces`` writes,
     # ``/keys``): LIUM_SESSION_TOKEN or ``[session] token`` written by ``lium workspaces login``.
     session_token: Optional[str] = None
+    # Where ``api_key`` came from (``env:LIUM_API_KEY``, ``config:<path> [api] api_key``,
+    # ``config:<path> [workspace.<name>] api_key``): what an auth error names (DAH-2872).
+    api_key_source: str = API_KEY_SOURCE_EXPLICIT
 
     @classmethod
     def load(cls, workspace: Optional[str] = None, *, key_for_workspace: bool = True) -> "Config":
@@ -72,12 +113,15 @@ class Config:
         file_config = _read_config_file()
         requested = workspace or os.getenv("LIUM_WORKSPACE") or None
         active = file_config.get("workspaces", "active", fallback=None)
-        saved_for_requested = (
-            file_config.get(workspace_section(requested), "api_key", fallback=None) if requested else None
-        )
 
+        def saved(name: str) -> Tuple[Optional[str], str]:
+            section = workspace_section(name)
+            return file_config.get(section, "api_key", fallback=None), f"config:{config_file_path()} [{section}] api_key"
+
+        saved_for_requested, requested_source = saved(requested) if requested else (None, "")
+        api_key, source = None, None
         if requested and key_for_workspace:
-            api_key = saved_for_requested
+            api_key, source = saved_for_requested, requested_source
             if not api_key:
                 raise ValueError(
                     f"No API key is saved for workspace '{requested}'; run "
@@ -85,14 +129,19 @@ class Config:
                     f"(or `LIUM_API_KEY=<a key bound to it> lium workspaces use {requested}`)"
                 )
         else:
-            api_key = os.getenv("LIUM_API_KEY") or saved_for_requested
+            api_key = os.getenv(API_KEY_ENV_VAR)
+            if api_key:
+                source = f"env:{API_KEY_ENV_VAR}"
+            elif saved_for_requested:
+                api_key, source = saved_for_requested, requested_source
             if not api_key and active:
-                api_key = file_config.get(workspace_section(active), "api_key", fallback=None)
+                api_key, source = saved(active)
             if not api_key:
                 api_key = file_config.get("api", "api_key", fallback=None)
+                source = f"config:{config_file_path()} [api] api_key"
 
         if not api_key:
-            raise ValueError("No API key found. Set LIUM_API_KEY or ~/.lium/config.ini")
+            raise ValueError(f"No API key found. Set {API_KEY_ENV_VAR} or {config_file_path()}")
 
         # Find SSH key with fallback
         ssh_key = None
@@ -115,7 +164,17 @@ class Config:
             workspace_id=file_config.get(section, "id", fallback=None) if runs_with_saved_key else None,
             workspace_explicit=bool(requested),
             session_token=os.getenv("LIUM_SESSION_TOKEN") or file_config.get("session", "token", fallback=None),
+            api_key_source=source or API_KEY_SOURCE_EXPLICIT,
         )
+
+    @property
+    def api_key_fingerprint(self) -> str:
+        return api_key_fingerprint(self.api_key)
+
+    @property
+    def api_key_description(self) -> str:
+        """``key <fingerprint> from <source>`` — what an auth error should name."""
+        return f"key {self.api_key_fingerprint} from {self.api_key_source}"
 
     @property
     def ssh_public_keys(self) -> List[str]:
@@ -129,4 +188,4 @@ class Config:
         return []
 
 
-__all__ = ["Config", "config_file_path", "workspace_section"]
+__all__ = ["Config", "API_KEY_ENV_VAR", "api_key_fingerprint", "config_file_path", "resolve_api_key", "workspace_section"]

@@ -300,11 +300,12 @@ OUTPUT_ENV = "LIUM_OUTPUT"    # LIUM_OUTPUT=json: every failure is a JSON envelo
 # (or a person) guessing; a code that has no entry here falls back to the
 # exit-code family below, so no error leaves without one.
 _HINTS_BY_CODE: Dict[str, str] = {
-    "no_api_key": "Set LIUM_API_KEY, or run 'lium init' (headless: 'lium init --no-browser')",
+    "no_api_key": "Set LIUM_API_KEY, or run 'lium init' (headless: 'lium init --no-browser'); "
+                  "no account yet? 'lium signup --email you@example.com' creates one and stores its key",
     "invalid_api_key": "Check the key: 'lium config get api.api_key' shows which one is used; "
                        "a new one comes from https://lium.io/api-keys",
     "session_required": "Run 'lium workspaces login' (or set LIUM_SESSION_TOKEN); "
-                        "the browser-session commands never take an API key",
+                        "an API key does not open the session-only commands",
     "permission_denied": "Check the account with 'lium balance'; an insufficient balance is "
                          "fixed with 'lium topup' or 'lium fund', a pending verification on https://lium.io",
     "insufficient_balance": "Add funds with 'lium topup' or 'lium fund', or pick a cheaper node "
@@ -462,6 +463,16 @@ def _classify_sdk_error(error: LiumError) -> tuple[str, int]:
     if isinstance(error, LiumServerError):
         return "server_error", EXIT_API_ERROR
     return "lium_error", EXIT_API_ERROR
+
+
+def sdk_error_failure(error: LiumError, data: dict | None = None) -> CliFailure:
+    """The failure ``handle_errors`` raises for an SDK error, with ``data`` attached.
+
+    For a command that caught the error to finish its report first (``whoami``) and must still fail
+    with the same code, exit status and hint as every other command — plus the report as ``data``.
+    """
+    code, exit_code = _classify_sdk_error(error)
+    return CliFailure(code, str(error), exit_code, data=data)
 
 
 def handle_errors(func):
@@ -1136,7 +1147,8 @@ def ensure_config():
                 f"{noninteractive_reason()}. Set LIUM_API_KEY, or run "
                 "'lium init --no-browser' and then 'lium init --session <ID>'",
                 EXIT_CONFIGURATION_ERROR,
-                hint="Set LIUM_API_KEY, or run 'lium init --no-browser' and then 'lium init --session <ID>'",
+                hint="Set LIUM_API_KEY, or run 'lium init --no-browser' and then 'lium init --session <ID>'; "
+                     "no account yet? 'lium signup --email you@example.com' creates one and stores its key",
             )
         # Setup API key
         action = SetupApiKeyAction()
