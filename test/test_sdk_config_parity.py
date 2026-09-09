@@ -153,5 +153,16 @@ def test_config_load_reads_the_public_key_next_to_the_configured_private_key(hom
     assert Config.load().ssh_public_keys == ["ssh-ed25519 AAAA configured"]
 
 
+def test_a_dotted_configured_key_name_reads_its_own_pub_file(home):
+    """`~/.ssh/lium.ed25519` pairs with `lium.ed25519.pub`, not `lium.pub`."""
+    (home / ".ssh").mkdir()
+    (home / ".ssh" / "lium.ed25519").write_text("x\n")
+    (home / ".ssh" / "lium.ed25519.pub").write_text("ssh-ed25519 CCCC dotted\n")
+    (home / ".ssh" / "lium.pub").write_text("ssh-ed25519 DDDD wrong-file\n")
+    _write_config(home, f"[api]\napi_key = {FILE_KEY}\n\n[ssh]\nkey_path = ~/.ssh/lium.ed25519\n")
+
+    assert Config.load().ssh_public_keys == ["ssh-ed25519 CCCC dotted"]
+
+
 def test_explicit_config_has_no_ssh_source():
     assert Config(api_key="k").ssh_key_source is None

@@ -131,7 +131,9 @@ class Config:
         """Get SSH public keys."""
         if not self.ssh_key_path:
             return []
-        pub_path = self.ssh_key_path.with_suffix('.pub')
+        # `.pub` is appended, not swapped in: a configured `lium.ed25519` must read `lium.ed25519.pub`,
+        # not `lium.pub` (with_suffix would replace the dotted part of the name)
+        pub_path = self.ssh_key_path.with_name(self.ssh_key_path.name + '.pub')
         if pub_path.exists():
             with open(pub_path) as f:
                 return [line.strip() for line in f if line.strip().startswith(('ssh-', 'ecdsa-'))]
