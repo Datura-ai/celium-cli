@@ -103,6 +103,10 @@ def test_gpu_short_types_and_unknown_gpu_type():
     # though gpu_short_types does not offer it — a typed value that rents must never be called a typo
     assert client.unknown_gpu_type("V") is None
     assert client.unknown_gpu_type("super") is None
+    # a full catalog name (what tab completion offers and `ls()` passes through) is known as itself,
+    # so a sold-out `NVIDIA H100 80GB HBM3` gets the rented-out message, not "No GPU type matches"
+    assert client.unknown_gpu_type("NVIDIA H100 80GB HBM3") is None
+    assert client.unknown_gpu_type("NVIDIA H100 80GB HBM4") == types
 
 
 def test_unknown_gpu_type_assumes_known_when_the_listing_fails(monkeypatch):
