@@ -31,6 +31,8 @@ jobs:
         python-version: ["3.10", "3.12"]
     steps:
     - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0   # hatch-vcs: the version is git describe against the tags
 
     - uses: astral-sh/setup-uv@v5
       with:
@@ -89,6 +91,8 @@ jobs:
       contents: read
     steps:
     - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0   # hatch-vcs: the version is git describe against the tags
 
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -146,13 +150,20 @@ jobs:
       contents: read
     steps:
     - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0   # hatch-vcs: the version is git describe against the tags
 
+    - uses: astral-sh/setup-uv@v6
+
+    # the build image has no git (Dockerfile.build): the version hatch-vcs derives from the tags here is handed in
     - name: Build Linux bundle in Docker
       run: |
+        version="$(uvx --from hatchling --with hatch-vcs hatchling version)"
+        echo "version $version"
         mkdir -p dist
         rm -rf dist/lium
         docker rm -f lium-extract >/dev/null 2>&1 || true
-        docker build --platform ${{ matrix.platform }} -f Dockerfile.build -t lium-build:${GITHUB_SHA}-${{ matrix.asset_name }} .
+        docker build --build-arg LIUM_VERSION="$version" --platform ${{ matrix.platform }} -f Dockerfile.build -t lium-build:${GITHUB_SHA}-${{ matrix.asset_name }} .
         docker create --name lium-extract lium-build:${GITHUB_SHA}-${{ matrix.asset_name }} true
         docker cp lium-extract:/app/dist/lium dist/lium
         docker rm -f lium-extract
@@ -198,6 +209,8 @@ jobs:
       contents: read
     steps:
     - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0   # hatch-vcs: the version is git describe against the tags
 
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -301,6 +314,8 @@ jobs:
       cancel-in-progress: false
     steps:
     - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0   # hatch-vcs: the version is git describe against the tags
     - uses: actions/setup-python@v5
       with:
         python-version: "3.12"
