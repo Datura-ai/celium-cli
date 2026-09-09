@@ -505,15 +505,22 @@ class Lium:
         # multiplies price_per_gpu by, so it comes first; then the count in the
         # scraped specs, then the listed GPUs. Only assume a single GPU when the
         # API gives us nothing at all, so a missing count cannot silently turn an
-        # 8-GPU node into a "1×" line with a 1-GPU price.
-        gpu_count = executor_dict.get("gpu_count") or gpu_info.get("count") or len(gpu_details) or 1
+        # 8-GPU node into a "1×" line with a 1-GPU price. Counts arrive as
+        # strings in some payloads (see _pod_gpu_count), so each is parsed.
+        gpu_count = (
+            _int_or_none(executor_dict, "gpu_count")
+            or _int_or_none(gpu_info, "count")
+            or len(gpu_details)
+            or 1
+        )
 
         # Extract GPU type from machine_name or specs
         machine_name = executor_dict.get("machine_name") or ""
         gpu_type = extract_gpu_type(machine_name)
 
-        # If we couldn't extract from machine_name (empty, or no known pattern), try specs
-        unresolved = not machine_name or gpu_type == machine_name.split()[-1]
+        # If we couldn't extract from machine_name (empty, blank, or no known pattern), try specs
+        words = machine_name.split()
+        unresolved = not words or gpu_type == words[-1]
         if unresolved and gpu_details:
             gpu_name = (gpu_details[0] or {}).get("name", "")
             if gpu_name:

@@ -44,6 +44,25 @@ def test_top_level_gpu_count_is_the_billed_one():
     assert info.price_per_hour == 16.0
 
 
+def test_string_gpu_count_is_parsed_not_multiplied_as_text():
+    """Some payloads send counts as strings (the /pods rows do); "8" must price as 8, not raise."""
+    rec = _record(gpu_count="8", specs={"gpu": {"count": "8", "details": [{"name": "NVIDIA H100 80GB HBM3"}] * 8}})
+    info = _client()._dict_to_executor_info(rec)
+    assert info.gpu_count == 8
+    assert info.price_per_hour == 16.0
+
+
+def test_unparseable_gpu_count_falls_through_to_specs():
+    rec = _record(gpu_count="eight", specs={"gpu": {"count": 4, "details": [{"name": "NVIDIA H100 80GB HBM3"}] * 4}})
+    info = _client()._dict_to_executor_info(rec)
+    assert info.gpu_count == 4
+
+
+def test_whitespace_only_machine_name_falls_back_to_gpu_details():
+    info = _client()._dict_to_executor_info(_record(machine_name="   "))
+    assert info.gpu_type == "H100"
+
+
 def test_missing_count_uses_number_of_listed_gpus_not_one():
     rec = _record(specs={"gpu": {"details": [{"name": "NVIDIA H200"}] * 4}})
     info = _client()._dict_to_executor_info(rec)
@@ -65,6 +84,9 @@ def test_null_specs_and_null_machine_name_do_not_raise():
 
 
 def test_select_template_uses_existing_sdk_method(monkeypatch, tmp_path):
+    # The method the CLI calls must be the one the real SDK class has (the bug was `list_templates`).
+    assert callable(getattr(Lium, "templates", None))
+    assert not hasattr(Lium, "list_templates")
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("LIUM_API_KEY", "test")
     calls = []

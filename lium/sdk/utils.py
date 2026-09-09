@@ -62,7 +62,8 @@ def extract_gpu_type(machine_name: str) -> str:
     for pattern, fmt in patterns:
         if match := re.search(pattern, machine_name, re.I):
             return fmt(match).upper()
-    return machine_name.split()[-1] if machine_name else "Unknown"
+    words = machine_name.split() if machine_name else []
+    return words[-1] if words else "Unknown"
 
 
 def normalize_gpu_short(gpu_short: str) -> str:
