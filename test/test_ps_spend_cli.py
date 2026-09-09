@@ -17,6 +17,7 @@ from rich.console import ConsoleDimensions
 from lium.cli import utils
 from lium.cli.cli import cli
 from lium.cli.ps import command as ps_module
+from lium.cli.ps import display
 from lium.cli.ps import selection
 from lium.cli.spend import command as spend_module
 from lium.cli.spend import report
@@ -147,7 +148,16 @@ def test_ps_filtered_listing_numbers_only_the_rows_shown_and_records_them(fake_l
     assert [p["huid"] for p in snapshot["pods"]] == ["brave-lion-11", "swift-fox-c8"]
 
 
-def test_ps_json_flag_is_an_alias(fake_lium):
+class _FrozenDatetime(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return NOW
+
+
+def test_ps_json_flag_is_an_alias(fake_lium, monkeypatch):
+    # spent_usd is price × wall time: the two invocations must read the same clock or a cent can tick between them
+    monkeypatch.setattr(display, "datetime", _FrozenDatetime)
+
     assert CliRunner().invoke(cli, ["ps", "--json"]).output == CliRunner().invoke(cli, ["ps", "--format", "json"]).output
 
 
