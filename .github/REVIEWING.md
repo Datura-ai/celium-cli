@@ -13,9 +13,10 @@ Ticket: [DAH-3022](https://app.notion.com/p/CODEOWNERS-review-SLA-across-repos-3
 
 ## 2. What may merge after ONE approval and green required checks
 
-Branch protection requires a pull request and one approving review; with the code-owner rule on, that approval comes
-from a code owner of every touched path. For the classes below that single approval is the whole process — the approver may tick "auto-merge" so the PR lands when the
-checks pass, and nobody waits for a second opinion:
+Branch protection requires a pull request and one approving review; the code-owner rule is off today, so CODEOWNERS
+only picks who is asked — once it is on, that approval comes from a code owner of every touched path. For the classes
+below that single approval is the whole process — the approver merges when the checks pass (the repository has
+auto-merge disabled), and nobody waits for a second opinion:
 
 - **(a) Docs-only** — Markdown/MDX, `docs/**`, `llms*.txt`, comments and docstrings. No executable path changes.
 - **(b) Provably dead code** — the PR body shows the identical test run before and after (same passed/skipped counts)
@@ -29,14 +30,15 @@ the author waits for it — no auto-merge on runtime behaviour.
 ## 3. Stacked PRs
 
 - The base PR is reviewed and merged first.
-- A stacked PR says `Stacked on #<base>` in its first line and is reviewed for its own diff only (GitHub's compare
-  against the base branch).
+- A stacked PR names its base in the body's opening line (`… · stacked on #<base> · …`, right after the template
+  marker) and is reviewed for its own diff only (GitHub's compare against the base branch).
 - After the base merges, the stacked PR is rebased onto `main`, checks re-run, and it is reviewed again only if
   the rebase changed it.
 - A stacked PR is never merged before its base.
 
 ## 4. PRs opened by the Lium loop
 
-The loop's PRs carry the `loop` label and follow exactly the rules above — same response time, same classes, same one
-human approval. The loop never approves, never merges, never enables auto-merge on its own PRs. It answers review
-comments and bot findings on its PRs itself; a `loop` PR that fails the class-(2) bar is a normal PR.
+The loop's PRs are the ones opened by the `surcyf123` account, with the loop's PR template as the body (the
+`loop-pr-template` marker on its first line); no label marks them. They follow exactly the rules above — same response
+time, same classes, same one human approval. The loop never approves, never merges, never enables auto-merge on its own
+PRs. It answers review comments and bot findings on its PRs itself; a loop PR outside the classes in §2 is a normal PR.
