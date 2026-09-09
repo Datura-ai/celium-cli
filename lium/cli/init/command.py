@@ -2,7 +2,7 @@
 
 import click
 
-from lium.cli.settings import config
+from lium.cli.interactive import is_interactive
 from lium.cli.utils import CliFailure, EXIT_GENERAL_ERROR, handle_errors
 from .actions import SetupApiKeyAction, RequestAuthUrlAction, VerifySessionAction, SetupSshKeyAction
 
@@ -23,6 +23,10 @@ def init_command(no_browser: bool, session: str | None):
       lium init                     # opens browser for auth
       lium init --no-browser        # prints auth URL + session ID
       lium init --session <ID>      # verifies session and saves API key
+    \b
+    Without a terminal on stdin (or with LIUM_NONINTERACTIVE=1) `lium init`
+    behaves like `--no-browser`. Scripts can skip init entirely by setting
+    LIUM_API_KEY.
     """
 
     # Step 2: verify a pending session
@@ -34,8 +38,9 @@ def init_command(no_browser: bool, session: str | None):
         _setup_ssh()
         return
 
-    # Step 1 (headless): just print URL and exit
-    if no_browser:
+    # Step 1 (headless): just print URL and exit. A browser nobody can see is
+    # no use to a piped caller, so that case takes the headless path too.
+    if no_browser or not is_interactive():
         url_action = RequestAuthUrlAction()
         url_action.execute({})
         return
