@@ -85,6 +85,10 @@ class _FakeLium:
     def ps(self):
         return [_pod()]
 
+    def pod(self, pod_id):
+        # DAH-2932: `describe` asks GET /pods/{id} for the last event and node disk; nothing to add here
+        return {}
+
     def ls(self, **kwargs):
         return [_executor()]
 
