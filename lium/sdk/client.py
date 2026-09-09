@@ -1574,7 +1574,9 @@ class Lium:
         """
         try:
             names = [name for name in self.gpu_types() if name]
-        except Exception:
+        except (LiumError, requests.RequestException, ValueError):
+            # the listing failed (API error, transport, or a non-JSON body): assume known — the
+            # caller reports the listing failure it already has, not a typo
             return None
         # "known" is decided the way _resolve_machine_name matches — against every extracted
         # type, fall-through spellings included (`ti`, `xp`) — so a spelling the listing

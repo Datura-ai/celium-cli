@@ -14,7 +14,7 @@ from click.testing import CliRunner
 from lium.cli.cli import cli
 from lium.cli.ls import command as ls_command
 from lium.cli.up import actions as up_actions
-from lium.sdk import Config, Lium
+from lium.sdk import Config, Lium, LiumServerError
 from lium.sdk.utils import gpu_short_matches
 
 MACHINES = [
@@ -107,7 +107,7 @@ def test_gpu_short_types_and_unknown_gpu_type():
 
 def test_unknown_gpu_type_assumes_known_when_the_listing_fails(monkeypatch):
     client = _Client()
-    monkeypatch.setattr(client, "gpu_types", lambda: (_ for _ in ()).throw(RuntimeError("api down")))
+    monkeypatch.setattr(client, "gpu_types", lambda: (_ for _ in ()).throw(LiumServerError("api down")))
 
     assert client.unknown_gpu_type("3090") is None
 
