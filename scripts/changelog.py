@@ -14,7 +14,8 @@ import argparse, datetime, pathlib, re, sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SECTIONS = ["Added", "Changed", "Deprecated", "Removed", "Fixed", "Security"]
 # A release heading: `## [0.0.38] - 2026-09-09`. `## [Unreleased]` is not one.
-RELEASE_HEADING = re.compile(r"^## \[(?!Unreleased\])", re.M)
+RELEASE_HEADING = re.compile(r"^## \[(?!unreleased\])", re.M | re.I)
+UNRELEASED_HEADING = re.compile(r"^## \[unreleased\]", re.M | re.I)
 
 
 def collect(frag_dir: pathlib.Path):
@@ -22,14 +23,21 @@ def collect(frag_dir: pathlib.Path):
     files = sorted(p for p in frag_dir.glob("*.md") if p.name != "README.md")
     for f in files:
         current = "Changed"
+        seen_heading = False
         for line in f.read_text(encoding="utf-8").splitlines():
             m = re.match(r"^###\s+(\w+)", line)
             if m:
+                seen_heading = True
                 name = m.group(1).capitalize()
+                if name not in SECTIONS:
+                    print(f"{f.name}: unknown section '### {m.group(1)}' filed under Changed", file=sys.stderr)
                 current = name if name in SECTIONS else "Changed"
                 continue
             if re.match(r"^##\s", line) or not line.strip():
                 continue
+            if not seen_heading:
+                print(f"{f.name}: no '### Added|Changed|…' heading; its bullets go under Changed", file=sys.stderr)
+                seen_heading = True  # one warning per file
             sections[current].append(line.rstrip())
     return files, {k: v for k, v in sections.items() if v}
 
@@ -47,8 +55,11 @@ def render(version: str, date: str, sections: dict) -> str:
 def insert_release(text: str, section: str) -> str:
     """Put `section` above the first released version heading, below any `## [Unreleased]` block."""
     m = RELEASE_HEADING.search(text)
-    idx = m.start() if m else len(text)
-    return text[:idx] + section + "\n" + text[idx:]
+    if m:
+        return text[: m.start()] + section + "\n" + text[m.start():]
+    if text and not text.endswith("\n"):
+        text += "\n"
+    return text + "\n" + section + "\n"
 
 
 def main(argv=None):
@@ -68,6 +79,11 @@ def main(argv=None):
         return
     path = a.root / "CHANGELOG.md"
     text = path.read_text(encoding="utf-8")
+    if re.search(rf"^## \[{re.escape(a.version)}\]", text, re.M):
+        sys.exit(f"CHANGELOG.md already has a [{a.version}] section")
+    if UNRELEASED_HEADING.search(text):
+        print("CHANGELOG.md has an `## [Unreleased]` block; its bullets are NOT part of "
+              f"[{a.version}] — move them into the release by hand or into fragments", file=sys.stderr)
     path.write_text(insert_release(text, section), encoding="utf-8")
     for f in files:
         f.unlink()

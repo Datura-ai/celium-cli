@@ -16,5 +16,7 @@ already live here; `CHANGELOG.md` itself is only touched at release time.
 At release time `python scripts/changelog.py --version X.Y.Z` folds every fragment into `CHANGELOG.md` under a new
 `## [X.Y.Z] - YYYY-MM-DD` heading — same-named sections merged in the order Added, Changed, Deprecated, Removed, Fixed,
 Security; bullets in fragment-file-name order; the fragment files deleted. The heading goes above the newest released
-version and below a `## [Unreleased]` block if one exists. `--dry-run` prints the section and changes nothing. Stdlib
-only; `pytest test/test_changelog_script.py` covers it.
+version and below a `## [Unreleased]` block if one exists (the script warns that the block's bullets are not part of the
+release, and refuses a version that is already in the file). A fragment with no `###` heading, or an unknown one, is
+filed under Changed with a warning. `--date YYYY-MM-DD` overrides today. `--dry-run` prints the section and changes
+nothing. Stdlib only; `pytest test/test_changelog_script.py` covers it.
