@@ -40,5 +40,10 @@ RUN pip install --no-cache-dir uv
 WORKDIR /app
 COPY . .
 
+# hatch-vcs derives the version from git, which this image does not have (bullseye's archive cannot
+# install git next to the image's perl-base); the runner computes it and hands it in (release.yml, ci.yml).
+ARG LIUM_VERSION
+ENV SETUPTOOLS_SCM_PRETEND_VERSION=$LIUM_VERSION
+
 RUN uv sync --frozen --extra dev --extra provider
 RUN uv run pyinstaller lium.spec --clean

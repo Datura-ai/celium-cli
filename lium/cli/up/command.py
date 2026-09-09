@@ -60,6 +60,7 @@ def _wait_budget(deadline: float, ready_timeout: Optional[int]) -> int:
 @click.option("--gpu", help="Filter nodes by GPU type (e.g., H200, A6000)", shell_complete=get_gpu_completions)
 @click.option("--count", "-c", type=int, help="Number of GPUs per pod")
 @click.option("--country", help="Filter nodes by ISO country code (e.g., US, FR)")
+@click.option("--min-cpus", "min_cpus", type=int, help="Minimum CPU thread count (the CPUs column of 'lium ls')")
 @click.option("--ports", "-p", type=int, help="Minimum number of available ports required")
 @click.option("--ttl", help="Auto-terminate after duration (e.g., 6h, 45m, 2d)")
 @click.option("--until", help="Auto-terminate at time in local timezone (e.g., 'today 23:00', 'tomorrow 01:00', '2025-10-20 15:30')")
@@ -115,6 +116,7 @@ def up_command(
     gpu: Optional[str],
     count: Optional[int],
     country: Optional[str],
+    min_cpus: Optional[int],
     ports: Optional[int],
     ttl: Optional[str],
     until: Optional[str],
@@ -152,6 +154,7 @@ def up_command(
       lium up --gpu A6000 -c 2              # Auto-select cheapest optimal 2×A6000 node
       lium up --country US                  # Auto-select cheapest optimal node in US
       lium up --gpu H200 --country FR       # Combine multiple filters
+      lium up --gpu H100 --min-cpus 32      # Only nodes with at least 32 CPU threads
       lium up --ports 5                     # Auto-select with minimum 5 ports
       lium up 1 --name my-pod               # Create with custom name
       lium up 1 --volume id:brave-fox-3a    # Attach existing volume by HUID
@@ -186,7 +189,7 @@ def up_command(
     dockerfile_mode = dockerfile is not None
 
     valid, error = validation.validate(
-        executor_id, gpu, count, country, ttl, until, image, template_id, dockerfile
+        executor_id, gpu, count, country, ttl, until, image, template_id, dockerfile, min_cpus
     )
     if not valid:
         raise CliFailure("invalid_arguments", error, EXIT_CONFIGURATION_ERROR)
@@ -277,6 +280,7 @@ def up_command(
             "gpu": gpu,
             "count": count,
             "country": country,
+            "min_cpus": min_cpus,
             "ports": ports,
             "template_id": template_id,
             "dockerfile_content": dockerfile_content,

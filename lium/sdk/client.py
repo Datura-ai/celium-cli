@@ -434,6 +434,7 @@ class Lium:
         }
         self._features: Optional[set] = None
         self.workspaces = WorkspacesClient(self)
+        self._ssh_sessions: Dict[str, paramiko.SSHClient] = {}  # pod id -> connection held by ssh_session()
 
     def features(self) -> set:
         """Optional API capabilities the backend advertises on ``GET /version``.
@@ -1333,6 +1334,7 @@ class Lium:
         lon: Optional[float] = None,
         max_distance_miles: Optional[int] = None,
         min_cuda_version: Optional[float] = None,
+        min_cpus: Optional[int] = None,
     ) -> List[ExecutorInfo]:
         """List available nodes.
 
@@ -1345,6 +1347,8 @@ class Lium:
             min_cuda_version: Optional minimum CUDA version to require (e.g. ``12.4``). Nodes whose
                 ``max_cuda_version`` is ``None`` or below this threshold are excluded. NVIDIA drivers are
                 backward compatible, so a node with a higher driver CUDA version satisfies the requirement.
+            min_cpus: Optional minimum CPU thread count (``specs.cpu.count``). Nodes that report fewer
+                CPUs, or none, are excluded.
 
         Returns:
             A list of :class:`ExecutorInfo` objects that satisfy the filters.
@@ -1379,6 +1383,9 @@ class Lium:
                 if e.max_cuda_version is not None and e.max_cuda_version >= min_cuda_version
             ]
 
+        if min_cpus is not None:
+            executors = [e for e in executors if e.cpu_count is not None and e.cpu_count >= min_cpus]
+
         return executors
 
     def ps(self) -> List[PodInfo]:
@@ -1394,11 +1401,15 @@ class Lium:
             executor = self._dict_to_executor_info(d.get("executor") or {}) if d.get("executor") else None
             # The /pods endpoint returns the authoritative total $/h as pod.price; the
             # nested executor.price_per_gpu is not populated in this payload. Anchor
-            # executor.price_per_hour on pod.price and derive per-GPU from it.
+            # executor.price_per_hour on pod.price and derive per-GPU from it. The
+            # executor describes the WHOLE host and stays so; for a GPU-split rental
+            # (1 GPU of a 3×3090 node) the pod row's own gpu_count is the billed count,
+            # so per-GPU is pod.price over that count when the API sent one.
             pod_price = d.get("price")
+            pod_gpu_count = _pod_gpu_count(d)
             if executor is not None and pod_price is not None:
                 executor.price_per_hour = float(pod_price)
-                executor.price_per_gpu = float(pod_price) / max(1, executor.gpu_count)
+                executor.price_per_gpu = float(pod_price) / max(1, pod_gpu_count or executor.gpu_count)
             pods.append(PodInfo(
                 id=d.get("id", ""),
                 name=d.get("pod_name", ""),
@@ -1418,7 +1429,7 @@ class Lium:
                 estimated_ready_seconds=d.get("estimated_ready_seconds"),
                 eta_basis=d.get("eta_basis"),
                 phase=d.get("phase"),
-                gpu_count=_pod_gpu_count(d),
+                gpu_count=pod_gpu_count,
                 workspace_id=d.get("workspace_id"),
             ))
 
@@ -1719,6 +1730,11 @@ class Lium:
         Yields:
             An active ``paramiko.SSHClient``.
         """
+        held = self._ssh_sessions.get(pod.id)
+        if held is not None:
+            yield held
+            return
+
         if not pod.ssh_cmd:
             raise ValueError(f"No SSH for pod {pod.name}")
 
@@ -1807,6 +1823,24 @@ class Lium:
     # here names a value, so the pod's argv never carries one.
     _ENV_FROM_STDIN = 'eval "$(cat)"'
 
+    @contextmanager
+    def ssh_session(self, pod: PodInfo, timeout: int = 30):
+        """Keep one SSH connection to ``pod`` open for the whole block.
+
+        Every :meth:`exec`, :meth:`stream_exec`, :meth:`upload` and :meth:`download`
+        inside it runs over this connection instead of paying a fresh TCP + SSH
+        handshake each (several seconds per call to a distant node).
+
+        Yields:
+            The active ``paramiko.SSHClient``.
+        """
+        with self.ssh_connection(pod, timeout) as client:
+            self._ssh_sessions[pod.id] = client
+            try:
+                yield client
+            finally:
+                self._ssh_sessions.pop(pod.id, None)
+
     def _prep_command(self, command: str, env: Optional[Dict[str, str]] = None) -> str:
         """Prefix ``command`` with the exports spelled out inline.
 
@@ -1872,36 +1906,50 @@ class Lium:
         *,
         command: str,
         env: Optional[Dict[str, str]] = None,
-    ) -> Generator[Dict[str, str], None, None]:
+        pty: bool = True,
+    ) -> Generator[Dict[str, str], None, int]:
         """Execute a shell command and stream incremental output.
 
         Args:
             pod: Pod to target.
             command: Shell command to run remotely.
             env: Optional environment variables exported before the command runs.
+            pty: Request a pseudo-terminal (default). A pty merges stderr into stdout
+                and turns ``\n`` into ``\r\n``; pass ``False`` to keep the two
+                streams apart, as :func:`lium.machine` does to relay a function's output.
 
         Yields:
             Streaming output chunks as ``{"type": "stdout"|"stderr", "data": str}``.
+
+        Returns:
+            The command's exit status (the generator's ``StopIteration.value``).
         """
         command = self._prep_command(command, env)
 
         with self.ssh_connection(pod) as client:
-            stdin, stdout, stderr = client.exec_command(command, get_pty=True)
+            stdin, stdout, stderr = client.exec_command(command, get_pty=pty)
             stdin.close()
 
             channel = stdout.channel
-            channel.settimeout(0.1)
-
-            while not channel.closed or channel.recv_ready() or channel.recv_stderr_ready():
+            while True:
+                got = False
                 if channel.recv_ready():
                     data = channel.recv(4096).decode("utf-8", errors="replace")
                     if data:
+                        got = True
                         yield {"type": "stdout", "data": data}
 
                 if channel.recv_stderr_ready():
                     data = channel.recv_stderr(4096).decode("utf-8", errors="replace")
                     if data:
+                        got = True
                         yield {"type": "stderr", "data": data}
+
+                if got:
+                    continue
+                if channel.exit_status_ready() and not channel.recv_ready() and not channel.recv_stderr_ready():
+                    return channel.recv_exit_status()
+                time.sleep(0.05)  # nothing pending: do not spin at 100% CPU until the command ends
 
     def exec_all(
         self,

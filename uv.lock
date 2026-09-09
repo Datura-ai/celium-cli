@@ -1148,7 +1148,6 @@ wheels = [
 
 [[package]]
 name = "lium-io"
-version = "0.0.39"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
@@ -1220,7 +1219,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.12" },
     { name = "wheel", marker = "extra == 'dev'" },
 ]
-provides-extras = ["provider", "dev", "docs"]
+provides-extras = ["dev", "docs", "provider"]
 
 [[package]]
 name = "loguru"

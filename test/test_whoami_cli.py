@@ -25,6 +25,7 @@ PUB = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample"
 def local_setup(monkeypatch, tmp_path):
     """A key in the environment, an ssh key pair under a temp HOME, ssh and rsync installed."""
     monkeypatch.setenv("LIUM_API_KEY", KEY)
+    monkeypatch.delenv("LIUM_API_API_KEY", raising=False)  # it outranks LIUM_API_KEY since DAH-2896
     key = tmp_path / "id_ed25519"
     key.write_text("private")
     key.with_suffix(".pub").write_text(f"{PUB} user@host\n")

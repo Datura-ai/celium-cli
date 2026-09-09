@@ -14,6 +14,7 @@ from .exceptions import (
     LiumServerError,
     LiumSessionError,
     PodStartError,
+    RemoteExecutionError,
 )
 from .models import (
     BackupConfig,
@@ -29,6 +30,7 @@ from .models import (
     WorkspaceMember,
 )
 from .workspaces import WorkspacesClient
+from .result_codec import ResultEncodingError
 
 __all__ = [
     "Lium",
@@ -56,6 +58,8 @@ __all__ = [
     "LiumHostKeyError",
     "LiumInsufficientBalanceError",
     "LiumSessionError",
+    "RemoteExecutionError",
+    "ResultEncodingError",
     "machine",
     "pod_ssh_command",
 ]

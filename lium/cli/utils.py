@@ -64,6 +64,21 @@ def mid_ellipsize(s: str, width: int = 28) -> str:
     return f"{s[:left]}…{s[-right:]}"
 
 
+def pod_gpu_count(pod: PodInfo) -> Optional[int]:
+    """GPUs to show for a pod: ``PodInfo.gpu_count`` when the API sent one, else the host's.
+
+    ``PodInfo.gpu_count`` is the pod row's own billed count from ``/pods`` (DAH-2877);
+    ``pod.executor`` describes the whole host. ``ps``, ``describe`` and their JSON
+    views read this so a GPU-split rental (1 GPU of a 3×RTX 3090 node) reads
+    ``RTX3090``, not ``3×RTX3090``. ``getattr`` because the CLI tests' pod doubles
+    predate the field.
+    """
+    billed = getattr(pod, "gpu_count", None)
+    if billed:
+        return billed
+    return pod.executor.gpu_count if pod.executor else None
+
+
 def parse_timestamp(timestamp: str) -> Optional[datetime]:
     """Parse ISO format timestamp."""
     from datetime import datetime, timezone

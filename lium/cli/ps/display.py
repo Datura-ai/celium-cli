@@ -5,7 +5,7 @@ from typing import List, Optional
 from rich.table import Table
 
 from lium.sdk import PodInfo, pod_ssh_command
-from lium.cli.utils import console
+from lium.cli.utils import console, pod_gpu_count
 
 
 def _parse_timestamp(timestamp: str) -> Optional[datetime]:
@@ -76,6 +76,18 @@ def _format_ports(ports: dict) -> str:
     return ", ".join(port_pairs)
 
 
+def _gpu_config(pod: PodInfo) -> Optional[str]:
+    """``2×H100`` for a multi-GPU pod, ``H100`` for one; None without an executor.
+
+    The count is the pod's own (``PodInfo.gpu_count``), not the host's: a GPU-split
+    rental of 1 GPU on a 3×RTX 3090 node reads ``RTX3090``.
+    """
+    if not pod.executor:
+        return None
+    count = pod_gpu_count(pod)
+    return f"{count}×{pod.executor.gpu_type}" if count and count > 1 else pod.executor.gpu_type
+
+
 def compact_pod(pod: PodInfo, index: Optional[int] = None) -> dict:
     """Slim, table-equivalent JSON view of a pod.
 
@@ -90,12 +102,8 @@ def compact_pod(pod: PodInfo, index: Optional[int] = None) -> dict:
         "name": pod.name,
         "status": pod.status.upper() if pod.status else None,
         "gpu_type": executor.gpu_type if executor else None,
-        "gpu_count": executor.gpu_count if executor else None,
-        "config": (
-            f"{executor.gpu_count}×{executor.gpu_type}"
-            if executor and executor.gpu_count and executor.gpu_count > 1
-            else (executor.gpu_type if executor else None)
-        ),
+        "gpu_count": pod_gpu_count(pod),
+        "config": _gpu_config(pod),
         "template": _format_template_name(pod.template) if pod.template else None,
         "price_per_hour": executor.price_per_hour if executor else None,
         "spent_usd": _spent_usd(pod.created_at, executor.price_per_hour if executor else None),
@@ -168,7 +176,7 @@ def build_pods_table(pods: List[PodInfo], short: bool = False, show_index: bool 
     for position, pod in enumerate(pods, start=1):
         executor = pod.executor
         if executor:
-            config = f"{executor.gpu_count}×{executor.gpu_type}" if executor.gpu_count > 1 else executor.gpu_type
+            config = _gpu_config(pod)
             price_str = f"${executor.price_per_hour:.2f}"
             price_per_hour = executor.price_per_hour
         else:
