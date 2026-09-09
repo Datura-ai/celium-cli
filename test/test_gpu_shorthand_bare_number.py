@@ -116,6 +116,13 @@ def test_unknown_gpu_type_assumes_known_when_the_listing_fails(monkeypatch):
     assert client.unknown_gpu_type("3090") is None
 
 
+def test_unknown_gpu_type_assumes_known_when_the_marketplace_is_empty():
+    # an empty /machines result has no types to list — never "Types on the marketplace:" with nothing after it
+    client = _Client(machines=[])
+
+    assert client.unknown_gpu_type("3090") is None
+
+
 # --- CLI messages ---------------------------------------------------------------------------------
 
 class _FakeLium:
@@ -124,6 +131,10 @@ class _FakeLium:
 
     def ls(self, **kwargs):
         return []
+
+    def supports(self, feature):
+        # #209: ResolveExecutorAction asks for RENT_BY_SPEC before ls(); this fake is the client-side path
+        return False
 
     def unknown_gpu_type(self, gpu_short):
         return None if gpu_short == "H100" else ["A100", "H100", "RTX4090"]

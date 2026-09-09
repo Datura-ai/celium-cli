@@ -1578,6 +1578,10 @@ class Lium:
             # the listing failed (API error, transport, or a non-JSON body): assume known — the
             # caller reports the listing failure it already has, not a typo
             return None
+        if not names:
+            # an empty marketplace has no types to show back — "Types on the marketplace:" with
+            # nothing after it would read as a typo; the caller's rented-out/no-match message fits
+            return None
         # "known" is decided the way _resolve_machine_name matches — an exact catalog name first
         # (`ls()` falls back to passing the full machine name, and tab completion offers exactly
         # those), then every extracted type, fall-through spellings included (`ti`, `xp`) — so a
