@@ -43,12 +43,14 @@ class _Client:
 
     seen: list = []
     sources: list = []
+    configs: list = []
     outcome: object = 12.5
 
     def __init__(self, config, source="sdk"):
         self.config = config
         _Client.seen.append(config.api_key)
         _Client.sources.append(source)
+        _Client.configs.append(config)
 
     def balance(self):
         if isinstance(_Client.outcome, Exception):
@@ -60,6 +62,7 @@ class _Client:
 def api(monkeypatch):
     _Client.seen = []
     _Client.sources = []
+    _Client.configs = []
     _Client.outcome = 12.5
     monkeypatch.setattr("lium.sdk.Lium", _Client)
     return _Client
@@ -81,7 +84,9 @@ def test_api_key_json_names_source_config_and_ssh_key(home, ssh_setup_ok, api):
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["ok"] is True
-    assert payload["api_key_source"] == "flag"
+    assert payload["saved_from"] == "flag"
+    # the same value `lium whoami --json` / `lium balance --json` print: where the next command reads the key
+    assert payload["api_key_source"] == f"config:{home.config_file} [api] api_key"
     assert payload["env_key"] is None
     assert payload["config_path"] == str(home.config_file)
     assert payload["ssh_key_path"].endswith("id_ed25519")
@@ -96,6 +101,8 @@ def test_a_refused_key_is_not_saved_and_exits_3(home, ssh_setup_ok, api):
     assert home.get("api.api_key") is None
     assert not home.config_file.exists()
     assert "refused" in result.output
+    # the probe client is labelled so an auth error names the flag, not the SDK's "explicit"
+    assert api.configs[0].api_key_source == "--api-key"
 
 
 def test_a_refused_key_under_json_is_an_envelope_on_stderr(home, ssh_setup_ok, api):
@@ -105,7 +112,10 @@ def test_a_refused_key_under_json_is_an_envelope_on_stderr(home, ssh_setup_ok, a
 
     assert result.exit_code == EXIT_API_ERROR
     assert result.stdout == ""
-    assert json.loads(result.stderr)["error"]["code"] == "invalid_api_key"
+    error = json.loads(result.stderr)["error"]
+    assert error["code"] == "invalid_api_key"
+    # nothing was saved, so the generic "lium config get api.api_key shows which one is used" would mislead
+    assert "nothing was saved" in error["hint"] and "lium.io/api-keys" in error["hint"]
 
 
 def test_the_check_uses_the_flag_key_not_the_environment_or_the_file(monkeypatch, home, ssh_setup_ok, api):
@@ -122,6 +132,8 @@ def test_the_check_uses_the_flag_key_not_the_environment_or_the_file(monkeypatch
 
     payload = json.loads(CliRunner().invoke(cli, ["init", "--api-key", "sk_flag2", "--json"]).output)
     assert payload["env_key"] == "LIUM_API_KEY"      # the JSON caller sees the same warning as a field
+    assert payload["saved_from"] == "flag"
+    assert payload["api_key_source"] == "env:LIUM_API_KEY"   # the exported key is what the next command uses
 
 
 @pytest.mark.parametrize("outcome", [
@@ -191,7 +203,8 @@ def test_env_key_skips_the_browser_and_saves_nothing(monkeypatch, home, ssh_setu
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    assert payload["api_key_source"] == "env"
+    assert payload["saved_from"] == "env"
+    assert payload["api_key_source"] == "env:LIUM_API_KEY"   # what `lium whoami --json` says too
     assert payload["env_key"] == "LIUM_API_KEY"
     assert home.get_all().get("api", {}).get("api_key") is None   # the key is not written
     assert home.get("ssh.key_path")                              # the SSH half still happens
@@ -252,7 +265,7 @@ def test_env_key_wins_over_session_and_no_browser(monkeypatch, home, ssh_setup_o
     for args in (["init", "--session", "abc", "--json"], ["init", "--no-browser", "--json"]):
         result = CliRunner().invoke(cli, args)
         assert result.exit_code == 0, (args, result.output)
-        assert json.loads(result.output)["api_key_source"] == "env", args
+        assert json.loads(result.output)["saved_from"] == "env", args
 
 
 def test_json_needs_a_key_source(home, ssh_setup_ok, api):
@@ -260,7 +273,7 @@ def test_json_needs_a_key_source(home, ssh_setup_ok, api):
     for args in (["init", "--json"], ["init", "--no-browser", "--json"], ["init", "--session", "abc", "--json"]):
         result = CliRunner().invoke(cli, args)
         assert result.exit_code == EXIT_CONFIGURATION_ERROR, args
-        assert json.loads(result.output)["error"]["code"] == "conflicting_options", args
+        assert json.loads(result.output)["error"]["code"] == "invalid_arguments", args
     assert api.seen == []
 
 

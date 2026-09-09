@@ -22,6 +22,14 @@ HEADLESS_HINT = (
     f"No browser? Pass the key: 'lium init --api-key <key>' (create one at {KEYS_URL}), "
     "or export LIUM_API_KEY and skip init."
 )
+# What to do next when the key passed with --api-key is not saved; nothing was written, so the
+# generic hints ("'lium config get api.api_key' shows which one is used") would point at nothing.
+_FLAG_KEY_HINTS = {
+    "invalid_api_key": "The key passed with --api-key was refused and nothing was saved; "
+                       f"create one at {KEYS_URL} and pass it again",
+    "api_unreachable": "Nothing was saved; check the network (or LIUM_BASE_URL) and run the same command again",
+    "empty_api_key": "Nothing was saved; --api-key needs the key itself (an unset shell variable expands to nothing)",
+}
 
 
 @click.command("init")
@@ -54,14 +62,14 @@ def init_command(api_key: str | None, no_browser: bool, session: str | None, jso
     """
     if api_key is not None and (session or no_browser):
         raise CliFailure(
-            "conflicting_options",
+            "invalid_arguments",
             "--api-key already provides the key; drop --no-browser / --session.",
             EXIT_CONFIGURATION_ERROR,
         )
     if json_output and api_key is None and not _env_key_name():
         # the browser flows talk to a person (URLs, "waiting…"); a machine caller has a key
         raise CliFailure(
-            "conflicting_options",
+            "invalid_arguments",
             "--json needs --api-key or an exported LIUM_API_KEY; the browser flows print for a person.",
             EXIT_CONFIGURATION_ERROR,
         )
@@ -73,7 +81,9 @@ def init_command(api_key: str | None, no_browser: bool, session: str | None, jso
         if not save_result.ok:
             code = save_result.data.get("code", "invalid_api_key")
             exit_code = EXIT_CONFIGURATION_ERROR if code == "empty_api_key" else EXIT_API_ERROR
-            raise CliFailure(code, save_result.error, exit_code)
+            # the generic hints point at the saved key ('lium config get api.api_key'); the key
+            # checked here came from the flag and nothing was saved
+            raise CliFailure(code, save_result.error, exit_code, hint=_FLAG_KEY_HINTS[code])
         ssh_path = _setup_ssh()
         _report("flag", ssh_path, json_output)
         return
@@ -148,26 +158,32 @@ def _setup_ssh() -> str:
     return config.get("ssh.key_path") or ""
 
 
-def _report(api_key_source: str, ssh_key_path: str, json_output: bool) -> None:
-    """One line per fact the caller needs next: where the key came from, where it lives, which SSH key."""
+def _report(saved_from: str, ssh_key_path: str, json_output: bool) -> None:
+    """One line per fact the caller needs next: where the key came from, where it lives, which SSH key.
+
+    ``saved_from`` is init's own word for how this run got the key (flag/env/config/session/browser);
+    ``api_key_source`` in the JSON is the same value ``lium whoami --json`` and ``lium balance --json``
+    print — where the next command will read the key from (``env:LIUM_API_KEY`` or ``config:<path> …``).
+    """
     config_path = str(config.get_config_path())
     env_name = _env_key_name()
     if json_output:
         click.echo(json.dumps({
             "ok": True,
-            "api_key_source": api_key_source,
+            "api_key_source": config.get_source("api.api_key"),
+            "saved_from": saved_from,
             "env_key": env_name,          # set ⇒ this variable wins over the saved key while exported
             "config_path": config_path,
             "ssh_key_path": ssh_key_path,
         }, sort_keys=True))
         return
-    if api_key_source == "flag":
+    if saved_from == "flag":
         ui.success(f"API key checked and saved to {config_path}")
         if env_name:
             ui.warning(f"{env_name} is set and wins over the saved key while it is exported")
-    elif api_key_source == "env":
+    elif saved_from == "env":
         ui.info(f"Using the API key from {env_name}; the key is not written to {config_path}")
-    elif api_key_source == "config":
+    elif saved_from == "config":
         ui.info(f"API key already saved in {config_path}")
     if ssh_key_path:
         ui.info(f"SSH key: {ssh_key_path}")

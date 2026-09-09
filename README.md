@@ -425,15 +425,18 @@ token = …
 ```
 
 Key resolution: an explicit `--workspace` / `LIUM_WORKSPACE` uses the key saved for it and nothing else (exit 2 when none is saved). Otherwise, first match wins: `LIUM_API_API_KEY` / `LIUM_API_KEY` (the env key, in the CLI's order), the key saved for `[workspaces] active`, `[api] api_key`. The `[workspace.<name>]` section is written when a key is saved (`lium keys create --save`, or `lium workspaces use` run with a key that acts there); `lium workspaces delete` drops it. Sections are keyed by the lower-cased name, so a save into a section that already holds another workspace's id (two workspaces with one name) is refused (exit 2) rather than overwriting the first one's key — drop that section or rename one of the workspaces first.
-For a machine with no browser — an agent's sandbox, CI, a
-container — `lium init --api-key <key>` checks the key against `/users/me`, saves it to the file with mode
-600 and sets up the SSH key, without opening anything or asking anything; `--json` prints
-`{"ok", "api_key_source", "env_key", "config_path", "ssh_key_path"}` (`--json` needs `--api-key` or an exported
-`LIUM_API_KEY`; the browser flows print for a person). A refused key exits 3 (`invalid_api_key`), an API that
-cannot be reached exits 3 (`api_unreachable`), an empty value exits 2 (`empty_api_key`); none of them saves
-anything. With `LIUM_API_KEY` already exported, `lium init` skips the browser, sets up the SSH key and says the
-key is coming from the environment — the SSH path is written to the file, the key is not; `--api-key` warns when
-`LIUM_API_KEY` is also exported (`env_key` in the JSON).
+
+For a machine with no browser — an agent's sandbox, CI, a container — `lium init --api-key <key>` checks the
+key against `/users/me`, saves it to the file with mode 600 and sets up the SSH key, without opening anything or
+asking anything; `--json` prints `{"ok", "api_key_source", "saved_from", "env_key", "config_path", "ssh_key_path"}`
+— `api_key_source` is the same value `lium whoami --json` prints (`env:LIUM_API_KEY` or `config:<path> [api]
+api_key`: where the next command reads the key), `saved_from` how this run got it (`flag`, `env`, `config`,
+`session`, `browser`). `--json` needs `--api-key` or an exported `LIUM_API_KEY`; the browser flows print for a
+person. A refused key exits 3 (`invalid_api_key`), an API that cannot be reached exits 3 (`api_unreachable`), an
+empty value exits 2 (`empty_api_key`); none of them saves anything, and the hint says so. With `LIUM_API_KEY`
+already exported, `lium init` skips the browser, sets up the SSH key and says the key is coming from the
+environment — the SSH path is written to the file, the key is not; `--api-key` warns when `LIUM_API_KEY` is also
+exported (`env_key` in the JSON).
 
 SSH host keys of pods are pinned on first use under `~/.lium/known_hosts/<pod-id>`
 (`lium ssh`, `lium up`, and the SDK's `exec`, `stream_exec`, `rsync`). `reboot`, `edit`,
