@@ -145,10 +145,10 @@ def test_rows_read_oldest_first_with_client_and_ip():
             "2026-09-08 22:10:00Z",
             "key: create",
             "laptop",
-            "session",
+            "session u2",
             "portal",
             "—",
-        ],  # a team-mate's entry: no ip
+        ],  # a team-mate's entry: no ip; the By column names the member
         [
             "2026-09-08 23:59:22Z",
             "pod: delete",
@@ -222,11 +222,39 @@ def test_filters_reach_the_sdk_and_a_pod_becomes_the_resource(monkeypatch):
     ).total_seconds() == pytest.approx(24 * 3600, abs=60)
 
 
-def test_a_full_page_says_older_entries_exist(monkeypatch):
+def test_a_full_page_names_the_cursor_for_the_next_page(monkeypatch):
     result = _run(monkeypatch, next_cursor="e3")
 
     assert result.exit_code == 0, result.output
     assert "Older entries may exist" in result.output
+    assert "--cursor" in result.output and "e3" in result.output
+
+
+def test_cursor_reaches_the_sdk(monkeypatch):
+    result = _run(monkeypatch, "--cursor", "e3")
+
+    assert result.exit_code == 0, result.output
+    [call] = _FakeLium.calls
+    assert call["cursor"] == "e3"
+
+
+def test_an_empty_cursor_page_says_no_older_entries(monkeypatch):
+    result = _run(monkeypatch, "--cursor", "e3", items=[])
+
+    assert result.exit_code == 0, result.output
+    assert "No older entries" in result.output
+
+
+def test_cursor_needs_account(monkeypatch):
+    monkeypatch.setattr(audit_module, "Lium", _FakeLium)
+    monkeypatch.setattr(audit_module, "ensure_config", lambda: None)
+    _FakeLium.calls = []
+
+    result = CliRunner().invoke(cli, ["audit", "--cursor", "e3"])
+
+    assert result.exit_code == EXIT_CONFIGURATION_ERROR, result.output
+    assert "--cursor need --account" in result.output
+    assert _FakeLium.calls == []
 
 
 def test_no_entries_says_so(monkeypatch):
@@ -243,7 +271,7 @@ def test_action_and_source_need_account(monkeypatch):
     result = CliRunner().invoke(cli, ["audit", "--action", "pod."])
 
     assert result.exit_code == EXIT_CONFIGURATION_ERROR
-    assert "--action and --source need --account" in result.output
+    assert "--action, --source and --cursor need --account" in result.output
 
 
 def test_an_unknown_source_is_refused_by_click(monkeypatch):

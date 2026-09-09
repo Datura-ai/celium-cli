@@ -132,6 +132,17 @@ def account_resource(entry: Dict[str, Any]) -> str:
     return (entry.get("resource_id") or "")[:8] or "—"
 
 
+def account_who(entry: Dict[str, Any]) -> str:
+    """Like `who`, but a session actor names its user: in a team account two members are told apart by the
+    first 8 characters of `actor.user_id` (the same length the By column gives an API key id)."""
+    actor = entry.get("actor")
+    if not actor or actor.get("auth") == "api_key":
+        return who(entry)
+    user_id = str(actor.get("user_id") or "")[:8]
+    auth = actor.get("auth") or "?"
+    return f"{auth} {user_id}" if user_id else auth
+
+
 def account_rows(entries: List[Dict[str, Any]]) -> List[List[str]]:
     # oldest first, like the pod log; `ip` is empty on a team-mate's entries — the server shows an address to its
     # owner only
@@ -140,7 +151,7 @@ def account_rows(entries: List[Dict[str, Any]]) -> List[List[str]]:
             _when(e.get("created_at")),
             account_what(e),
             account_resource(e),
-            who(e),
+            account_who(e),
             e.get("source") or "—",
             e.get("ip") or "—",
         ]
@@ -177,6 +188,9 @@ def _resolve_pod_id(lium: Lium, target: str) -> str:
 @click.option(
     "--source", "source", type=click.Choice(ACCOUNT_SOURCES), help="With --account: only requests from this client"
 )
+@click.option(
+    "--cursor", "cursor", help="With --account: continue from the next_cursor the previous page printed (older entries)"
+)
 @handle_errors
 def audit_command(
     pod: Optional[str],
@@ -187,6 +201,7 @@ def audit_command(
     account: bool,
     action: Optional[str],
     source: Optional[str],
+    cursor: Optional[str],
 ):
     """Show who did what to the account's pods, and when.
 
@@ -206,14 +221,15 @@ def audit_command(
       lium audit --json | jq '.[] | select(.actor.api_key_name == "ci")'
       lium audit --account --since 7d  # who did what from where, this week
       lium audit --account --action pod.delete --source cli --json
+      lium audit --account --cursor <next_cursor>   # the next (older) page, as the previous page printed it
     """
     if not json_output:
         ensure_config()
 
-    if (action or source) and not account:
+    if (action or source or cursor) and not account:
         raise CliFailure(
             "account_only",
-            "--action and --source need --account.",
+            "--action, --source and --cursor need --account.",
             EXIT_CONFIGURATION_ERROR,
         )
     if account and limit > ACCOUNT_LIMIT_MAX:
@@ -235,7 +251,7 @@ def audit_command(
     since_at = parse_since(since) if since else None
     pod_id = _resolve_pod_id(lium, pod) if pod else None
     if account:
-        _account_log(lium, since_at, pod_id, api_key_id, limit, json_output, action, source)
+        _account_log(lium, since_at, pod_id, api_key_id, limit, json_output, action, source, cursor)
         return
     try:
         events = lium.events(since=since_at, pod_id=pod_id, api_key_id=api_key_id, limit=limit)
@@ -266,8 +282,10 @@ def _account_log(
     json_output: bool,
     action: Optional[str],
     source: Optional[str],
+    cursor: Optional[str],
 ) -> None:
-    # --limit 200 is the pod log's default; the account log pages at 100 and caps at 500 — one page is what is shown
+    # --limit 200 is the pod log's default; the account log pages at 100 and caps at 500 — one page is shown per
+    # call, the next one with --cursor
     try:
         page = lium.audit_log(
             since=since_at,
@@ -275,6 +293,7 @@ def _account_log(
             source=source,
             api_key_id=api_key_id,
             resource_id=pod_id,
+            cursor=cursor,
             limit=limit,
         )
     except LiumNotFoundError:
@@ -295,6 +314,9 @@ def _account_log(
         click.echo(json.dumps(page, indent=2, ensure_ascii=False))
         return
     if not entries:
+        if cursor:
+            ui.info("No older entries.")
+            return
         ui.info(
             "No account activity recorded"
             + (" in that window" if since_at else "")
@@ -306,5 +328,6 @@ def _account_log(
     )
     if page.get("next_cursor"):
         ui.info(
-            "Older entries may exist: raise --limit (up to 500) or page with next_cursor from --json."
+            f"Older entries may exist: lium audit --account --cursor {page['next_cursor']} (with the same filters) "
+            "shows the next page."
         )
