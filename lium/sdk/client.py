@@ -2332,7 +2332,10 @@ class Lium:
         source pod gets a one-off ed25519 key, its public half is added to the
         destination pod's ``authorized_keys`` for the duration of the copy, the
         source runs ``rsync`` straight to the destination, and both halves are
-        removed again whatever happened.
+        removed again whatever happened. The source verifies the destination with
+        the host key this client pinned for it (``~/.lium/known_hosts/<pod id>``,
+        written by the grant connection), copied next to the transfer key; no pin
+        means no copy (``LIUM_SSH_INSECURE=1`` accepts any key, as everywhere).
 
         Args:
             src_pod, src_path: Where to copy from. A trailing ``/`` on a
@@ -2344,6 +2347,7 @@ class Lium:
             The :meth:`exec` result of the rsync on the source pod.
 
         Raises:
+            LiumHostKeyError: When nothing is pinned for the destination pod.
             LiumError: When the copy fails; the message carries rsync's stderr
                 (``rsync: command not found`` means ``apt-get install -y rsync``
                 on the pod named).
@@ -2391,10 +2395,31 @@ class Lium:
                 )
             authorized = True
 
-            ssh_opts = (
-                f"ssh -i {key_path} -p {dst_pod.ssh_port} -o StrictHostKeyChecking=no "
-                f"-o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
-            )
+            # The source pod must verify the destination the way this client does: the grant above went
+            # through ssh_connection, which pinned dst's host key under ~/.lium/known_hosts/<pod id>, so
+            # that pin is copied next to the transfer key and ssh on the source is told to insist on it.
+            # LIUM_SSH_INSECURE=1 keeps the old accept-anything hop, like every other SSH path here.
+            if ssh_insecure():
+                host_key_opts = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+            else:
+                pinned = self._pinned_host_key_lines(dst_pod)
+                if not pinned:
+                    raise LiumHostKeyError(
+                        f"No pinned host key for pod {dst_pod.name or dst_pod.huid} under "
+                        f"{known_hosts_path(dst_pod)}; the transfer key was not used. Connect to it once "
+                        f"(lium ssh {dst_pod.huid}) or set {_SSH_INSECURE_ENV}=1 to skip host key checks."
+                    )
+                pin_copy = self.exec(
+                    src_pod,
+                    command=f"printf '%s\\n' {shlex.quote(pinned)} > {key_path}.known_hosts && chmod 600 {key_path}.known_hosts",
+                )
+                if not pin_copy["success"]:
+                    raise LiumError(
+                        f"Could not place the destination's host key on pod {src_pod.name or src_pod.huid}: "
+                        f"{pin_copy['stderr'].strip()}"
+                    )
+                host_key_opts = f"-o StrictHostKeyChecking=yes -o UserKnownHostsFile={key_path}.known_hosts"
+            ssh_opts = f"ssh -i {key_path} -p {dst_pod.ssh_port} {host_key_opts} -o LogLevel=ERROR"
             rsync_cmd = (
                 f"rsync {shlex.join(self.rsync_options(bwlimit=bwlimit, exclude=exclude, delete=delete))} "
                 f"-e {shlex.quote(ssh_opts)} {shlex.quote(src_path)} "
@@ -2420,7 +2445,20 @@ class Lium:
                         f"lium exec {dst_pod.huid} {shlex.quote(revoke)}"
                     ),
                 )
-            self._exec_quietly(src_pod, f"rm -f {key_path} {key_path}.pub")
+            self._exec_quietly(src_pod, f"rm -f {key_path} {key_path}.pub {key_path}.known_hosts")
+
+    @staticmethod
+    def _pinned_host_key_lines(pod: PodInfo) -> str:
+        """The destination's pinned host key(s) as ``known_hosts`` lines, ``""`` when nothing is pinned.
+
+        ``ssh_connection`` writes the file (``[host]:port key-type key``) on the first connection to the pod;
+        the file is per pod, so every line in it is this pod's.
+        """
+        try:
+            text = known_hosts_path(pod).read_text()
+        except OSError:
+            return ""
+        return "\n".join(line for line in text.splitlines() if line.strip() and not line.startswith("#"))
 
     @staticmethod
     def revoke_transfer_key_command(marker: str) -> str:

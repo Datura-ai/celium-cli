@@ -161,6 +161,20 @@ KEYGEN = "ssh-keygen -q -t ed25519"
 PUBKEY = "ssh-ed25519 AAAAC3Nza... root@dev"
 
 
+DST_PIN = "[5.6.7.8]:31000 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDstPodKey"
+
+
+@pytest.fixture
+def dst_pinned(monkeypatch, tmp_path):
+    """The destination's host key as ssh_connection pins it on the first connection (the grant exec)."""
+    monkeypatch.setattr("lium.sdk.client.Path.home", lambda: tmp_path)
+    monkeypatch.delenv("LIUM_SSH_INSECURE", raising=False)
+    pin = tmp_path / ".lium" / "known_hosts" / DST.id
+    pin.parent.mkdir(parents=True)
+    pin.write_text(DST_PIN + "\n")
+    return pin
+
+
 def _cp_client(rsync_answer=None, **extra):
     answers = {
         KEYGEN: {"success": True, "exit_code": 0, "stdout": PUBKEY + "\n", "stderr": ""},
@@ -170,19 +184,24 @@ def _cp_client(rsync_answer=None, **extra):
     return _RecordingLium(answers)
 
 
-def test_cp_grants_a_one_off_key_copies_and_revokes_it():
+def test_cp_grants_a_one_off_key_copies_and_revokes_it(dst_pinned):
     client = _cp_client()
 
     client.cp(SRC, "/workspace/ckpt/", DST, "/workspace/ckpt/", bwlimit=3000, exclude=["*.tmp"])
 
     pods, commands = zip(*client.sent)
-    assert pods == ("swift-fox-c8", "brave-lion-11", "swift-fox-c8", "brave-lion-11", "swift-fox-c8")
-    keygen, grant, copy, revoke, remove_key = commands
+    assert pods == ("swift-fox-c8", "brave-lion-11", "swift-fox-c8", "swift-fox-c8", "brave-lion-11", "swift-fox-c8")
+    keygen, grant, pin_copy, copy, revoke, remove_key = commands
     assert keygen.startswith(KEYGEN) and "/tmp/lium-cp-" in keygen
     assert PUBKEY in grant and ">> ~/.ssh/authorized_keys" in grant
+    # the source verifies the destination with the key this client pinned, never with accept-anything
+    key_path = re.search(r"/tmp/lium-cp-[0-9a-f]{12}", keygen).group(0)
+    assert DST_PIN in pin_copy and f"> {key_path}.known_hosts" in pin_copy
+    assert f"-o StrictHostKeyChecking=yes -o UserKnownHostsFile={key_path}.known_hosts" in copy
+    assert "StrictHostKeyChecking=no" not in copy
     assert "rsync -az --partial --bwlimit=3000 '--exclude=*.tmp'" in copy
     assert "-p 31000" in copy and "root@5.6.7.8:/workspace/ckpt/" in copy and "/workspace/ckpt/ " in copy
-    assert "StrictHostKeyChecking=no" in copy
+    assert f"{key_path}.known_hosts" in remove_key
     assert "grep -vF" in revoke and "authorized_keys" in revoke
     marker = re.search(r"lium-cp-[0-9a-f]{12}", grant).group(0)
     assert f"authorized_keys.{marker}" in revoke, "the scratch file carries this run's marker"
@@ -191,7 +210,34 @@ def test_cp_grants_a_one_off_key_copies_and_revokes_it():
     assert remove_key.startswith("rm -f /tmp/lium-cp-")
 
 
-def test_cp_revokes_the_key_even_when_the_copy_fails():
+def test_cp_refuses_to_copy_when_the_destination_has_no_pinned_key(monkeypatch, tmp_path):
+    """Fail closed: no pin → no transfer; the key is revoked and removed all the same."""
+    from lium.sdk import LiumHostKeyError
+
+    monkeypatch.setattr("lium.sdk.client.Path.home", lambda: tmp_path)
+    monkeypatch.delenv("LIUM_SSH_INSECURE", raising=False)
+    client = _cp_client()
+
+    with pytest.raises(LiumHostKeyError, match="No pinned host key"):
+        client.cp(SRC, "/a", DST, "/b")
+
+    commands = [c for _, c in client.sent]
+    assert not any(c.startswith("rsync") for c in commands)
+    assert any("grep -vF" in c for c in commands) and any(c.startswith("rm -f /tmp/lium-cp-") for c in commands)
+
+
+def test_cp_accepts_any_destination_key_only_under_lium_ssh_insecure(monkeypatch, tmp_path):
+    monkeypatch.setattr("lium.sdk.client.Path.home", lambda: tmp_path)
+    monkeypatch.setenv("LIUM_SSH_INSECURE", "1")
+    client = _cp_client()
+
+    client.cp(SRC, "/a", DST, "/b")
+
+    copy = next(c for _, c in client.sent if c.startswith("rsync"))
+    assert "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" in copy
+
+
+def test_cp_revokes_the_key_even_when_the_copy_fails(dst_pinned):
     client = _cp_client(rsync_answer={
         "success": False, "exit_code": 127, "stdout": "", "stderr": "bash: rsync: command not found",
     })
@@ -234,7 +280,7 @@ def test_cp_within_one_pod_is_a_local_rsync():
     assert client.sent == [("swift-fox-c8", "rsync -az --partial /workspace/a/ /workspace/b/")]
 
 
-def test_cp_cleanup_failure_is_a_warning_not_the_error():
+def test_cp_cleanup_failure_is_a_warning_not_the_error(dst_pinned):
     client = _cp_client(**{"grep -vF": {"success": False, "exit_code": 1, "stdout": "", "stderr": "denied"}})
 
     with pytest.warns(UserWarning, match="cleanup") as caught:
