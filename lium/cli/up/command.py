@@ -360,7 +360,8 @@ def up_command(
     executor = result.data["executor"]
     # What the rental bills: the server's figure when it picked (a split of a larger node
     # costs price_per_gpu × count, not the node's total), else the node's total $/h.
-    price_per_hour = result.data.get("price_per_hour") or executor.price_per_hour
+    server_price_per_hour = result.data.get("price_per_hour")
+    price_per_hour = server_price_per_hour or executor.price_per_hour
     # The GPUs the rental gets, next to what they cost: on the spec path the server may rent a
     # split of a larger node, so the node's own count would overstate it.
     gpu_count = result.data.get("gpu_count") or executor.gpu_count
@@ -446,10 +447,15 @@ def up_command(
             pass
 
     if budget_usd is not None:
-        # What the rental will bill: price_per_gpu × GPUs for a split, the node's total otherwise.
-        # No --count rents the node's free GPUs (rented_gpu_count), not the whole host: on a
-        # partially rented split host the host total would overstate the price and refuse a valid budget.
-        price_per_hour = rental_price_per_hour(executor, count if count is not None else rented_gpu_count(executor))
+        # What the rental will bill. On the spec path the server priced the pick (price_per_hour
+        # above, #209) and that figure stands. On the node path: price_per_gpu × GPUs for a split,
+        # the node's total otherwise; no --count rents the node's free GPUs (rented_gpu_count), not
+        # the whole host — on a partially rented split host the host total would overstate the
+        # price and refuse a valid budget.
+        if server_price_per_hour is None:
+            price_per_hour = rental_price_per_hour(
+                executor, count if count is not None else rented_gpu_count(executor)
+            )
         hours = budget_hours(budget_usd, price_per_hour)
         if hours is None:
             raise CliFailure(

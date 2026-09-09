@@ -205,12 +205,13 @@ def test_ps_spent_column_is_wide_enough_for_a_three_digit_cap():
 # --- lium up --budget -----------------------------------------------------------------------
 
 
-def _run_up(monkeypatch, args, *, price=PRICE, pod=None, removed=None, executor=None):
+def _run_up(monkeypatch, args, *, price=PRICE, pod=None, removed=None, executor=None, resolve_data=None):
     executor = executor or SimpleNamespace(
         id="exec-1", huid="brave-fox-3a", gpu_count=1, gpu_type="H100",
         price_per_hour=price, available_port_count=10, download_speed=1000,
     )
     scheduled = {}
+    resolve_data = {"executor": executor, **(resolve_data or {})}
 
     class _Lium:
         def get_deployment_estimate(self, *a, **k):
@@ -222,7 +223,7 @@ def _run_up(monkeypatch, args, *, price=PRICE, pod=None, removed=None, executor=
 
     class _Resolve:
         def execute(self, ctx):
-            return ActionResult(ok=True, data={"executor": executor})
+            return ActionResult(ok=True, data=resolve_data)
 
     class _Template:
         def execute(self, ctx):
@@ -316,6 +317,25 @@ def test_up_budget_without_a_count_prices_the_free_gpus_not_the_whole_host(monke
     assert result.exit_code == 0, result.output
     assert scheduled.get("rented") is True
     assert "Budget $1.00 at $10.00/h" in result.output
+
+
+def test_up_budget_on_the_spec_path_uses_the_servers_price(monkeypatch):
+    """`--gpu H100 --budget`: the server picked and priced the rent (#209) — a 1-GPU split of an
+    8×H100 host at $2/GPU/h bills $2/h, so $1 buys 30 min; pricing the host's free GPUs instead
+    would say $16/h and refuse the budget."""
+    host = SimpleNamespace(
+        id="exec-1", huid="brave-fox-3a", gpu_count=8, available_gpu_count=8, gpu_type="H100",
+        price_per_hour=16.0, price_per_gpu=2.0, available_port_count=10, download_speed=1000, location={},
+    )
+    pod, _created = _fresh_pod(minutes_ago=1)
+    result, scheduled = _run_up(
+        monkeypatch, ["--budget", "1.00"], pod=pod, executor=host,
+        resolve_data={"price_per_hour": 2.0, "gpu_count": 1, "spec": {"gpu_type": "H100", "gpu_count": 1}},
+    )
+
+    assert result.exit_code == 0, result.output
+    assert scheduled.get("rented") is True
+    assert "Budget $1.00 at $2.00/h" in result.output
 
 
 def test_up_budget_without_a_node_price_is_refused_before_renting(monkeypatch):
