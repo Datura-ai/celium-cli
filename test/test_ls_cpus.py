@@ -114,6 +114,9 @@ def test_up_passes_min_cpus_to_the_listing_and_names_it_when_nothing_matches(mon
             seen.update(kwargs)
             return []
 
+        def unknown_gpu_type(self, gpu_short):
+            return None  # H100 is a known type: the miss is the CPU floor, not the GPU name
+
     monkeypatch.setattr("lium.cli.ls.command.ls_store_executor", lambda **kwargs: [])
     result = ResolveExecutorAction().execute({"lium": _FakeLium(), "gpu": "H100", "min_cpus": 24})
 
