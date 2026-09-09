@@ -311,19 +311,6 @@ _HINTS_BY_CODE: Dict[str, str] = {
     "not_found": "The resource is gone or the id is wrong; list it again and retry",
     "rate_limited": "Wait a few seconds and retry; back off if it repeats",
     "server_error": "Retry; if it persists, re-run with LIUM_DEBUG=1 and report the request",
-    # Not raised by any command on this branch yet; the non-interactive guard
-    # (lium/cli/ui.py confirm, DAH-2893) is what starts emitting them.
-    "no_api_key": "Set LIUM_API_KEY, or run 'lium init' (headless: 'lium init --no-browser')",
-    "invalid_api_key": "Check the key: 'lium config get api.api_key' shows which one is used; "
-                       "a new one comes from https://lium.io/api-keys",
-    "permission_denied": "Check the account with 'lium balance'; an insufficient balance is "
-                         "fixed with 'lium topup' or 'lium fund', a pending verification on https://lium.io",
-    "insufficient_balance": "Add funds with 'lium topup' or 'lium fund', or pick a cheaper node "
-                            "('lium ls --sort price_total')",
-    "pod_not_found": "Run 'lium ps' to list pods; a name, huid, id or 1-based index is accepted",
-    "not_found": "The resource is gone or the id is wrong; list it again and retry",
-    "rate_limited": "Wait a few seconds and retry; back off if it repeats",
-    "server_error": "Retry; if it persists, re-run with LIUM_DEBUG=1 and report the request",
     # Raised by the non-interactive guard (lium/cli/ui.py confirm/prompt, DAH-2883).
     "confirmation_required": "Re-run with --yes",
     "input_required": "Pass the value as an option instead of answering a prompt",
