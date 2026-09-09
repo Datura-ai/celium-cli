@@ -201,6 +201,25 @@ def test_mine_status_hotkey_flag_means_the_provider_hotkey(patched_client, monke
     assert result.exit_code == 1 and "ARG_INVALID" in result.output and "--hotkey" in result.output
 
 
+def test_mine_status_refuses_an_ss58_as_the_hotkey_name(patched_client, monkeypatch):
+    """`lium mine -k` takes an ss58; `mine status --hotkey` is the wallet hotkey NAME. An ss58 there would find no
+    wallet and end in PORTAL_AUTH_INVALID — it is refused as ARG_INVALID naming the flag, before any request."""
+    monkeypatch.delenv("LIUM_PROVIDER_HOTKEY", raising=False)
+    portal = patched_client(IDLE_FAILED)
+    ss58 = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY"
+
+    result = CliRunner().invoke(cli, ["mine", "status", "e-1", "--hotkey", ss58])
+    assert result.exit_code == 1, result.output
+    assert "ARG_INVALID" in result.output and "wallet hotkey name" in result.output and "SS58" in result.output
+    assert portal.gets == []
+
+    result = CliRunner().invoke(cli, ["mine", "status", "e-1", "--json", "-k", ss58])
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.output.strip())
+    assert payload["ok"] is False and payload["error"]["code"] == "ARG_INVALID"
+    assert portal.gets == []
+
+
 def test_mine_status_help_and_usage_carry_the_typed_name(patched_client, monkeypatch):
     """`lium mine status --help` is the status command's help, not `lium mine`'s; a missing node id is a
     usage error under `lium mine status`, not click's composed `lium mine status node status`."""

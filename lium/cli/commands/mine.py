@@ -15,6 +15,8 @@ from rich.table import Table
 
 from ..utils import console, handle_errors, timed_step_status
 
+_SS58_HOTKEY = r"[1-9A-HJ-NP-Za-km-z]{40,60}"  # the shape `lium mine -k` validates and `mine status` refuses
+
 
 # --------------------------
 # Helpers
@@ -184,7 +186,7 @@ def _setup_executor_env(
     def _valid_port(p: int) -> bool:
         return isinstance(p, int) and 1 <= p <= 65535
 
-    if not re.fullmatch(r"[1-9A-HJ-NP-Za-km-z]{40,60}", hotkey or ""):
+    if not re.fullmatch(_SS58_HOTKEY, hotkey or ""):
         raise Exception(f"Invalid hotkey format: {hotkey}")
 
     for p, name in [(internal_port, "INTERNAL_PORT"),
@@ -624,6 +626,20 @@ def _mine_status(args: list[str], hotkey: Optional[str] = None) -> int:
         click.echo(f"  {'':<24}  LIUM_PROVIDER_HOTKEY / ~/.lium/config.ini).")
         return 0
     group_args = ["--json"] if "--json" in args else []
+    if hotkey and re.fullmatch(_SS58_HOTKEY, hotkey):
+        # `lium mine -k` takes the miner's ss58; here the same flag is the wallet hotkey NAME the portal is
+        # signed in with. An ss58 would find no local wallet and end in PORTAL_AUTH_INVALID with no word
+        # about the flag — say so before any request goes out.
+        from lium.cli.provider._render import emit_error
+        from lium.provider.errors import ARG_INVALID, ProviderError
+
+        own_ctx.obj = {"provider_opts": {"json": bool(group_args)}}
+        return emit_error(own_ctx, ProviderError(
+            "--hotkey for 'lium mine status' is the wallet hotkey name the portal is signed in with "
+            "(as for 'lium provider -k'), not the SS58 address 'lium mine' takes",
+            code=ARG_INVALID,
+            hint="Re-run with the wallet hotkey name, or set LIUM_PROVIDER_HOTKEY.",
+        ))
     if hotkey:
         group_args += ["--hotkey", hotkey]
     sub_args = [a for a in args if a != "--json"]
@@ -646,7 +662,7 @@ def _mine_status(args: list[str], hotkey: Optional[str] = None) -> int:
 # CLI
 # --------------------------
 @click.command("mine", context_settings=dict(ignore_unknown_options=True, allow_extra_args=True), add_help_option=False)
-@click.option("--hotkey", "-k", help="Miner hotkey SS58 address")
+@click.option("--hotkey", "-k", help="Miner hotkey SS58 address (for `mine status`: the wallet hotkey name)")
 @click.option("--dir", "-d", "dir_", default="compute-subnet", help="Target directory")
 @click.option("--branch", "-b", default="main")
 @click.option("--auto", "-a", is_flag=True)
