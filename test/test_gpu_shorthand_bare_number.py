@@ -99,6 +99,10 @@ def test_gpu_short_types_and_unknown_gpu_type():
     assert client.unknown_gpu_type("rtx pro 6000") is None
     assert client.unknown_gpu_type("3090") == types
     assert client.unknown_gpu_type("H1000") == types
+    # a fall-through spelling the listing resolves (`_resolve_machine_name` matches it) is known, even
+    # though gpu_short_types does not offer it — a typed value that rents must never be called a typo
+    assert client.unknown_gpu_type("V") is None
+    assert client.unknown_gpu_type("super") is None
 
 
 def test_unknown_gpu_type_assumes_known_when_the_listing_fails(monkeypatch):

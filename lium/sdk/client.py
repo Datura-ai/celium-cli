@@ -1573,12 +1573,16 @@ class Lium:
         (assume known), so a listing failure is reported as such and not as a typo.
         """
         try:
-            known = self.gpu_short_types()
+            names = [name for name in self.gpu_types() if name]
         except Exception:
             return None
-        if any(gpu_short_matches(gpu_short, t) for t in known):
+        # "known" is decided the way _resolve_machine_name matches — against every extracted
+        # type, fall-through spellings included (`ti`, `xp`) — so a spelling the listing
+        # resolves is never called a typo; the list shown back is the typed one gpu_short_types
+        # keeps (the fall-through words are not something --gpu can usefully take).
+        if any(gpu_short_matches(gpu_short, extract_gpu_type(name)) for name in names):
             return None
-        return known
+        return sorted({t for t in (extract_gpu_type(n) for n in names) if re.fullmatch(r"[A-Z]*\d{2,4}[A-Z]*", t)})
 
     def get_template(self, template_id: str) -> Optional[Template]:
         """Fetch a template by ID/HUID/name.
