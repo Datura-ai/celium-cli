@@ -20,7 +20,13 @@ from lium.cli.cli import cli
 from lium.cli.cp import parsing as cp_parsing
 from lium.cli.cp import command as cp_module
 from lium.cli.rsync import command as rsync_module
-from lium.cli.utils import EXIT_CONFIGURATION_ERROR, EXIT_POD_NOT_FOUND
+from lium.cli.utils import (
+    EXIT_CONFIGURATION_ERROR,
+    EXIT_GENERAL_ERROR,
+    EXIT_PERMISSION_DENIED,
+    EXIT_POD_NOT_FOUND,
+    EXIT_SSH_ERROR,
+)
 from lium.sdk import Config, Lium, LiumError, PodInfo
 
 
@@ -461,3 +467,41 @@ def test_cp_command_surfaces_a_failed_copy(monkeypatch):
 
     assert result.exit_code != 0
     assert "command not found" in result.output
+
+
+def test_cp_command_reports_a_failed_copy_as_copy_failed_not_an_api_error(monkeypatch):
+    result, _ = _run_cp(
+        monkeypatch, ["dev:/x", "train:/y", "--json"],
+        cp_result=LiumError("Copy on pod dev failed: rsync: command not found"),
+    )
+
+    assert result.exit_code == EXIT_GENERAL_ERROR
+    envelope = json.loads(result.output)
+    assert envelope["error"]["code"] == "copy_failed"
+    assert "rsync: command not found" in envelope["error"]["message"]
+    assert "apt-get install -y rsync" in envelope["error"]["hint"]
+
+
+def test_cp_command_keeps_the_api_own_refusal_class_and_exit(monkeypatch):
+    from lium.sdk import LiumPermissionError
+
+    result, _ = _run_cp(
+        monkeypatch, ["dev:/x", "train:/y", "--json"], cp_result=LiumPermissionError("Permission denied: x"),
+    )
+
+    assert result.exit_code == EXIT_PERMISSION_DENIED
+    assert json.loads(result.output)["error"]["code"] == "permission_denied"
+
+
+def test_cp_command_names_the_pin_step_when_the_destination_key_is_unknown(monkeypatch):
+    from lium.sdk import LiumHostKeyError
+
+    result, _ = _run_cp(
+        monkeypatch, ["dev:/x", "train:/y", "--json"],
+        cp_result=LiumHostKeyError("No pinned host key for pod train under /h/.lium/known_hosts/pod-2"),
+    )
+
+    assert result.exit_code == EXIT_SSH_ERROR
+    envelope = json.loads(result.output)
+    assert envelope["error"]["code"] == "ssh_host_key_unknown"
+    assert "lium ssh brave-lion-11" in envelope["error"]["hint"]

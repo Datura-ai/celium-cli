@@ -6,12 +6,14 @@ from typing import Optional
 
 import click
 
-from lium.sdk import Lium
+from lium.sdk import Lium, LiumError, LiumHostKeyError
 from lium.cli import ui
 from lium.cli.utils import (
     CliFailure,
     EXIT_CONFIGURATION_ERROR,
+    EXIT_GENERAL_ERROR,
     EXIT_POD_NOT_FOUND,
+    EXIT_SSH_ERROR,
     handle_errors,
 )
 from . import parsing
@@ -66,15 +68,35 @@ def cp_command(
     # destination) as a warning; show it as one, with the revoke command in it —
     # on stderr, so `--json` stdout stays one document (the first copy into a
     # fresh pod always warns about pinning its host key).
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        result = ui.load(
-            f"Copying {src.pod.huid}:{src.path} -> {dst.pod.huid}:{dst.path}",
-            lambda: lium.cp(
-                src.pod, src.path, dst.pod, dst.path,
-                bwlimit=bwlimit, exclude=list(exclude), delete=delete,
-            ),
-        )
+    # A copy that fails on a pod (rsync missing, the grant refused, rsync's own exit) is not an API
+    # failure: it exits 1 as `copy_failed` with the next step, not 3 as `lium_error` with "retry".
+    # The no-pin refusal keeps ssh's exit 4 but names its own next step (there is no file to delete).
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = ui.load(
+                f"Copying {src.pod.huid}:{src.path} -> {dst.pod.huid}:{dst.path}",
+                lambda: lium.cp(
+                    src.pod, src.path, dst.pod, dst.path,
+                    bwlimit=bwlimit, exclude=list(exclude), delete=delete,
+                ),
+            )
+    except LiumHostKeyError as e:
+        if "No pinned host key" not in str(e):
+            raise
+        raise CliFailure(
+            "ssh_host_key_unknown", str(e), EXIT_SSH_ERROR,
+            hint=f"Connect to the destination once with 'lium ssh {dst.pod.huid}' so its host key is pinned, "
+                 f"or set LIUM_SSH_INSECURE=1 to skip host key checks",
+        ) from e
+    except LiumError as e:
+        if getattr(e, "code", None) or type(e) is not LiumError:
+            raise  # the API's own refusal (401/403/404…) keeps its class, code and exit
+        raise CliFailure(
+            "copy_failed", str(e), EXIT_GENERAL_ERROR,
+            hint="Both pods need rsync (apt-get install -y rsync) and the destination needs flock (util-linux); "
+                 "the message carries rsync's own error",
+        ) from e
     for warning in caught:
         ui.notice_warning(str(warning.message))
 
