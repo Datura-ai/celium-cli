@@ -24,6 +24,7 @@ FILE_KEY = "file-key-0123456789abcdef-tail"
 def key_sources(monkeypatch, tmp_path):
     """No key in the environment, a config file in a temp home."""
     monkeypatch.delenv("LIUM_API_KEY", raising=False)
+    monkeypatch.delenv("LIUM_API_API_KEY", raising=False)  # it outranks LIUM_API_KEY since DAH-2896
     config_file = tmp_path / "config.ini"
     monkeypatch.setattr(sdk_config, "config_file_path", lambda: config_file)
     return config_file
