@@ -307,16 +307,20 @@ def _response_error_code(response: requests.Response) -> Optional[str]:
     return code if isinstance(code, str) and code else None
 
 
-def permission_error(detail: str, code: Optional[str] = None) -> LiumPermissionError:
+def permission_error(
+    detail: str, code: Optional[str] = None, key: Optional[str] = None
+) -> LiumPermissionError:
     """The exception for a 403: :class:`LiumInsufficientBalanceError` when the server
     refused for lack of funds (with ``required``/``available`` when it said them),
     else a plain :class:`LiumPermissionError`.
 
     ``code`` is the platform's structured ``error.code`` when the response carried
     one (:func:`_response_error_code`); it decides. Without it the message text
-    decides, which is what every server before lium-platform#210 sends.
+    decides, which is what every server before lium-platform#210 sends. ``key``
+    (the API key's fingerprint and source) is appended so the message says which
+    key the server refused.
     """
-    message = f"Permission denied: {detail}"
+    message = f"Permission denied: {detail}" + (f" ({key})" if key else "")
     if code is not None:
         insufficient = code == "insufficient_balance"
     else:
@@ -493,7 +497,7 @@ class Lium:
         timeout = kwargs.pop("timeout", 30)
         resp = requests.request(method, url, headers=request_headers, timeout=timeout, **kwargs)
         try:
-            self._raise_for_status(resp)
+            self._raise_for_status(resp, key=self.config.api_key_description)
         except Exception:
             # A streamed response (logs) that is never read keeps its socket
             # until garbage collection; the caller only gets the exception.
@@ -504,19 +508,23 @@ class Lium:
         return resp
 
     @staticmethod
-    def _raise_for_status(resp: requests.Response) -> None:
+    def _raise_for_status(resp: requests.Response, key: str = "") -> None:
         """Map a non-2xx response to the SDK exception for its status.
 
         The single place this mapping lives; every HTTP path (``_request`` and
         the streaming ``logs``) goes through it so a 403 reads the same
-        everywhere.
+        everywhere. ``key`` is the caller's ``api_key_description``; it is named
+        in the 401/403 message so the user knows which key to fix.
         """
         if resp.ok:
             return
+        # Auth failures name the key that was sent: two commands can resolve
+        # different keys (environment versus config file), and "invalid API key"
+        # alone does not say which one to fix.
         if resp.status_code == 401:
-            raise LiumAuthError("Invalid API key")
+            raise LiumAuthError(f"Invalid API key ({key})" if key else "Invalid API key")
         if resp.status_code == 403:
-            raise permission_error(_response_error_message(resp), _response_error_code(resp))
+            raise permission_error(_response_error_message(resp), _response_error_code(resp), key=key)
         if resp.status_code == 404:
             raise LiumNotFoundError(f"Resource not found: {_response_error_message(resp)}")
         if resp.status_code == 429:
@@ -2376,13 +2384,21 @@ class Lium:
             time.sleep(10)
         return None
 
+    def me(self) -> Dict[str, Any]:
+        """The account the API key belongs to, as ``GET /users/me`` returns it.
+
+        Useful keys: ``id``, ``email`` (when the server sends it), ``balance``.
+        """
+        data = self._request("GET", "/users/me").json()
+        return data if isinstance(data, dict) else {}
+
     def get_my_user_id(self) -> str:
         """Get the current user's ID.
 
         Returns:
             The ID returned by ``/users/me``.
         """
-        return self._request("GET", "/users/me").json()["id"]
+        return self.me()["id"]
 
     def update_template(
         self,

@@ -139,6 +139,7 @@ The `lium` CLI exposes the full pod lifecycle. Run `lium --help` to see everythi
 - `lium signup` - Create an account from the terminal and store its API key
 - `lium init` - Initialize configuration for an existing account (API key, SSH keys)
 - `lium balance` - Show the account balance (add `--format json` for machine-readable output)
+- `lium whoami` - Show which API key is in use, where it came from, and the account it belongs to
 - `lium ls [--gpu TYPE]` - List available nodes
 - `lium up [NODE_ID]` - Create a pod (use node ID or filters like `--gpu`, `--count`, `--country`)
 - `lium ps` - List active pods; the `#` column is the row number `rm`/`ssh`/`exec`/`scp` accept in the same shell, for 10 minutes, and only while the pod shown on that row is still listed. Use the huid in scripts.
@@ -375,6 +376,8 @@ You can also use environment variables:
 ```bash
 export LIUM_API_KEY=your-api-key-here
 ```
+
+`LIUM_API_KEY` takes precedence over the config file. To see which key a shell is using, run `lium whoami` (or `lium balance` / `lium config get api.api_key`): they print the key's fingerprint and source (`env:LIUM_API_KEY` or `config:~/.lium/config.ini [api] api_key`), and authentication errors name the same key.
 
 SSH host keys of pods are pinned on first use under `~/.lium/known_hosts/<pod-id>`
 (`lium ssh`, `lium up`, and the SDK's `exec`, `stream_exec`, `rsync`). `reboot`, `edit`,
