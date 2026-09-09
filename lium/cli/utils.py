@@ -1140,7 +1140,8 @@ def ensure_config():
                 f"{noninteractive_reason()}. Set LIUM_API_KEY, or run "
                 "'lium init --no-browser' and then 'lium init --session <ID>'",
                 EXIT_CONFIGURATION_ERROR,
-                hint="Set LIUM_API_KEY, or run 'lium init --no-browser' and then 'lium init --session <ID>'",
+                hint="Set LIUM_API_KEY, or run 'lium init --no-browser' and then 'lium init --session <ID>'; "
+                     "no account yet? 'lium signup --email you@example.com' creates one and stores its key",
             )
         # Setup API key
         action = SetupApiKeyAction()

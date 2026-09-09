@@ -694,6 +694,21 @@ def test_missing_api_key_points_a_new_user_at_signup(monkeypatch):
     assert "lium signup --email" in result.output
 
 
+def test_missing_api_key_in_a_pipe_points_a_new_user_at_signup(monkeypatch):
+    """ensure_config()'s non-interactive no_api_key carries its own hint; it must name signup too."""
+    from lium.cli import settings, utils as utils_module
+
+    monkeypatch.setattr(settings.config, "get", lambda key, default=None: None)
+    monkeypatch.setattr(utils_module, "is_interactive", lambda: False)
+
+    result = CliRunner().invoke(cli, ["ps", "--format", "json"])
+
+    assert result.exit_code == EXIT_CONFIGURATION_ERROR
+    envelope = json.loads(result.output)
+    assert envelope["error"]["code"] == "no_api_key"
+    assert "lium signup --email" in envelope["error"]["hint"]
+
+
 def test_ps_empty_account_is_not_a_failure(monkeypatch):
     """Nothing rented is a legitimate state, not an error."""
     class _EmptyLium(_FakeLium):
