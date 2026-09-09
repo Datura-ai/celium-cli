@@ -456,7 +456,7 @@ def test_stream_exec_without_pty_keeps_streams_apart_and_returns_exit_status(mon
     ]
     assert exit_code == 3
     assert calls["get_pty"] is False
-    assert calls["command"] == 'export A="x y" && python -u run.py'
+    assert calls["command"] == "export A='x y' && python -u run.py"  # main's shlex-quoted exports (DAH-2894)
 
 
 def test_stream_exec_default_pty_is_unchanged(monkeypatch):
@@ -466,4 +466,4 @@ def test_stream_exec_default_pty_is_unchanged(monkeypatch):
     list(client.stream_exec(pod, command="ls", env={"A": "1"}))
 
     assert calls["get_pty"] is True
-    assert calls["command"] == 'export A="1" && ls'
+    assert calls["command"] == "export A=1 && ls"
