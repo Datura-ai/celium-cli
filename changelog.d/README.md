@@ -2,7 +2,7 @@
 
 One file per pull request, named after its ticket (`DAH-1234.md`; `pr-123.md` when there is no ticket). It holds the
 `CHANGELOG.md` lines the PR would otherwise add under `## [Unreleased]`: one or more `### Added` / `### Changed` /
-`### Fixed` / `### Removed` headings, each followed by bullets. Example:
+`### Fixed` / `### Removed` / `### Deprecated` / `### Security` headings, each followed by bullets. Example:
 
 ```markdown
 ### Fixed
@@ -10,7 +10,11 @@ One file per pull request, named after its ticket (`DAH-1234.md`; `pr-123.md` wh
 ```
 
 Why: every PR inserting at the same line of `CHANGELOG.md` conflicts with every other one, so no two PRs could be
-merged in sequence without a rebase. Separate files cannot conflict.
+merged in sequence without a rebase. Separate files cannot conflict. The fragments of PRs merged since 7 Sep 2026
+already live here; `CHANGELOG.md` itself is only touched at release time.
 
 At release time `python scripts/changelog.py --version X.Y.Z` folds every fragment into `CHANGELOG.md` under a new
-`## [X.Y.Z] - YYYY-MM-DD` heading (same-named sections merged, files deleted). `--dry-run` prints the result.
+`## [X.Y.Z] - YYYY-MM-DD` heading — same-named sections merged in the order Added, Changed, Deprecated, Removed, Fixed,
+Security; bullets in fragment-file-name order; the fragment files deleted. The heading goes above the newest released
+version and below a `## [Unreleased]` block if one exists. `--dry-run` prints the section and changes nothing. Stdlib
+only; `pytest test/test_changelog_script.py` covers it.
