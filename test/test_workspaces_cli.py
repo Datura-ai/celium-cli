@@ -38,6 +38,7 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.delenv("LIUM_API_KEY", raising=False)
+    monkeypatch.delenv("LIUM_API_API_KEY", raising=False)  # read before LIUM_API_KEY since lium#136
     # the root option exports LIUM_WORKSPACE for the process and CliRunner does not undo that: pin it to
     # "" (click and Config.load read the empty string as unset) so monkeypatch restores it after each test
     monkeypatch.setenv("LIUM_WORKSPACE", "")
@@ -151,11 +152,17 @@ def test_config_picks_the_key_of_the_requested_or_active_workspace(home, monkeyp
     monkeypatch.setenv("LIUM_API_KEY", "sk_test_env")
     env_key = Config.load()
     explicit_over_env = Config.load(workspace="research")
+    monkeypatch.setenv("LIUM_API_API_KEY", "sk_test_section_env")
+    section_env_key = Config.load()
+    explicit_over_section_env = Config.load(workspace="research")
 
     assert (default.api_key, default.workspace) == ("sk_test_research", "research")  # `lium workspaces use`
     assert explicit.api_key == "sk_test_research"
     assert (env_key.api_key, env_key.workspace) == ("sk_test_env", "research")  # env beats the stored default
     assert explicit_over_env.api_key == "sk_test_research"  # an explicit --workspace beats env
+    # LIUM_API_API_KEY is the CLI's first env key: it beats LIUM_API_KEY and the stored default, not --workspace
+    assert (section_env_key.api_key, section_env_key.workspace) == ("sk_test_section_env", "research")
+    assert explicit_over_section_env.api_key == "sk_test_research"
     # an explicit workspace with no saved key never falls through to another key (another team, another balance)
     with pytest.raises(ValueError, match="No API key is saved for workspace 'nowhere'.*--workspace nowhere --save"):
         Config.load(workspace="nowhere")
