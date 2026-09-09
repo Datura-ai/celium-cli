@@ -2452,6 +2452,51 @@ class Lium:
         data = self._request("GET", "/users/me/events", params=params).json()
         return data if isinstance(data, list) else []
 
+    def audit_log(
+        self,
+        *,
+        since: Optional[datetime] = None,
+        until: Optional[datetime] = None,
+        action: Optional[str] = None,
+        source: Optional[str] = None,
+        api_key_id: Optional[str] = None,
+        resource_id: Optional[str] = None,
+        cursor: Optional[str] = None,
+        limit: int = 100,
+    ) -> Dict[str, Any]:
+        """One page of the account audit log, newest first (``GET /account/audit``, lium-platform DAH-3245).
+
+        One entry per request that changed something on the account — a pod created, restarted or
+        deleted, a key created or revoked, a login, a top-up requested, a setting or a workspace member
+        changed — with ``action`` (``pod.delete``, ``key.create``, ``login``, …), ``actor`` (``auth``
+        ``session`` or ``api_key``, ``user_id``, ``api_key_id``, ``api_key_name``), ``source`` (``portal``,
+        ``cli``, ``sdk``, ``mcp``, ``admin``, ``api``), ``ip`` (filled on the caller's own entries only),
+        ``user_agent``, ``request_id``, ``method``, ``route``, ``status_code``, ``resource_type``,
+        ``resource_id``, ``summary``. ``action`` filters by prefix (``pod.`` is every pod action).
+        Returns ``{"items": [...], "next_cursor": ...}``; pass ``next_cursor`` back as ``cursor`` for the
+        next (older) page, ``None`` when this page was the last. ``limit`` is 1–500. A key needs the
+        ``read`` scope; a server without the route answers 404 (``LiumNotFoundError``).
+        """
+        params: Dict[str, Any] = {"limit": limit}
+        if since is not None:
+            params["since"] = since.isoformat()
+        if until is not None:
+            params["until"] = until.isoformat()
+        for name, value in (
+            ("action", action),
+            ("source", source),
+            ("api_key_id", api_key_id),
+            ("resource_id", resource_id),
+            ("cursor", cursor),
+        ):
+            if value:
+                params[name] = value
+        data = self._request("GET", "/account/audit", params=params).json()
+        if not isinstance(data, dict):
+            return {"items": [], "next_cursor": None}
+        items = data.get("items")
+        return {"items": items if isinstance(items, list) else [], "next_cursor": data.get("next_cursor")}
+
     def topup_currencies(self, refresh: bool = False) -> List[Dict[str, Any]]:
         """List stablecoin currencies/networks supported for self-serve top-ups.
 
