@@ -843,8 +843,8 @@ def test_a_default_value_naming_a_module_global_is_refused_before_renting(fake):
     assert fake.calls == []
 
     @D.machine(machine="A100", quiet=True)   # literal and builtin defaults name nothing from this module
-    def literal_default(x, *, a, k=2, names=None, f=len, g=lambda os: len(os)):   # the lambda's own `os` is not this module's
-        return x * k + a + f(names or []) + g("")
+    def literal_default(x, *, a, k=2, names=None, f=len, g=lambda os: os.strip()):   # the lambda's own `os` is not this module's
+        return x * k + a + f(names or []) + len(g(" "))
 
     assert literal_default(3, a=0) == 6
 
