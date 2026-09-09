@@ -623,21 +623,33 @@ class Lium:
             return None
 
         # Extract GPU info from specs or machine_name
-        specs = executor_dict.get("specs", {})
-        gpu_info = specs.get("gpu", {})
-        gpu_count = gpu_info.get("count", 1)
+        specs = executor_dict.get("specs") or {}
+        gpu_info = specs.get("gpu") or {}
+        gpu_details = gpu_info.get("details") or []
+        # The top-level gpu_count is the Executor.gpu_count column the rent path
+        # multiplies price_per_gpu by, so it comes first; then the count in the
+        # scraped specs, then the listed GPUs. Only assume a single GPU when the
+        # API gives us nothing at all, so a missing count cannot silently turn an
+        # 8-GPU node into a "1×" line with a 1-GPU price. Counts arrive as
+        # strings in some payloads (see _pod_gpu_count), so each is parsed.
+        gpu_count = (
+            _int_or_none(executor_dict, "gpu_count")
+            or _int_or_none(gpu_info, "count")
+            or len(gpu_details)
+            or 1
+        )
 
         # Extract GPU type from machine_name or specs
-        machine_name = executor_dict.get("machine_name", "")
+        machine_name = executor_dict.get("machine_name") or ""
         gpu_type = extract_gpu_type(machine_name)
 
-        # If we couldn't extract from machine_name, try specs
-        if gpu_type == machine_name.split()[-1] and gpu_info.get("details"):
-            gpu_details = gpu_info.get("details", [])
-            if gpu_details:
-                gpu_name = gpu_details[0].get("name", "")
-                if gpu_name:
-                    gpu_type = extract_gpu_type(gpu_name)
+        # If we couldn't extract from machine_name (empty, blank, or no known pattern), try specs
+        words = machine_name.split()
+        unresolved = not words or gpu_type == words[-1]
+        if unresolved and gpu_details:
+            gpu_name = (gpu_details[0] or {}).get("name", "")
+            if gpu_name:
+                gpu_type = extract_gpu_type(gpu_name)
 
         price_per_gpu = executor_dict.get("price_per_gpu") or 0
         price_per_hour = price_per_gpu * gpu_count
