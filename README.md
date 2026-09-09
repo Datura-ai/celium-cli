@@ -455,6 +455,7 @@ the flag to pass:
 
 ```bash
 export LIUM_API_KEY=...            # no browser login is attempted without a terminal
+lium init --api-key $KEY           # or save the key once, without a browser
 lium up --gpu H100 -y --no-ssh     # -y: rent without the confirmation prompt
 lium rm my-pod -y                  # -y on every destructive command
 lium fund -w default -a 1.5 -y     # values that would be prompted for must be passed as options

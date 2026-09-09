@@ -7,6 +7,7 @@ import pytest
 import requests
 from click.testing import CliRunner
 
+from lium.cli import interactive
 from lium.cli.actions import ActionResult
 from lium.cli.cli import cli
 from lium.cli.init import actions as init_actions
@@ -222,13 +223,23 @@ def test_the_cli_only_alias_is_not_a_key_source_for_init(monkeypatch, home, ssh_
 
 
 def test_the_alias_next_to_a_saved_key_is_not_an_error(monkeypatch, home, ssh_setup_ok, api):
+    # piped (CliRunner's stdin is not a terminal) and at a terminal: both report the saved key
     monkeypatch.setenv("LIUM_API_API_KEY", "sk_alias")
     home.set("api.api_key", "sk_file")
+    monkeypatch.setattr(init_actions, "init_auth", lambda: pytest.fail("no auth session must be requested"))
 
-    result = CliRunner().invoke(cli, ["init"])
+    piped = CliRunner().invoke(cli, ["init"])
+    assert piped.exit_code == 0, piped.output
+    assert "already saved in" in piped.output
 
-    assert result.exit_code == 0, result.output
-    assert "already saved in" in result.output
+    monkeypatch.setattr(interactive, "stdin_is_terminal", lambda: True)
+    monkeypatch.setattr(
+        init_actions.SetupApiKeyAction, "execute",
+        lambda self, ctx: ActionResult(ok=True, data={"already_configured": True}),
+    )
+    at_terminal = CliRunner().invoke(cli, ["init"])
+    assert at_terminal.exit_code == 0, at_terminal.output
+    assert "already saved in" in at_terminal.output
 
 
 def test_env_key_wins_over_session_and_no_browser(monkeypatch, home, ssh_setup_ok, api):
@@ -254,6 +265,9 @@ def test_json_needs_a_key_source(home, ssh_setup_ok, api):
 
 
 def test_browser_failure_names_the_headless_way(monkeypatch, home, ssh_setup_ok, api):
+    # the browser flow only runs at a terminal (lium#124); CliRunner's stdin is not one
+    monkeypatch.setattr(interactive, "stdin_is_terminal", lambda: True)
+    monkeypatch.setattr(init_actions, "init_auth", lambda: pytest.fail("no auth session must be requested"))
     monkeypatch.setattr(
         init_actions.SetupApiKeyAction, "execute",
         lambda self, ctx: ActionResult(ok=False, data={}, error="Authentication failed"),

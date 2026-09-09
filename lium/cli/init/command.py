@@ -49,7 +49,8 @@ def init_command(api_key: str | None, no_browser: bool, session: str | None, jso
     \b
     Without a terminal on stdin (or with LIUM_NONINTERACTIVE=1) `lium init`
     behaves like `--no-browser`. Scripts can skip init entirely by setting
-    LIUM_API_KEY or by passing --api-key.
+    LIUM_API_KEY, or run `lium init --api-key <key>` once to save a key
+    without a browser.
     """
     if api_key is not None and (session or no_browser):
         raise CliFailure(
@@ -110,7 +111,11 @@ def init_command(api_key: str | None, no_browser: bool, session: str | None, jso
     # no use to a piped caller, so that case takes the headless path too.
     if no_browser or not is_interactive():
         url_action = RequestAuthUrlAction()
-        url_action.execute({})
+        url_result = url_action.execute({})
+        if url_result.data.get("already_configured"):
+            # a piped `lium init` next to a saved key: say where the key is instead of silence
+            ssh_path = _setup_ssh()
+            _report("config", ssh_path, json_output)
         return
 
     # Default: browser flow

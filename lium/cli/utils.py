@@ -1167,7 +1167,8 @@ def ensure_config():
                 "no_api_key",
                 "No API key configured and the browser login cannot run because "
                 f"{noninteractive_reason()}. Set LIUM_API_KEY, or run "
-                "'lium init --no-browser' and then 'lium init --session <ID>'",
+                "'lium init --no-browser' and then 'lium init --session <ID>'. "
+                "With a key in hand: 'lium init --api-key <key>'",
                 EXIT_CONFIGURATION_ERROR,
                 hint="Set LIUM_API_KEY, or run 'lium init --no-browser' and then 'lium init --session <ID>'; "
                      "no account yet? 'lium signup --email you@example.com' creates one and stores its key",
