@@ -5,11 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
-- **Workspaces** (lium-platform DAH-1992, slice 3c): `lium workspaces list|members|use|login|create|invite|remove|transfer-billing|delete`, `lium keys list|create [--workspace] [--save]`, a global `--workspace NAME` / `LIUM_WORKSPACE` that runs a command with the API key saved for that workspace (and refuses when none is saved, rather than running as another key), and the workspace the command acts in printed under `ps` / `ls` tables and before `up` / `rm` act. SDK: `Lium.workspaces` (`WorkspacesClient`), `Lium(workspace=…)`, `PodInfo.workspace_id`, `WorkspaceInfo` / `WorkspaceMember`, `Config.workspace` / `Config.session_token`. Everything is behind capability detection on `GET /users/me`: on a server without workspaces the workspace commands say so (exit 3) and every other command keeps today's output; the one addition is one `GET /users/me` read under `ps` / `ls` tables and before `up` / `rm` act (`--format json` paths make no extra request).
-
 ## [0.4.3] - 2025-10-23
 
 ### Added
