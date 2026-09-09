@@ -9,11 +9,11 @@
 <h1 align="center">Lium</h1>
 
 <div align="center">
-  <a href="https://docs.lium.io/cli/quickstart">Quickstart</a>
+  <a href="https://docs.lium.io/developers/cli/quickstart">Quickstart</a>
   <span>&nbsp;&nbsp;•&nbsp;&nbsp;</span>
   <a href="https://lium.io/?utm_source=github">Website</a>
   <span>&nbsp;&nbsp;•&nbsp;&nbsp;</span>
-  <a href="https://docs.lium.io/category/cli">CLI Docs</a>
+  <a href="https://docs.lium.io/developers/cli/overview">CLI Docs</a>
   <span>&nbsp;&nbsp;•&nbsp;&nbsp;</span>
   <a href="https://docs.lium.io/developers/sdk">SDK Docs</a>
   <span>&nbsp;&nbsp;•&nbsp;&nbsp;</span>
@@ -44,8 +44,11 @@ versioned binary under `~/.lium/versions/<version>/lium`.
 ### CLI
 
 ```bash
-# First-time setup
+# First-time setup: create an account (mints and stores an API key) …
+lium signup --email you@example.com
+# … or link an existing account
 lium init
+lium balance
 
 # List available nodes (GPU machines)
 lium ls
@@ -65,7 +68,7 @@ lium scp 1 ./my_script.py
 # SSH into a pod
 lium ssh <pod-name>
 
-# Stop a pod
+# Stop a pod — billing is per second and runs until you do this
 lium rm <pod-name>
 ```
 
@@ -117,8 +120,9 @@ JSON keeps the API's raw value as `ssh_cmd`.
 
 ## Documentation
 
-- **CLI docs:** https://docs.lium.io/category/cli
+- **CLI docs:** https://docs.lium.io/developers/cli/overview
 - **SDK docs:** https://docs.lium.io/developers/sdk
+- **Exit codes and the JSON error envelope:** [docs/exit-codes.md](docs/exit-codes.md) — what a script or agent gets back when a command fails (`--format json`, `LIUM_OUTPUT=json`).
 
 ## Binary Releases
 
@@ -132,21 +136,29 @@ The `lium` CLI exposes the full pod lifecycle. Run `lium --help` to see everythi
 
 ### Core Commands
 
-- `lium init` - Initialize configuration (API key, SSH keys)
-- `lium ls [GPU_TYPE]` - List available nodes
+- `lium signup` - Create an account from the terminal and store its API key
+- `lium init` - Initialize configuration for an existing account (API key, SSH keys)
+- `lium balance` - Show the account balance (add `--format json` for machine-readable output)
+- `lium ls [--gpu TYPE]` - List available nodes
 - `lium up [NODE_ID]` - Create a pod (use node ID or filters like `--gpu`, `--count`, `--country`)
 - `lium ps` - List active pods; the `#` column is the row number `rm`/`ssh`/`exec`/`scp` accept in the same shell, for 10 minutes, and only while the pod shown on that row is still listed. Use the huid in scripts.
 - `lium describe <POD>` - Full manifest of one pod: ports, GPU, template, billing, last lifecycle event (why it is REBOOT_FAILED/BROKEN) and the node's disk health (add `--json` for machine-readable output). A deleted pod can still be described by its id: you get the events the backend kept for it and the reason it went away.
 - `lium ssh <POD>` - SSH into a pod
-- `lium exec <POD> <COMMAND>` - Execute command on pod
+- `lium exec <POD> <COMMAND>` - Execute command on pod (`--json` for stdout/stderr/exit_code)
+- `lium logs <POD>` - Stream a pod's container logs
+- `lium port-forward <POD> <PORT>` - Forward a local port to a pod port
 - `lium scp <POD> <LOCAL_FILE> [REMOTE_PATH]` - Copy files to pods (add `-d` to download from pods)
 - `lium rsync <POD> <LOCAL_DIR> [REMOTE_PATH]` - Sync directories to pods
 - `lium rm <POD>` - Remove/stop a pod (`--name-only` to refuse `lium ps` row numbers in scripts)
 - `lium reboot <POD>` - Reboot a pod
 - `lium audit [--pod POD] [--since 24h] [--key ID]` - Who did what to the account's pods, and when: every rent, reboot, edit and delete with the session or API key that requested it (add `--json` for machine-readable output)
 - `lium update <POD>` - Install Jupyter on a pod
-- `lium templates [SEARCH]` - List available Docker templates
+- `lium templates [SEARCH]` - List available Docker templates (add `--format json` for ids and image details)
 - `lium fund` - Fund account with TAO from Bittensor wallet
+- `lium topup create -a <USD> -c <COIN> -n <NETWORK>` - Top up with a stablecoin (`lium topup currencies` lists them)
+- `lium ssh-keys list|sync` - SSH public keys registered on the account
+
+`ls`, `ps`, `templates`, `balance` and `describe` all accept `--format json` (and `--json`) and print a JSON error envelope on stderr when the command fails, so the same flag works across commands in scripts.
 
 ### Volume Commands
 
@@ -215,8 +227,9 @@ Full reference with every flag and runnable examples: <https://docs.lium.io/deve
 
 ```bash
 # Filter nodes by GPU type
-lium ls H100
-lium ls A100
+lium ls --gpu H100
+lium ls --gpu A100 --count 8
+lium ls --format json          # machine-readable
 
 # Create pod with node index
 lium up 1 --name my-pod --yes
@@ -277,7 +290,7 @@ lium scp my-pod /root/output.log ./downloads -d  # Download into ./downloads dir
 
 # Reboot pods
 lium reboot my-pod                           # Reboot a single pod
-lium reboot 1,2 --yes                        # Reboot pods 1 and 2 without confirmation
+lium reboot 1,2                              # Reboot pods 1 and 2 (no confirmation prompt)
 lium reboot all                              # Reboot all active pods
 lium reboot my-pod --volume-id <VOLUME_ID>   # Reboot with a specific volume ID
 
@@ -296,7 +309,7 @@ lium update my-pod
 
 # Manage volumes
 lium volumes list
-lium volumes new mydata --description "My dataset"
+lium volumes new mydata -d "My dataset"
 lium volumes rm <VOLUME_HUID>
 
 # Manage backups
@@ -390,7 +403,7 @@ lium fund -w default -a 1.5 -y     # values that would be prompted for must be p
 
 ## Requirements
 
-- Python 3.9+
+- Python 3.10+
 
 ## Development
 

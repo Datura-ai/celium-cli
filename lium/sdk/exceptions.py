@@ -55,6 +55,26 @@ class LiumHostKeyError(LiumError):
     """A pod presented an SSH host key that differs from the pinned one."""
 
 
+class LiumInsufficientBalanceError(LiumPermissionError):
+    """The account cannot pay for this (403 with a balance reason).
+
+    ``required`` and ``available`` are USD amounts when the server said what
+    they are, else ``None``. Callers that catch :class:`LiumPermissionError`
+    keep working; ones that want the numbers catch this class.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        required: float | None = None,
+        available: float | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.required = required
+        self.available = available
+
+
 __all__ = [
     "LiumError",
     "LiumAuthError",
@@ -64,4 +84,5 @@ __all__ = [
     "LiumPermissionError",
     "PodStartError",
     "LiumHostKeyError",
+    "LiumInsufficientBalanceError",
 ]

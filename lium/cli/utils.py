@@ -4,13 +4,27 @@ from contextlib import contextmanager
 from typing import List, Dict, Any, Tuple, Optional, Callable, TypeVar
 import json
 import os
+import sys
+import traceback
 from pathlib import Path
 import click
 from lium.cli.interactive import is_interactive, noninteractive_reason
 from lium.cli.settings import config
 from datetime import datetime, timezone
 from rich.status import Status
-from lium.sdk import LiumError, LiumPermissionError, ExecutorInfo, PodInfo,Lium
+from lium.sdk import (
+    ExecutorInfo,
+    Lium,
+    LiumAuthError,
+    LiumError,
+    LiumHostKeyError,
+    LiumInsufficientBalanceError,
+    LiumNotFoundError,
+    LiumPermissionError,
+    LiumRateLimitError,
+    LiumServerError,
+    PodInfo,
+)
 from .themed_console import ThemedConsole
 from dataclasses import dataclass
 from rich.markup import escape
@@ -267,7 +281,7 @@ def timed_step_status(step: int = 0, total_steps: int = 0, message: str = ""):
 
 # The exit-code taxonomy every command shares. Commands import these rather than
 # spelling the numbers, so this table is the one source of truth and
-# docs/developers/cli/reference/index.md mirrors it.
+# docs/exit-codes.md mirrors it (test_cli_errors.py checks that it does).
 #
 # ``lium provider …`` is the one exception: it keeps its own map in
 # lium/cli/provider/_render.py, where the same numbers carry different meanings
@@ -279,6 +293,51 @@ EXIT_SSH_ERROR = 4            # ssh could not connect, or no client is installed
 EXIT_POD_NOT_FOUND = 5        # the named pod does not exist
 EXIT_PERMISSION_DENIED = 6    # the account is not allowed to do this
 
+OUTPUT_ENV = "LIUM_OUTPUT"    # LIUM_OUTPUT=json: every failure is a JSON envelope
+
+# What to do next, by error code. A failure without a next step leaves an agent
+# (or a person) guessing; a code that has no entry here falls back to the
+# exit-code family below, so no error leaves without one.
+_HINTS_BY_CODE: Dict[str, str] = {
+    "no_api_key": "Set LIUM_API_KEY, or run 'lium init' (headless: 'lium init --no-browser')",
+    "invalid_api_key": "Check the key: 'lium config get api.api_key' shows which one is used; "
+                       "a new one comes from https://lium.io/api-keys",
+    "permission_denied": "Check the account with 'lium balance'; an insufficient balance is "
+                         "fixed with 'lium topup' or 'lium fund', a pending verification on https://lium.io",
+    "insufficient_balance": "Add funds with 'lium topup' or 'lium fund', or pick a cheaper node "
+                            "('lium ls --sort price_total')",
+    "pod_not_found": "Run 'lium ps' to list pods; a name, huid, id or 1-based index is accepted",
+    "not_found": "The resource is gone or the id is wrong; list it again and retry",
+    "rate_limited": "Wait a few seconds and retry; back off if it repeats",
+    "server_error": "Retry; if it persists, re-run with LIUM_DEBUG=1 and report the request",
+    # Raised by the non-interactive guard (lium/cli/ui.py confirm/prompt, DAH-2883).
+    "confirmation_required": "Re-run with --yes",
+    "input_required": "Pass the value as an option instead of answering a prompt",
+    "invalid_arguments": "See 'lium <command> --help' for the accepted options",
+    "ssh_unavailable": "Wait for 'lium ps' to show the pod RUNNING with an SSH command, then retry",
+    "ssh_connection_failed": "Check 'lium config get ssh.key_path' points at the key registered with "
+                             "'lium ssh-keys', and that the pod is RUNNING in 'lium ps'",
+    # not a retry: the message names the pinned file to delete once the new key is trusted
+    "ssh_host_key_changed": "Do not retry blindly; if the pod was rebooted or re-templated and you trust the "
+                            "new key, delete the known_hosts file named in the message and reconnect",
+    "unexpected_error": "Re-run with LIUM_DEBUG=1 for details and report the issue",
+}
+
+_HINTS_BY_EXIT_CODE: Dict[int, str] = {
+    EXIT_GENERAL_ERROR: "Re-run with LIUM_DEBUG=1 for details",
+    EXIT_CONFIGURATION_ERROR: "Check the options and configuration ('lium <command> --help', 'lium config show')",
+    EXIT_API_ERROR: "Retry; if it persists, re-run with LIUM_DEBUG=1 and report the request",
+    EXIT_SSH_ERROR: "Check the pod is RUNNING in 'lium ps' and that 'lium config get ssh.key_path' "
+                    "names a key registered with 'lium ssh-keys'",
+    EXIT_POD_NOT_FOUND: "Run 'lium ps' to list pods; a name, huid, id or 1-based index is accepted",
+    EXIT_PERMISSION_DENIED: "Check the account with 'lium balance'",
+}
+
+
+def default_hint(code: str, exit_code: int = EXIT_GENERAL_ERROR) -> str:
+    """The next step for an error that did not bring its own."""
+    return _HINTS_BY_CODE.get(code) or _HINTS_BY_EXIT_CODE.get(exit_code) or _HINTS_BY_EXIT_CODE[EXIT_GENERAL_ERROR]
+
 
 class CliFailure(Exception):
     """A command failing for a reason it can name.
@@ -286,19 +345,44 @@ class CliFailure(Exception):
     Raised instead of exiting inline so that rendering — JSON envelope for a
     machine caller, Rich text for a human — and the exit code are decided in one
     place, ``handle_errors``, rather than at every error site in every command.
+
+    ``hint`` is what to do next. Sites that know a better next step than the
+    generic one for their code pass it; the rest get :func:`default_hint`.
     """
 
     def __init__(self, code: str, message: str, exit_code: int = EXIT_GENERAL_ERROR,
-                 data: dict | None = None) -> None:
+                 data: dict | None = None, hint: str | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.exit_code = exit_code
         self.data = data or {}
+        self.hint = hint or default_hint(code, exit_code)
+
+
+def error_envelope(code: str, message: str, exit_code: int = EXIT_GENERAL_ERROR,
+                   data: dict | None = None, hint: str | None = None) -> dict:
+    """The one shape every machine-readable failure has.
+
+    ``{"ok": false, "error": {"code", "message", "hint", "exit_code"}}`` plus
+    ``data`` when the caller has something the reader must not lose.
+    """
+    envelope = {
+        "ok": False,
+        "error": {
+            "code": code,
+            "message": message,
+            "hint": hint or default_hint(code, exit_code),
+            "exit_code": exit_code,
+        },
+    }
+    if data:
+        envelope["data"] = data
+    return envelope
 
 
 def _emit_json_error(code: str, message: str, exit_code: int = EXIT_GENERAL_ERROR,
-                     data: dict | None = None) -> None:
+                     data: dict | None = None, hint: str | None = None) -> None:
     """Print a machine-readable error envelope to stderr and exit non-zero.
 
     Keeps stdout clean for JSON consumers (agents): on success stdout carries
@@ -307,11 +391,70 @@ def _emit_json_error(code: str, message: str, exit_code: int = EXIT_GENERAL_ERRO
     ``data`` carries whatever the caller must not lose along with the failure
     (signup, for one, has to hand back the credentials it generated).
     """
-    envelope = {"ok": False, "error": {"code": code, "message": message}}
-    if data:
-        envelope["data"] = data
-    click.echo(json.dumps(envelope, sort_keys=True), err=True)
+    click.echo(json.dumps(error_envelope(code, message, exit_code, data, hint), sort_keys=True), err=True)
     raise SystemExit(exit_code)
+
+
+def _render_human_error(message: str, hint: str) -> None:
+    """The text rendering: the error, then the next step underneath it."""
+    console.error(escape(message))
+    if hint and hint.lower() not in message.lower():
+        console.dim(escape(hint))
+
+
+def resolve_output_format(output_format: Optional[str], json_output: bool) -> str:
+    """The format a command should render: ``--json`` is an alias for ``--format json``.
+
+    Commands grew two spellings for the same thing (``describe --json`` versus
+    ``ps --format json``), and a caller who learned one kept trying it on the
+    other. Both are accepted; the ``--format`` value wins only when no alias
+    was given.
+    """
+    if json_output:
+        return "json"
+    return output_format or "table"
+
+
+def debug_enabled() -> bool:
+    """``LIUM_DEBUG=1`` (or true): failures also print their traceback to stderr."""
+    return os.environ.get("LIUM_DEBUG", "").strip().lower() in ("1", "true")
+
+
+def json_output_requested() -> bool:
+    """``LIUM_OUTPUT=json`` asks for machine-readable failures without a per-command flag."""
+    return os.environ.get(OUTPUT_ENV, "").strip().lower() == "json"
+
+
+def _wants_json(kwargs: dict) -> bool:
+    """Whether the command was invoked for a machine reader, under any spelling."""
+    return (
+        bool(kwargs.get("json_output"))
+        or kwargs.get("output_format") == "json"
+        or json_output_requested()
+    )
+
+
+def _classify_sdk_error(error: LiumError) -> tuple[str, int]:
+    """``(code, exit_code)`` for an SDK exception, most specific class first."""
+    if isinstance(error, LiumHostKeyError):
+        # the pod's pinned ssh host key changed (client.py ssh_connection): an ssh failure the
+        # user must look at, not an API call to retry — exit 4 like the other ssh errors
+        return "ssh_host_key_changed", EXIT_SSH_ERROR
+    if isinstance(error, LiumInsufficientBalanceError):
+        return "insufficient_balance", EXIT_PERMISSION_DENIED
+    if isinstance(error, LiumPermissionError):
+        return "permission_denied", EXIT_PERMISSION_DENIED
+    if isinstance(error, LiumAuthError):
+        # Exit 3, as before: a 401 is the API refusing the call, and callers
+        # (the live e2e suite among them) pin that number.
+        return "invalid_api_key", EXIT_API_ERROR
+    if isinstance(error, LiumNotFoundError):
+        return "not_found", EXIT_API_ERROR
+    if isinstance(error, LiumRateLimitError):
+        return "rate_limited", EXIT_API_ERROR
+    if isinstance(error, LiumServerError):
+        return "server_error", EXIT_API_ERROR
+    return "lium_error", EXIT_API_ERROR
 
 
 def handle_errors(func):
@@ -325,52 +468,44 @@ def handle_errors(func):
     exiting 0 tells it the command worked.
 
     When the wrapped command was invoked with ``--json`` (a ``json_output``
-    flag), errors are rendered as a JSON envelope on stderr, so machine
-    consumers get parseable output instead of Rich-formatted text on stdout.
-    Otherwise the human-readable rendering is preserved.
+    flag), ``--format json`` (an ``output_format`` option), or under
+    ``LIUM_OUTPUT=json``, errors are rendered as a JSON envelope on stderr, so
+    machine consumers get parseable output instead of Rich-formatted text on
+    stdout. Otherwise the human-readable rendering is preserved, with the hint
+    on its own line under the error.
     """
     @wraps(func)
     def wrapper(*args, **kwargs):
-        json_output = bool(kwargs.get("json_output"))
+        json_output = _wants_json(kwargs)
+
+        def fail(code: str, message: str, exit_code: int, data: dict | None = None,
+                 hint: str | None = None, prefix: str = "") -> None:
+            # ``prefix`` ("Error: ") is for the human line only; the JSON
+            # message stays the bare text a program can match on.
+            if debug_enabled():
+                # The hints say "re-run with LIUM_DEBUG=1 for details": this is
+                # the detail. Always stderr, so JSON on stdout stays clean.
+                traceback.print_exc(file=sys.stderr)
+            if json_output:
+                _emit_json_error(code, message, exit_code, data, hint)
+            _render_human_error(prefix + message, hint or default_hint(code, exit_code))
+            raise SystemExit(exit_code)
+
         try:
             return func(*args, **kwargs)
         except (click.ClickException, click.Abort):
             raise
         except CliFailure as e:
-            if json_output:
-                _emit_json_error(e.code, e.message, e.exit_code, e.data)
-            console.error(escape(e.message))
-            raise SystemExit(e.exit_code)
+            fail(e.code, e.message, e.exit_code, e.data, e.hint)
         except ValueError as e:
-            is_missing_api_key = "No API key found" in str(e)
-            if json_output:
-                _emit_json_error(
-                    "no_api_key" if is_missing_api_key else "value_error",
-                    str(e),
-                    EXIT_CONFIGURATION_ERROR,
-                )
-            elif is_missing_api_key:
-                console.error("No API key configured")
-                console.warning("Please run 'lium init' to set up your API key")
-                console.dim("Or set LIUM_API_KEY environment variable")
-            else:
-                console.error(f"Error: {escape(str(e))}")
-            raise SystemExit(EXIT_CONFIGURATION_ERROR)
-        except LiumPermissionError as e:
-            if json_output:
-                _emit_json_error("permission_denied", str(e), EXIT_PERMISSION_DENIED)
-            console.error(f"Error: {escape(str(e))}")
-            raise SystemExit(EXIT_PERMISSION_DENIED)
+            if "No API key found" in str(e):
+                fail("no_api_key", str(e), EXIT_CONFIGURATION_ERROR)
+            fail("value_error", str(e), EXIT_CONFIGURATION_ERROR, prefix="Error: ")
         except LiumError as e:
-            if json_output:
-                _emit_json_error("lium_error", str(e), EXIT_API_ERROR)
-            console.error(f"Error: {escape(str(e))}")
-            raise SystemExit(EXIT_API_ERROR)
+            code, exit_code = _classify_sdk_error(e)
+            fail(code, str(e), exit_code, prefix="Error: ")
         except Exception as e:
-            if json_output:
-                _emit_json_error("unexpected_error", str(e))
-            console.error(f"Unexpected error: {escape(str(e))}")
-            raise SystemExit(EXIT_GENERAL_ERROR)
+            fail("unexpected_error", str(e), EXIT_GENERAL_ERROR, prefix="Unexpected error: ")
     return wrapper
 
 
@@ -994,6 +1129,7 @@ def ensure_config():
                 f"{noninteractive_reason()}. Set LIUM_API_KEY, or run "
                 "'lium init --no-browser' and then 'lium init --session <ID>'",
                 EXIT_CONFIGURATION_ERROR,
+                hint="Set LIUM_API_KEY, or run 'lium init --no-browser' and then 'lium init --session <ID>'",
             )
         # Setup API key
         action = SetupApiKeyAction()
