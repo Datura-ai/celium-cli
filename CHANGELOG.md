@@ -5,11 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Changed
-- `lium up --help`, `lium balance --help`, `Lium.balance()` and `ExecutorInfo.price_per_hour` state that pods are billed per second at the listed $/h price, with no minimum (DAH-2998).
-
 ## [0.4.3] - 2025-10-23
 
 ### Added
