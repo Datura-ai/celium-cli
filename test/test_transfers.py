@@ -428,7 +428,6 @@ def test_cp_command_resolves_both_pods_and_passes_options(monkeypatch):
 
 
 def test_cp_command_json_reports_both_endpoints(monkeypatch, tmp_path):
-    import json
     from lium.cli import utils
     from lium.cli.utils import store_pod_selection
 
