@@ -38,7 +38,8 @@ def cp_command(
     The data goes pod to pod, not through this machine: a one-off key is
     created on the source pod, authorised on the destination for the duration
     of the copy, and removed afterwards. Both pods need rsync
-    (apt-get install -y rsync).
+    (apt-get install -y rsync); the destination also needs flock (util-linux,
+    on every Ubuntu/Debian image) to serialise copies into the same pod.
 
     \b
     POD is a name, huid, id or index from 'lium ps'. A trailing '/' on a
@@ -62,7 +63,9 @@ def cp_command(
     src, dst = parsed
 
     # The SDK reports a failed cleanup (a transfer key left authorised on the
-    # destination) as a warning; show it as one, with the revoke command in it.
+    # destination) as a warning; show it as one, with the revoke command in it —
+    # on stderr, so `--json` stdout stays one document (the first copy into a
+    # fresh pod always warns about pinning its host key).
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         result = ui.load(
@@ -73,7 +76,7 @@ def cp_command(
             ),
         )
     for warning in caught:
-        ui.warning(str(warning.message))
+        ui.notice_warning(str(warning.message))
 
     if json_output:
         click.echo(json.dumps({

@@ -6,7 +6,9 @@ long transfer needs, and `Lium.cp` / `lium cp` move data straight from one pod
 to another, granting and revoking a one-off key around the copy.
 """
 
+import json
 import re
+import shutil
 import subprocess
 import warnings
 from types import SimpleNamespace
@@ -207,6 +209,10 @@ def test_cp_grants_a_one_off_key_copies_and_revokes_it(dst_pinned):
     assert f"authorized_keys.{marker}" in revoke, "the scratch file carries this run's marker"
     assert f"cat ~/.ssh/authorized_keys.{marker} > ~/.ssh/authorized_keys" in revoke
     assert "mv " not in revoke
+    # grant and revoke serialise on one lock per pod: two concurrent cp runs into the same pod
+    # otherwise both filter the same authorized_keys and the later write puts the earlier key back
+    lock = f"flock -w 30 {Lium.TRANSFER_KEY_LOCK} -c "
+    assert lock in grant and lock in revoke
     assert remove_key.startswith("rm -f /tmp/lium-cp-")
 
 
@@ -291,6 +297,10 @@ def test_cp_cleanup_failure_is_a_warning_not_the_error(dst_pinned):
     assert "revoke it with: lium exec brave-lion-11 " in message and "grep -vF" in message
 
 
+needs_flock = pytest.mark.skipif(shutil.which("flock") is None, reason="the revoke line runs on the pod (Linux, util-linux); no flock here")
+
+
+@needs_flock
 def test_revoke_command_keeps_the_other_keys_and_the_mode(tmp_path):
     """Run the revoke line for real against a scratch home."""
     import os
@@ -309,9 +319,10 @@ def test_revoke_command_keeps_the_other_keys_and_the_mode(tmp_path):
     assert done.returncode == 0, done.stderr
     assert keys.read_text() == "ssh-ed25519 AAA renter@laptop\n"
     assert stat.S_IMODE(keys.stat().st_mode) == 0o600
-    assert list(ssh_dir.iterdir()) == [keys]
+    assert sorted(p.name for p in ssh_dir.iterdir()) == [".lium-cp.lock", "authorized_keys"], "the scratch file is gone"
 
 
+@needs_flock
 def test_revoke_command_fails_loudly_when_it_cannot_read_the_file(tmp_path):
     import os
     import subprocess as sp
@@ -379,6 +390,30 @@ def test_cp_command_shows_a_failed_revoke_as_a_warning_with_the_command(monkeypa
     assert result.exit_code == 0, result.output
     assert "revoke it with: lium exec brave-lion-11" in result.output
     assert "UserWarning" not in result.output
+
+
+def test_cp_json_keeps_stdout_one_document_with_the_warning_on_stderr(monkeypatch):
+    """The first copy into a fresh pod always warns (pinning its host key); `--json` callers still parse stdout."""
+    pods = [SRC, DST]
+
+    class _Lium:
+        def __init__(self, *a, **k):
+            pass
+
+        def ps(self):
+            return list(pods)
+
+        def cp(self, *a, **k):
+            warnings.warn("lium: pinned the host key of pod train on first connection")
+            return {"success": True, "exit_code": 0}
+
+    monkeypatch.setattr(cp_module, "Lium", _Lium)
+
+    result = CliRunner().invoke(cli, ["cp", "dev:/a", "brave-lion-11:/b", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["ok"] is True
+    assert "pinned the host key" in result.stderr
 
 
 def test_cp_command_resolves_both_pods_and_passes_options(monkeypatch):

@@ -2381,18 +2381,11 @@ class Lium:
 
         authorized = False
         try:
-            grant = self.exec(
-                dst_pod,
-                command=(
-                    "mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
-                    f"echo {shlex.quote(authorized_line)} >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
-                ),
-            )
+            grant = self.exec(dst_pod, command=self.grant_transfer_key_command(authorized_line))
             if not grant["success"]:
-                raise LiumError(
-                    f"Could not authorise the transfer key on pod {dst_pod.name or dst_pod.huid}: "
-                    f"{grant['stderr'].strip()}"
-                )
+                # `flock -w 30` gives up silently (exit 1) when another cp holds the lock
+                detail = grant["stderr"].strip() or f"exit {grant.get('exit_code')} (another copy may hold {self.TRANSFER_KEY_LOCK})"
+                raise LiumError(f"Could not authorise the transfer key on pod {dst_pod.name or dst_pod.huid}: {detail}")
             authorized = True
 
             # The source pod must verify the destination the way this client does: the grant above went
@@ -2460,8 +2453,28 @@ class Lium:
             return ""
         return "\n".join(line for line in text.splitlines() if line.strip() and not line.startswith("#"))
 
-    @staticmethod
-    def revoke_transfer_key_command(marker: str) -> str:
+    # Every grant and revoke on a pod runs under this lock: two concurrent ``cp``
+    # into the same pod otherwise both filter the same authorized_keys and the
+    # later ``cat >`` puts back the key the earlier revoke removed.
+    TRANSFER_KEY_LOCK = "~/.ssh/.lium-cp.lock"
+
+    @classmethod
+    def _under_transfer_key_lock(cls, command: str) -> str:
+        """``command`` run by ``flock`` on the pod's transfer-key lock (30 s wait, then fail)."""
+        return f"flock -w 30 {cls.TRANSFER_KEY_LOCK} -c {shlex.quote(command)}"
+
+    @classmethod
+    def grant_transfer_key_command(cls, authorized_line: str) -> str:
+        """The remote line that appends ``authorized_line`` to the pod's authorized_keys."""
+        return (
+            "mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
+            + cls._under_transfer_key_lock(
+                f"echo {shlex.quote(authorized_line)} >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
+            )
+        )
+
+    @classmethod
+    def revoke_transfer_key_command(cls, marker: str) -> str:
         """The remote line that drops the authorized_keys entry tagged ``marker``.
 
         The scratch file carries the marker, so two ``cp`` runs into the same
@@ -2469,10 +2482,11 @@ class Lium:
         (the way lium-io removes keys) rather than ``mv``: the file keeps its
         mode and a second run's half-written scratch file can never replace it.
         ``grep`` exits 1 when nothing is left to keep, which is fine; any other
-        failure leaves authorized_keys untouched.
+        failure leaves authorized_keys untouched. The whole line runs under the
+        transfer-key lock, so a concurrent grant or revoke waits for it.
         """
         scratch = f"~/.ssh/authorized_keys.{marker}"
-        return (
+        return cls._under_transfer_key_lock(
             f"( grep -vF {shlex.quote(marker)} ~/.ssh/authorized_keys > {scratch} || [ $? -eq 1 ] ) "
             f"&& cat {scratch} > ~/.ssh/authorized_keys; rc=$?; rm -f {scratch}; exit $rc"
         )
