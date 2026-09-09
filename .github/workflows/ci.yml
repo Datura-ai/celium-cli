@@ -297,22 +297,45 @@ jobs:
   # billing → rm → gone → final charge, plus the error contract (wrong key 3, no key 2, unknown pod 5), then the
   # SDK's pod-lifecycle example. Rents the cheapest ≥1-GPU node under $0.50/h for a few minutes ($0.03 on 7 Sep 2026:
   # two RTX 4090 rentals of 6 and 0.5 min). Needs the secret LIUM_E2E_API_KEY (the dedicated test account's key);
-  # without it the job skips every test and stays green, so fork PRs are unaffected. One run at a time repo-wide:
-  # two suites on one account would sweep each other's pods. e2e/run.sh puts a timeout on every step and always leaves e2e/artifacts (timings,
-  # summary.md, junit, commands.json); summarised in one sticky PR comment. Reproduce: E2E_API_KEY=… e2e/run.sh
+  # without it the job skips every test and stays green, so fork PRs are unaffected. One run at a time repo-wide
+  # (the turnstyle step, explained at the job). e2e/run.sh puts a timeout on every step and always leaves
+  # e2e/artifacts (timings, summary.md, junit, commands.json); summarised in one sticky PR comment.
+  # Reproduce: E2E_API_KEY=… e2e/run.sh
   e2e-live:
     name: e2e-live
     needs: e2e-inputs
     if: needs.e2e-inputs.outputs.run == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 65   # run.sh's own budget is 5 + 25 + 25 min; this and the step below sit above it
+    # run.sh's own budget is 5 + 25 + 25 min (the step below caps it at 60); the extra 30 min is the queue wait
+    # in the turnstyle step (a run takes ~7 min, so up to ~4 PRs pushed at once still finish inside it).
+    timeout-minutes: 95
     permissions:
+      actions: read          # turnstyle lists this workflow's active runs and their jobs
       contents: read
       pull-requests: write
-    concurrency:
-      group: e2e-live-staging
-      cancel-in-progress: false
+    # One live suite at a time repo-wide — two suites on one account would sweep each other's pods (the cleanup step
+    # below removes every e2e-… pod it sees) — and the lock is a WAIT, not a `concurrency:` group. A job-level group
+    # (`e2e-live-staging`, cancel-in-progress: false — here until 9 Sep 2026) holds one running and ONE pending job:
+    # when a third PR pushed, GitHub cancelled the older pending job, so any push on any PR turned another PR's
+    # e2e-live red as "cancelled" (three PRs got "CI is failing: e2e-live" in one night for a job that never ran).
+    # turnstyle polls the Actions API and proceeds only when every older active run's e2e-live job is complete.
+    # Order: by run id; a rerun attempt by the time it restarted, so `gh run rerun` of an old run queues behind a
+    # younger run already in its suite — two waiters never wait on each other. Nothing is cancelled; a waiting run is
+    # yellow, not red. Superseding pushes on the SAME PR are still cancelled — by the workflow-level group at the top,
+    # keyed per PR. Failure path: an Actions API 5xx that survives the 3 retries (rate limits are waited out) fails this
+    # step, the suite is skipped and the sticky comment says FAIL — rerun the job; `continue-on-error` would drop the
+    # lock. Cost of the wait: a runner idling on a public repo (free); `same-branch-only: false` spans every PR, the
+    # cron and dispatches. Caveat for the days after this landed: `gh run rerun` of a run created BEFORE it re-executes
+    # that run's old workflow file (joins the old group, waits for nobody) — rerun such a run only while no e2e-live is
+    # in flight, or push instead.
     steps:
+    - name: wait for the e2e-live job of any older run (one live suite at a time on the shared account)
+      uses: softprops/turnstyle@3805450be63b8c80577dc253e8c17e9132036df4   # v3.3.3
+      with:
+        same-branch-only: false
+        job-to-wait-for: e2e-live
+        poll-interval-seconds: 30
+        retries: 3
     - uses: actions/checkout@v4
       with:
         fetch-depth: 0   # hatch-vcs: the version is git describe against the tags

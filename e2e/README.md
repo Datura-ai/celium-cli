@@ -48,12 +48,15 @@ always reports; a README- or `test/`-only PR does not rent anything), on `workfl
 listing must not block every merge; the sticky comment is its verdict. Needs the repository secret **`LIUM_E2E_API_KEY`** (the key of a funded account on the target API) and the
 variable `LIUM_E2E_API_URL` (staging when unset). Today the variable is `https://lium.io/api` and the key belongs to
 a dedicated test account funded with $200, which covers about 6,000 runs at $0.03. Fork PRs have no secrets →
-the job skips and stays green. One run at a time repo-wide (`concurrency: e2e-live-staging`; the job's own group
-queues, it does not cancel): two suites on one account would sweep each other's `e2e-…` pods, and staging has a
-single node. The workflow-level group does cancel a run a newer push supersedes; the `e2e-…` pods of a run whose suite did not
+the job skips and stays green. One run at a time repo-wide: two suites on one account would sweep each other's
+`e2e-…` pods, and staging has a single node. The lock is the job's first step, `softprops/turnstyle`, which waits
+until the `e2e-live` job of every older active run of this workflow (any branch, the cron and dispatches included) is
+complete — it never cancels; a queued run is yellow until its turn. Until 9 Sep 2026 this was a job-level
+`concurrency:` group, which holds ONE pending job repo-wide and cancels the older pending job when a third PR pushes,
+so a push on any PR made another PR's `e2e-live` red as "cancelled". The workflow-level group does cancel a run a newer push on the same PR supersedes; the `e2e-…` pods of a run whose suite did not
 finish its own cleanup — cancelled by the runner, killed by `run.sh`'s `timeout`, or failed under pytest-timeout — are
 removed one by one by the job's cleanup step (it runs when the suite step failed or was cancelled; pytest's
-finalizers do not run under those kills), the 30-min TTL being the last resort. The job and step time limits (65 / 60 min) sit above `run.sh`'s own budget (5 + 25 + 25 min), so a
+finalizers do not run under those kills), the 30-min TTL being the last resort. The job and step time limits (95 / 60 min — the job's extra 30 min is the queue wait) sit above `run.sh`'s own budget (5 + 25 + 25 min), so a
 double suite timeout still writes `summary.md`. Artifacts uploaded on every run;
 `summary.md` posted as one sticky PR comment on `pull_request` runs (a `workflow_dispatch` run has no PR to post to).
 
