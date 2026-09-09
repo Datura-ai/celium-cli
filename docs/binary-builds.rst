@@ -64,6 +64,21 @@ copying ``/app/dist/lium`` out of the image to ``dist/lium``:
 
    python3 scripts/linux_bundle_report.py --bundle dist/lium --image lium-build:local
 
+What the macOS bundles ship
+---------------------------
+
+Both macOS jobs run ``uv sync --frozen`` and PyInstaller on GitHub's runners
+(``macos-14`` for arm64, ``macos-15-intel`` for x86_64). ``cryptography`` 49 and
+later publish no macOS Intel wheel, so on the Intel runner uv builds it from
+source; the job sets ``OPENSSL_STATIC=1`` and ``OPENSSL_DIR=$(brew --prefix
+openssl@3)`` first, so OpenSSL is linked into ``_rust.abi3.so`` instead of being
+copied into ``dist/lium/_internal`` as ``libssl.3.dylib`` — python.org's ``_ssl``
+ships a dylib of the same name, and with two candidates PyInstaller kept the
+older one (``Symbol not found: _SSL_get0_group_name`` at import, the first
+0.0.37 Intel build). The arm64 wheel is static already. After the build, the
+smoke test step of ``ci.yml`` and ``release.yml`` runs ``otool -L`` on that
+``_rust.abi3.so`` and fails when it references ``libssl`` or ``libcrypto``.
+
 Binary runtime notes
 --------------------
 
