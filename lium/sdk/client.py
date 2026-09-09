@@ -1327,6 +1327,7 @@ class Lium:
         lon: Optional[float] = None,
         max_distance_miles: Optional[int] = None,
         min_cuda_version: Optional[float] = None,
+        min_cpus: Optional[int] = None,
     ) -> List[ExecutorInfo]:
         """List available nodes.
 
@@ -1339,6 +1340,8 @@ class Lium:
             min_cuda_version: Optional minimum CUDA version to require (e.g. ``12.4``). Nodes whose
                 ``max_cuda_version`` is ``None`` or below this threshold are excluded. NVIDIA drivers are
                 backward compatible, so a node with a higher driver CUDA version satisfies the requirement.
+            min_cpus: Optional minimum CPU thread count (``specs.cpu.count``). Nodes that report fewer
+                CPUs, or none, are excluded.
 
         Returns:
             A list of :class:`ExecutorInfo` objects that satisfy the filters.
@@ -1373,6 +1376,9 @@ class Lium:
                 if e.max_cuda_version is not None and e.max_cuda_version >= min_cuda_version
             ]
 
+        if min_cpus is not None:
+            executors = [e for e in executors if e.cpu_count is not None and e.cpu_count >= min_cpus]
+
         return executors
 
     def ps(self) -> List[PodInfo]:
@@ -1388,11 +1394,15 @@ class Lium:
             executor = self._dict_to_executor_info(d.get("executor") or {}) if d.get("executor") else None
             # The /pods endpoint returns the authoritative total $/h as pod.price; the
             # nested executor.price_per_gpu is not populated in this payload. Anchor
-            # executor.price_per_hour on pod.price and derive per-GPU from it.
+            # executor.price_per_hour on pod.price and derive per-GPU from it. The
+            # executor describes the WHOLE host and stays so; for a GPU-split rental
+            # (1 GPU of a 3×3090 node) the pod row's own gpu_count is the billed count,
+            # so per-GPU is pod.price over that count when the API sent one.
             pod_price = d.get("price")
+            pod_gpu_count = _pod_gpu_count(d)
             if executor is not None and pod_price is not None:
                 executor.price_per_hour = float(pod_price)
-                executor.price_per_gpu = float(pod_price) / max(1, executor.gpu_count)
+                executor.price_per_gpu = float(pod_price) / max(1, pod_gpu_count or executor.gpu_count)
             pods.append(PodInfo(
                 id=d.get("id", ""),
                 name=d.get("pod_name", ""),
@@ -1412,7 +1422,7 @@ class Lium:
                 estimated_ready_seconds=d.get("estimated_ready_seconds"),
                 eta_basis=d.get("eta_basis"),
                 phase=d.get("phase"),
-                gpu_count=_pod_gpu_count(d),
+                gpu_count=pod_gpu_count,
             ))
 
         return pods

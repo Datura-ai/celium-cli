@@ -140,7 +140,7 @@ The `lium` CLI exposes the full pod lifecycle. Run `lium --help` to see everythi
 - `lium init` - Initialize configuration for an existing account (API key, SSH keys)
 - `lium balance` - Show the account balance (add `--format json` for machine-readable output)
 - `lium whoami` - Show which API key is in use, where it came from, and the account it belongs to
-- `lium ls [--gpu TYPE]` - List available nodes
+- `lium ls [--gpu TYPE] [--count N] [--country CODE] [--min-vram GB] [--max-price USD] [--tier spot|secure] [--format json]` - List available nodes
 - `lium up [NODE_ID]` - Create a pod (use node ID or filters like `--gpu`, `--count`, `--country`)
 - `lium ps` - List active pods; the `#` column is the row number `rm`/`ssh`/`exec`/`scp` accept in the same shell, for 10 minutes, and only while the pod shown on that row is still listed. Use the huid in scripts.
 - `lium describe <POD>` - Full manifest of one pod: ports, GPU, template, billing, last lifecycle event (why it is REBOOT_FAILED/BROKEN) and the node's disk health (add `--json` for machine-readable output). A deleted pod can still be described by its id: you get the events the backend kept for it and the reason it went away.
@@ -227,9 +227,10 @@ Full reference with every flag and runnable examples: <https://docs.lium.io/deve
 ### Command Examples
 
 ```bash
-# Filter nodes by GPU type
+# Filter nodes
 lium ls --gpu H100
-lium ls --gpu A100 --count 8
+lium ls --gpu H100 --count 8 --country US,NL --max-price 2.50
+lium ls --min-vram 80 --min-cuda 12.8 --tier secure
 lium ls --format json          # machine-readable
 
 # Create pod with node index
