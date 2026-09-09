@@ -20,7 +20,7 @@ from .actions import RsyncPodsAction
 @click.argument("targets")
 @click.argument("local_path", type=click.Path(exists=True, readable=True))
 @click.argument("remote_path", required=False)
-@click.option("--bwlimit", type=int, metavar="KIB_PER_S", help="Cap the transfer rate (rsync --bwlimit)")
+@click.option("--bwlimit", type=click.IntRange(min=1), metavar="KIB_PER_S", help="Cap the transfer rate (rsync --bwlimit)")
 @click.option("--exclude", multiple=True, metavar="PATTERN", help="Skip matching paths; repeatable (rsync --exclude)")
 @click.option("--delete", is_flag=True, help="Remove files on the pod that are not in the local source")
 @click.option("--progress", is_flag=True, help="Show overall transfer progress")

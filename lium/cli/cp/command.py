@@ -22,7 +22,7 @@ from . import parsing
 @click.command("cp")
 @click.argument("source", metavar="SRC_POD:PATH")
 @click.argument("destination", metavar="DST_POD:PATH")
-@click.option("--bwlimit", type=int, metavar="KIB_PER_S", help="Cap the transfer rate (rsync --bwlimit)")
+@click.option("--bwlimit", type=click.IntRange(min=1), metavar="KIB_PER_S", help="Cap the transfer rate (rsync --bwlimit)")
 @click.option("--exclude", multiple=True, metavar="PATTERN", help="Skip matching paths; repeatable (rsync --exclude)")
 @click.option("--delete", is_flag=True, help="Remove files at the destination that are not in the source")
 @click.option("--json", "json_output", is_flag=True, help="Print machine-readable JSON")
@@ -63,6 +63,16 @@ def cp_command(
             code, error, EXIT_POD_NOT_FOUND if code == "pod_not_found" else EXIT_CONFIGURATION_ERROR
         )
     src, dst = parsed
+    # Both ends must be reachable over ssh before any key is generated or a pod is touched; the same
+    # code and exit `lium ssh` gives a pod that is not RUNNING yet (ssh_unavailable, 4), not value_error.
+    for end in (src, dst):
+        if end.pod.status != "RUNNING" or not end.pod.ssh_cmd:
+            raise CliFailure(
+                "ssh_unavailable",
+                f"Pod '{end.pod.huid}' is {end.pod.status}" + ("" if end.pod.ssh_cmd else " with no SSH connection yet"),
+                EXIT_SSH_ERROR,
+                hint="Wait for 'lium ps' to show it RUNNING with an SSH command, then retry",
+            )
 
     # The SDK reports a failed cleanup (a transfer key left authorised on the
     # destination) as a warning; show it as one, with the revoke command in it —

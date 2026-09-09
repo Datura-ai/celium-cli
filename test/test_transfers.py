@@ -456,6 +456,36 @@ def test_cp_command_refuses_a_local_path(monkeypatch):
     assert "lium scp" in result.output and calls == []
 
 
+def test_cp_command_refuses_a_pod_that_is_not_running_before_touching_either(monkeypatch):
+    pending = _pod("pod-3", "new", "calm-owl-42", "9.9.9.9", 1)
+    pending.status, pending.ssh_cmd = "PENDING", None
+
+    result, calls = _run_cp(monkeypatch, ["dev:/x", "new:/y", "--json"], pods=(SRC, pending))
+
+    assert result.exit_code == EXIT_SSH_ERROR and calls == []
+    assert json.loads(result.output)["error"]["code"] == "ssh_unavailable"
+
+
+@pytest.mark.parametrize("args", [["cp", "dev:/x", "train:/y"], ["rsync", "dev", ".", "/w"]])
+def test_bwlimit_below_one_is_a_usage_error_before_any_pod_is_touched(monkeypatch, args):
+    touched = []
+
+    class _Lium:
+        def __init__(self, *a, **k):
+            pass
+
+        def ps(self):
+            touched.append("ps")
+            return [SRC, DST]
+
+    monkeypatch.setattr(cp_module, "Lium", _Lium)
+    monkeypatch.setattr(rsync_module, "Lium", _Lium)
+
+    result = CliRunner().invoke(cli, [*args, "--bwlimit", "0"])
+
+    assert result.exit_code == 2 and "bwlimit" in result.output and touched == []
+
+
 def test_cp_command_fails_on_an_unknown_pod(monkeypatch):
     result, calls = _run_cp(monkeypatch, ["dev:/x", "nope:/y"])
 
