@@ -292,22 +292,6 @@ _REQUIRED_RE = re.compile(r"requires at least " + _USD, re.I)
 _AVAILABLE_RE = re.compile(r"balance is " + _USD, re.I)
 
 
-def _response_error_code(response: requests.Response) -> Optional[str]:
-    """The stable ``error.code`` of the platform's error body, when it sends one.
-
-    lium-platform#210 (DAH-3056) answers every 4xx/5xx with
-    ``{"error": {"code", "message", "hint", "request_id"}, ...}``; older servers
-    send ``error`` as a string or not at all, and then this is ``None``.
-    """
-    try:
-        payload = response.json()
-    except ValueError:  # not a JSON body: older servers answer plain text, and then there is no code
-        return None
-    error = payload.get("error") if isinstance(payload, dict) else None
-    code = error.get("code") if isinstance(error, dict) else None
-    return code if isinstance(code, str) and code else None
-
-
 def permission_error(
     detail: str, code: Optional[str] = None, key: Optional[str] = None, **context: Optional[str]
 ) -> LiumPermissionError:
@@ -316,7 +300,7 @@ def permission_error(
     else a plain :class:`LiumPermissionError`.
 
     ``code`` is the platform's structured ``error.code`` when the response carried
-    one (:func:`_response_error_code`); it decides. Without it the message text
+    one (:func:`_error_context`); it decides. Without it the message text
     decides, which is what every server before lium-platform#210 sends. ``key``
     (the API key's fingerprint and source) is appended so the message says which
     key the server refused. ``code`` and ``context`` (:func:`_error_context`'s
