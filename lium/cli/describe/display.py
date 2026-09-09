@@ -129,13 +129,23 @@ def format_disk_health(view: Optional[dict]) -> str:
     return "ok" if view["ok"] is not False else "PROBLEM (see --json)"
 
 
+def latest_lifecycle_event(events: list[dict]) -> Optional[dict]:
+    """The newest `pod-lifecycle` event — the one whose to_status and reason say what happened to the pod — or,
+    when the log has none, the last event of any kind. A normal delete ends with `pod-delete.success`, which
+    carries neither, so the headline would lose the cause if it took the last row."""
+    for event in reversed(events):
+        if event.get("event_type") == "pod-lifecycle" or str(event.get("sub_event_type") or "").startswith("pod-lifecycle"):
+            return event
+    return events[-1] if events else None
+
+
 def build_gone_manifest(pod_id: str, events: list[dict]) -> dict:
     """What is left of a pod that is no longer listed: its id and the events the backend kept."""
     views = [event_view(event) for event in events]
     return {
         "pod": {"id": pod_id, "huid": None, "name": next((e.get("pod_name") for e in reversed(events) if e.get("pod_name")), None),
                 "status": "GONE", "created_at": None, "uptime_hours": None},
-        "last_event": views[-1] if views else None,
+        "last_event": event_view(latest_lifecycle_event(events)),
         "events": views,
     }
 

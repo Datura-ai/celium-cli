@@ -371,6 +371,32 @@ def test_describe_of_a_deleted_pod_by_id_prints_its_events_instead_of_not_found(
     ]
 
 
+def test_gone_manifest_headline_is_the_latest_lifecycle_event_not_the_delete_success_row():
+    # a normal delete ends with `pod-delete.success`, which carries no to_status or reason
+    events = GONE_EVENTS + [
+        {"created_at": "2026-09-05T23:36:40", "sub_event_type": "pod-delete.success", "pod_name": "vault", "error": None}
+    ]
+
+    manifest = display.build_gone_manifest(GONE_ID, events)
+
+    assert manifest["last_event"]["type"] == "pod-lifecycle.status"
+    assert manifest["last_event"]["to_status"] == "DELETED"
+    assert manifest["last_event"]["reason"] == "user_initiated"
+    assert manifest["events"][-1]["type"] == "pod-delete.success"  # the log itself is complete
+
+
+def test_gone_manifest_falls_back_to_the_last_event_without_a_lifecycle_row():
+    events = [
+        {"created_at": "2026-09-05T20:17:56", "sub_event_type": "pod-create.success", "pod_name": "vault", "error": None},
+        {"created_at": "2026-09-05T20:18:10", "sub_event_type": "pod-delete.success", "pod_name": "vault", "error": None},
+    ]
+
+    manifest = display.build_gone_manifest(GONE_ID, events)
+
+    assert manifest["last_event"]["type"] == "pod-delete.success"
+    assert display.build_gone_manifest(GONE_ID, [])["last_event"] is None
+
+
 def test_describe_of_a_deleted_pod_renders_a_table_for_humans(monkeypatch):
     monkeypatch.setattr(describe_module, "ensure_config", lambda: None)
 
