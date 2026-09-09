@@ -11,6 +11,7 @@ from lium.cli.utils import (
     EXIT_CONFIGURATION_ERROR,
     calculate_pareto_frontier,
     handle_errors,
+    resolve_output_format,
     store_executor_selection,
 )
 from lium.cli.completion import get_gpu_completions
@@ -41,7 +42,7 @@ def ls_store_executor(gpu_type: Optional[str] = None, sort_by: str = "download")
     return sorted_executors
 
 
-@click.command("ls")
+@click.command("ls", epilog="Use --format json for machine-readable output.")
 @click.option("--gpu", "gpu_type", shell_complete=get_gpu_completions, help="Filter by GPU type, e.g. A100")
 @click.option("--count", "gpu_count", type=int, help="Exact GPU count to match (e.g., 1, 8)")
 @click.option("--min-cuda", "min_cuda_version", type=float, help="Minimum CUDA version, e.g. 12.4 (NVIDIA drivers are backward compatible)")
@@ -62,6 +63,7 @@ def ls_store_executor(gpu_type: Optional[str] = None, sort_by: str = "download")
     default="table",
     help="Output format. 'json' emits machine-readable JSON to stdout (suitable for piping to jq).",
 )
+@click.option("--json", "json_output", is_flag=True, hidden=True, help="Alias for --format json")
 @handle_errors
 def ls_command(
     gpu_type: Optional[str],
@@ -72,9 +74,11 @@ def ls_command(
     sort_by: Optional[str],
     limit: Optional[int],
     output_format: str,
+    json_output: bool,
     min_cuda_version: Optional[float],
 ):
     """List available GPU nodes."""
+    output_format = resolve_output_format(output_format, json_output)
 
     _, error = validation.validate(limit, lat, lon, max_distance, min_cuda_version)
     if error:

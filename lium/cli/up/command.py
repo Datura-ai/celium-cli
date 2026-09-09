@@ -601,6 +601,9 @@ def up_command(
                 "jupyter_install_failed",
                 f"Pod is running but Jupyter was NOT installed: {result.error}",
                 EXIT_GENERAL_ERROR,
+                # The pod exists and bills; running `up` again would rent a second one.
+                hint=f"The pod is up: add Jupyter with 'lium update {pod.huid} --jupyter <port>' "
+                     "instead of running 'lium up' again",
             )
 
     # Always state what was created: a caller that only gets an SSH banner or a

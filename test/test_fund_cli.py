@@ -259,7 +259,7 @@ def test_balance_json(monkeypatch):
     result = CliRunner().invoke(cli, ["balance", "--json"])
 
     assert result.exit_code == 0
-    assert json.loads(result.output) == {"balance_usd": 42.5}
+    assert json.loads(result.output) == {"balance": 42.5, "balance_usd": 42.5, "currency": "USD"}
 
 
 def test_sdk_no_longer_exposes_nowpayments():

@@ -34,6 +34,7 @@ from .exceptions import (
     LiumError,
     LiumHostKeyError,
     LiumNotFoundError,
+    LiumInsufficientBalanceError,
     LiumPermissionError,
     LiumRateLimitError,
     LiumServerError,
@@ -283,6 +284,57 @@ def _satisfies_spec(executor: ExecutorInfo, spec: Dict[str, Any]) -> bool:
     return True
 
 
+_USD = r"\$([0-9][0-9,]*(?:\.[0-9]+)?)"
+# The platform's balance refusals: "Insufficient balance" from the auth dependency and
+# "Insufficient balance. This node costs $X/hour, so renting it requires at least $Y
+# (N minutes of runtime). Your balance is $Z." from the rent path.
+_REQUIRED_RE = re.compile(r"requires at least " + _USD, re.I)
+_AVAILABLE_RE = re.compile(r"balance is " + _USD, re.I)
+
+
+def _response_error_code(response: requests.Response) -> Optional[str]:
+    """The stable ``error.code`` of the platform's error body, when it sends one.
+
+    lium-platform#210 (DAH-3056) answers every 4xx/5xx with
+    ``{"error": {"code", "message", "hint", "request_id"}, ...}``; older servers
+    send ``error`` as a string or not at all, and then this is ``None``.
+    """
+    try:
+        payload = response.json()
+    except ValueError:  # not a JSON body: older servers answer plain text, and then there is no code
+        return None
+    error = payload.get("error") if isinstance(payload, dict) else None
+    code = error.get("code") if isinstance(error, dict) else None
+    return code if isinstance(code, str) and code else None
+
+
+def permission_error(detail: str, code: Optional[str] = None) -> LiumPermissionError:
+    """The exception for a 403: :class:`LiumInsufficientBalanceError` when the server
+    refused for lack of funds (with ``required``/``available`` when it said them),
+    else a plain :class:`LiumPermissionError`.
+
+    ``code`` is the platform's structured ``error.code`` when the response carried
+    one (:func:`_response_error_code`); it decides. Without it the message text
+    decides, which is what every server before lium-platform#210 sends.
+    """
+    message = f"Permission denied: {detail}"
+    if code is not None:
+        insufficient = code == "insufficient_balance"
+    else:
+        insufficient = "insufficient balance" in (detail or "").lower()
+    if not insufficient:
+        return LiumPermissionError(message)
+
+    def usd(match: Optional[re.Match]) -> Optional[float]:
+        return float(match.group(1).replace(",", "")) if match else None
+
+    return LiumInsufficientBalanceError(
+        message,
+        required=usd(_REQUIRED_RE.search(detail)),
+        available=usd(_AVAILABLE_RE.search(detail)),
+    )
+
+
 def _response_error_message(response: requests.Response) -> str:
     try:
         payload = response.json()
@@ -470,7 +522,7 @@ class Lium:
         if resp.status_code == 401:
             raise LiumAuthError("Invalid API key")
         if resp.status_code == 403:
-            raise LiumPermissionError(f"Permission denied: {_response_error_message(resp)}")
+            raise permission_error(_response_error_message(resp), _response_error_code(resp))
         if resp.status_code == 404:
             raise LiumNotFoundError(f"Resource not found: {_response_error_message(resp)}")
         if resp.status_code == 429:
