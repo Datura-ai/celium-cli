@@ -310,8 +310,7 @@ _HINTS_BY_CODE: Dict[str, str] = {
     "not_found": "The resource is gone or the id is wrong; list it again and retry",
     "rate_limited": "Wait a few seconds and retry; back off if it repeats",
     "server_error": "Retry; if it persists, re-run with LIUM_DEBUG=1 and report the request",
-    # Not raised by any command on this branch yet; the non-interactive guard
-    # (lium/cli/ui.py confirm, DAH-2893) is what starts emitting them.
+    # Raised by the non-interactive guard (lium/cli/ui.py confirm/prompt, DAH-2883).
     "confirmation_required": "Re-run with --yes",
     "input_required": "Pass the value as an option instead of answering a prompt",
     "invalid_arguments": "See 'lium <command> --help' for the accepted options",
@@ -1130,6 +1129,7 @@ def ensure_config():
                 f"{noninteractive_reason()}. Set LIUM_API_KEY, or run "
                 "'lium init --no-browser' and then 'lium init --session <ID>'",
                 EXIT_CONFIGURATION_ERROR,
+                hint="Set LIUM_API_KEY, or run 'lium init --no-browser' and then 'lium init --session <ID>'",
             )
         # Setup API key
         action = SetupApiKeyAction()
