@@ -8,6 +8,7 @@ import sys
 import traceback
 from pathlib import Path
 import click
+from lium.cli.interactive import is_interactive, noninteractive_reason
 from lium.cli.settings import config
 from datetime import datetime, timezone
 from rich.status import Status
@@ -112,9 +113,12 @@ def _prompt_value(
     cast: Callable[[str], T],
     validate: Callable[[T], bool],
 ) -> T:
-    """Loop: Enter -> default, invalid -> reprompt until valid."""
+    """Loop: Enter -> default, invalid -> reprompt until valid.
+
+    Without a terminal there is no loop: the default is the answer.
+    """
     default_str = str(default_value)
-    if value != default_value:
+    if value != default_value or not is_interactive():
         return value
     while True:
         raw = Prompt.ask(prompt_text, default=default_str)
@@ -309,6 +313,18 @@ _HINTS_BY_CODE: Dict[str, str] = {
     "server_error": "Retry; if it persists, re-run with LIUM_DEBUG=1 and report the request",
     # Not raised by any command on this branch yet; the non-interactive guard
     # (lium/cli/ui.py confirm, DAH-2893) is what starts emitting them.
+    "no_api_key": "Set LIUM_API_KEY, or run 'lium init' (headless: 'lium init --no-browser')",
+    "invalid_api_key": "Check the key: 'lium config get api.api_key' shows which one is used; "
+                       "a new one comes from https://lium.io/api-keys",
+    "permission_denied": "Check the account with 'lium balance'; an insufficient balance is "
+                         "fixed with 'lium topup' or 'lium fund', a pending verification on https://lium.io",
+    "insufficient_balance": "Add funds with 'lium topup' or 'lium fund', or pick a cheaper node "
+                            "('lium ls --sort price_total')",
+    "pod_not_found": "Run 'lium ps' to list pods; a name, huid, id or 1-based index is accepted",
+    "not_found": "The resource is gone or the id is wrong; list it again and retry",
+    "rate_limited": "Wait a few seconds and retry; back off if it repeats",
+    "server_error": "Retry; if it persists, re-run with LIUM_DEBUG=1 and report the request",
+    # Raised by the non-interactive guard (lium/cli/ui.py confirm/prompt, DAH-2883).
     "confirmation_required": "Re-run with --yes",
     "input_required": "Pass the value as an option instead of answering a prompt",
     "invalid_arguments": "See 'lium <command> --help' for the accepted options",
@@ -1127,6 +1143,18 @@ def ensure_config():
     from lium.cli.settings import config
 
     if not config.get('api.api_key'):
+        if not is_interactive():
+            # The browser login needs a person at the keyboard. Without one it
+            # would open a browser nobody sees and poll for half a minute
+            # before failing — name the fix instead.
+            raise CliFailure(
+                "no_api_key",
+                "No API key configured and the browser login cannot run because "
+                f"{noninteractive_reason()}. Set LIUM_API_KEY, or run "
+                "'lium init --no-browser' and then 'lium init --session <ID>'",
+                EXIT_CONFIGURATION_ERROR,
+                hint="Set LIUM_API_KEY, or run 'lium init --no-browser' and then 'lium init --session <ID>'",
+            )
         # Setup API key
         action = SetupApiKeyAction()
         result = action.execute({})

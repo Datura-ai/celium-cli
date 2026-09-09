@@ -141,7 +141,7 @@ The `lium` CLI exposes the full pod lifecycle. Run `lium --help` to see everythi
 - `lium ls [--gpu TYPE]` - List available nodes
 - `lium up [NODE_ID]` - Create a pod (use node ID or filters like `--gpu`, `--count`, `--country`)
 - `lium ps` - List active pods; the `#` column is the row number `rm`/`ssh`/`exec`/`scp` accept in the same shell, for 10 minutes, and only while the pod shown on that row is still listed. Use the huid in scripts.
-- `lium describe <POD>` - Full manifest of one pod: ports, GPU, template, billing (add `--json` for machine-readable output)
+- `lium describe <POD>` - Full manifest of one pod: ports, GPU, template, billing, last lifecycle event (why it is REBOOT_FAILED/BROKEN) and the node's disk health (add `--json` for machine-readable output). A deleted pod can still be described by its id: you get the events the backend kept for it and the reason it went away.
 - `lium ssh <POD>` - SSH into a pod
 - `lium exec <POD> <COMMAND>` - Execute command on pod (`--json` for stdout/stderr/exit_code)
 - `lium logs <POD>` - Stream a pod's container logs
@@ -387,6 +387,20 @@ legitimately re-provisioned. Fingerprints are `SHA256:…`, as `ssh-keygen -lf` 
 `LIUM_SSH_INSECURE=1` restores the old accept-anything behaviour (each accepted key is
 reported with its fingerprint). `lium ssh` runs OpenSSH with an argument list built from the
 pod's user, address and port; the API's connection string is never handed to a shell.
+
+### Scripts and agents (non-interactive use)
+
+The CLI never waits on a prompt it cannot show. When stdin is not a terminal, or
+`LIUM_NONINTERACTIVE=1` is set, a command that would have asked a question either
+takes its documented default or fails immediately (exit code 2) with a hint naming
+the flag to pass:
+
+```bash
+export LIUM_API_KEY=...            # no browser login is attempted without a terminal
+lium up --gpu H100 -y --no-ssh     # -y: rent without the confirmation prompt
+lium rm my-pod -y                  # -y on every destructive command
+lium fund -w default -a 1.5 -y     # values that would be prompted for must be passed as options
+```
 
 ## Requirements
 
