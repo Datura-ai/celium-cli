@@ -6,6 +6,7 @@ bug": `_resolve_machine_name` compared the typed text with the extracted type ve
 "All 4090 GPUs are currently rented out" — a wrong diagnosis for a spelling problem.
 """
 
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -51,6 +52,16 @@ MACHINES = [
 )
 def test_gpu_short_matches(typed, gpu_type, expected):
     assert gpu_short_matches(typed, gpu_type) is expected
+
+
+def test_gpu_short_matches_is_linear_on_a_hostile_type_name():
+    """`gpu_type` falls through from an API-supplied machine name; a 40 KB one must not stall the match."""
+    hostile = "9" * 40_000 + "."
+    started = time.perf_counter()
+    assert gpu_short_matches("4090", hostile) is False
+    assert gpu_short_matches("9" * 40_000, hostile) is False   # the "." ends the name; no digit run trails it
+    assert gpu_short_matches("9" * 40_000, "9" * 40_000 + "X") is True
+    assert time.perf_counter() - started < 0.5
 
 
 class _Client(Lium):

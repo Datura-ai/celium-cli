@@ -92,9 +92,23 @@ def gpu_short_matches(gpu_short: str, gpu_type: str) -> bool:
     if wanted == have:
         return True
     if wanted.isdigit():
-        number = re.search(r"(\d+)[A-Z]*$", have)
-        return bool(number) and number.group(1) == wanted
+        return _trailing_model_number(have) == wanted
     return False
+
+
+def _trailing_model_number(gpu_type: str) -> str:
+    """The digit run that ends a normalised type, after an optional letter suffix: ``RTX4090`` → ``4090``,
+    ``RTXPRO6000D`` → ``6000``, ``H100SXM`` → ``100``, ``UNKNOWN`` → ``""``.
+
+    Two slices, no regex: ``gpu_type`` falls through from an API-supplied machine name of any length, and a
+    backtracking pattern on it was polynomial (PR_PROCESS §5, linear regex on wire-derived text).
+    """
+    stem = gpu_type.rstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+    end = len(stem)
+    start = end
+    while start and stem[start - 1].isdigit():
+        start -= 1
+    return stem[start:end]
 
 
 def expand_gpu_shorthand(gpu_short: str) -> str:
