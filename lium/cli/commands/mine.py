@@ -2,6 +2,7 @@
 
 import json
 import re
+import shlex
 import shutil
 import time
 from pathlib import Path
@@ -13,7 +14,12 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
 
-from ..utils import console, handle_errors, timed_step_status
+from ..utils import CliFailure, console, handle_errors, timed_step_status
+
+
+SYSBOX_RUNTIME = "sysbox-runc"
+SYSBOX_VERIFY_IMAGE = "daturaai/compute-subnet-executor:latest"
+SYSBOX_DOCS_URL = "https://docs.lium.io/providers/nodes/sysbox"
 
 
 # --------------------------
@@ -88,9 +94,10 @@ def _show_setup_summary():
     table.add_row("1", "Clone or update compute-subnet repo")
     table.add_row("2", "Install node dependencies")
     table.add_row("3", "Prerequisite check (Docker, NVIDIA GPU)")
-    table.add_row("4", "Configure node .env (ports, hotkey)")
-    table.add_row("5", "Start node with docker compose")
-    table.add_row("6", "Validate node configuration")
+    table.add_row("4", "Verify Sysbox runtime and GPU access")
+    table.add_row("5", "Configure node .env (ports, hotkey)")
+    table.add_row("6", "Start node with docker compose")
+    table.add_row("7", "Validate node configuration")
     console.print(table)
     console.print()
 
@@ -122,6 +129,62 @@ def _check_prereqs():
         raise Exception("Docker not found")
 
     _run("docker info")
+
+
+def _sysbox_failure(reason: str, executor_dir: Path) -> CliFailure:
+    setup_script = executor_dir / "nvidia_docker_sysbox_setup.sh"
+    setup_command = f"sudo bash {shlex.quote(str(setup_script))}"
+    message = (
+        f"{reason}\n\n"
+        "Sysbox is required before this node can start. Install or repair it with:\n"
+        f"  {setup_command}\n\n"
+        "Then rerun the same lium mine command.\n"
+        f"Guide: {SYSBOX_DOCS_URL}"
+    )
+    return CliFailure("sysbox_unavailable", message)
+
+
+def _verify_sysbox(executor_dir: Path) -> None:
+    if not _exists(SYSBOX_RUNTIME):
+        raise _sysbox_failure(
+            "The sysbox-runc executable is not installed or is not on PATH.",
+            executor_dir,
+        )
+
+    try:
+        runtimes_output, _ = _run("docker info --format '{{json .Runtimes}}'")
+    except RuntimeError as error:
+        raise _sysbox_failure(
+            f"Docker's runtime registry could not be inspected:\n{error}",
+            executor_dir,
+        ) from error
+
+    try:
+        runtimes = json.loads(runtimes_output)
+    except json.JSONDecodeError as error:
+        raise _sysbox_failure(
+            "Docker returned an unreadable runtime list; the Sysbox registration could not be verified.",
+            executor_dir,
+        ) from error
+
+    if not isinstance(runtimes, dict) or SYSBOX_RUNTIME not in runtimes:
+        raise _sysbox_failure(
+            "The active Docker daemon does not have the sysbox-runc runtime registered. "
+            "If Sysbox was installed with sudo, confirm this shell and sudo use the same Docker daemon.",
+            executor_dir,
+        )
+
+    verify_command = (
+        f"docker run --rm --runtime={SYSBOX_RUNTIME} --gpus all "
+        f"{SYSBOX_VERIFY_IMAGE} nvidia-smi"
+    )
+    try:
+        _run(verify_command)
+    except RuntimeError as error:
+        raise _sysbox_failure(
+            f"Sysbox is registered, but its GPU verification failed:\n{error}",
+            executor_dir,
+        ) from error
 
 
 def _install_executor_tools(compute_dir: Path):
@@ -366,7 +429,7 @@ def mine_command(ctx, hotkey, dir_, branch, auto, verbose):
     answers = _gather_inputs(hotkey, auto)
     target_dir = Path(dir_).absolute()
 
-    TOTAL_STEPS = 6
+    TOTAL_STEPS = 7
 
     try:
         with timed_step_status(1, TOTAL_STEPS, "Ensuring repository"):
@@ -378,11 +441,14 @@ def mine_command(ctx, hotkey, dir_, branch, auto, verbose):
         with timed_step_status(3, TOTAL_STEPS, "Checking prerequisites"):
             _check_prereqs()
 
-        with timed_step_status(4, TOTAL_STEPS, "Configuring environment"):
-            executor_dir = target_dir / "neurons" / "executor"
-            if not executor_dir.exists():
-                raise Exception(f"Node directory not found at {executor_dir}")
+        executor_dir = target_dir / "neurons" / "executor"
+        if not executor_dir.exists():
+            raise Exception(f"Node directory not found at {executor_dir}")
 
+        with timed_step_status(4, TOTAL_STEPS, "Verifying Sysbox + GPU"):
+            _verify_sysbox(executor_dir)
+
+        with timed_step_status(5, TOTAL_STEPS, "Configuring environment"):
             _setup_executor_env(
                 str(executor_dir),
                 hotkey=answers["hotkey"],
@@ -397,16 +463,17 @@ def mine_command(ctx, hotkey, dir_, branch, auto, verbose):
                 rng=answers["port_range"],
             )
 
-        with timed_step_status(5, TOTAL_STEPS, "Starting node"):
+        with timed_step_status(6, TOTAL_STEPS, "Starting node"):
             _start_executor(executor_dir)
 
-        with timed_step_status(6, TOTAL_STEPS, "Validating node"):
+        with timed_step_status(7, TOTAL_STEPS, "Validating node"):
             # Pass any extra arguments to the validator
             _validate_executor(ctx.args if ctx.args else None)
 
-    except Exception as e:
-        console.error(f"❌ {e}")
-        return
+    except CliFailure:
+        raise
+    except Exception as error:
+        raise CliFailure("mine_setup_failed", str(error)) from error
 
     # Get executor details for summary
     gpu_info = _get_gpu_info()

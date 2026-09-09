@@ -102,6 +102,23 @@ install_lium() {
     hash -r
 }
 
+uv_manages_lium() {
+    command_exists uv || return 1
+    uv tool list 2>/dev/null | grep -Eq '^lium[._-]io[[:space:]]'
+}
+
+describe_lium() {
+    local binary="$1"
+    local version
+    version=$("$binary" --version 2>/dev/null || true)
+
+    if [[ -n "$version" ]]; then
+        log_ok "lium-cli found: $version ($binary)"
+    else
+        log_ok "lium-cli found: $binary"
+    fi
+}
+
 ensure_path() {
     if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
         export PATH="$HOME/.local/bin:$PATH"
@@ -125,10 +142,15 @@ main() {
 
     ensure_path
 
+    if uv_manages_lium; then
+        run_with_timer "Updating lium-cli" uv tool install --upgrade lium.io
+        hash -r
+    fi
+
     if LIUM_BIN=$(find_lium); then
-        log_ok "lium-cli found"
+        describe_lium "$LIUM_BIN"
     else
-        echo -e "${BLUE}▸${NC} lium-cli not found, installing via pip..."
+        echo -e "${BLUE}▸${NC} lium-cli not found, installing via uv..."
 
         install_lium
 
