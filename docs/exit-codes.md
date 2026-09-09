@@ -69,8 +69,8 @@ Codes raised by the shared error handler (any command can produce them):
 | `invalid_api_key` | 3 | The API answered 401. | `lium config get api.api_key` shows which key is in use; new keys at https://lium.io/api-keys. |
 | `value_error` | 2 | A value the command received was invalid (SDK `ValueError`). | Check the options. |
 | `invalid_arguments` | 2 | Options that contradict each other or a malformed value. | `lium <command> --help`. |
-| `confirmation_required` | 2 | *Reserved — not emitted yet.* A yes/no question could not be asked because stdin is not a terminal; arrives with the non-interactive guard (DAH-2893). | Re-run with `--yes`. |
-| `input_required` | 2 | *Reserved — not emitted yet.* A value would have been prompted for (same change). | Pass it as an option. |
+| `confirmation_required` | 2 | A yes/no question could not be asked: no terminal can answer, or the terminal went away mid-prompt (`ui.confirm`, DAH-2883). | Re-run with `--yes`. |
+| `input_required` | 2 | A value would have been prompted for and no terminal can answer (`ui.prompt`, DAH-2883). | Pass it as an option. |
 | `permission_denied` | 6 | The API answered 403. | `lium balance`; verification on https://lium.io. |
 | `insufficient_balance` | 6 | 403 whose `error.code` is `insufficient_balance` (the platform's structured error body, lium-platform#210), or, from an older server, whose message says "Insufficient balance"; the SDK raises `LiumInsufficientBalanceError` with `required`/`available` parsed from the message when the server stated them. | `lium topup` or `lium fund`, or a cheaper node (`lium ls --sort price_total`). |
 | `pod_not_found` | 5 | The pod named on the command line matched nothing. | `lium ps`. |
