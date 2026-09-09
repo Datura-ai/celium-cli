@@ -566,6 +566,21 @@ def test_writes_without_a_session_explain_how_to_get_one_before_any_request(home
 
 
 @responses.activate
+def test_a_missing_session_is_session_required_and_the_hint_names_the_login_not_an_api_key(home):
+    """A session refusal is a LiumAuthError too, but its hint must not send anyone to https://lium.io/api-keys."""
+    me()
+
+    human = run("keys", "list")
+    machine = run("keys", "list", "--json")
+
+    assert human.exit_code == EXIT_API_ERROR and "lium workspaces login" in human.output
+    assert "api-keys" not in human.output and "api.api_key" not in human.output
+    error = json.loads(machine.stderr)["error"]
+    assert error["code"] == "session_required" and error["exit_code"] == EXIT_API_ERROR
+    assert "lium workspaces login" in error["hint"] and "api-keys" not in error["hint"]
+
+
+@responses.activate
 def test_an_expired_session_says_to_log_in_again_on_reads_too(home, monkeypatch):
     monkeypatch.setenv("LIUM_SESSION_TOKEN", "eyJ.expired")
     me()

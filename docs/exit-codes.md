@@ -67,6 +67,7 @@ Codes raised by the shared error handler (any command can produce them):
 |--------|------|------|------|
 | `no_api_key` | 2 | No API key in `LIUM_API_KEY` or `~/.lium/config.ini`. | Set `LIUM_API_KEY`, or run `lium init` (headless: `lium init --no-browser`, then `lium init --session <ID>`). |
 | `invalid_api_key` | 3 | The API answered 401. | `lium config get api.api_key` shows which key is in use; new keys at https://lium.io/api-keys. |
+| `session_required` | 3 | A browser-session command (`lium workspaces …`, `lium keys …`) ran without a session token, or the API refused it. | `lium workspaces login` (or set `LIUM_SESSION_TOKEN`); an API key cannot fix this. |
 | `value_error` | 2 | A value the command received was invalid (SDK `ValueError`). | Check the options. |
 | `invalid_arguments` | 2 | Options that contradict each other or a malformed value. | `lium <command> --help`. |
 | `confirmation_required` | 2 | A yes/no question could not be asked: no terminal can answer, or the terminal went away mid-prompt (`ui.confirm`, DAH-2883). | Re-run with `--yes`. |

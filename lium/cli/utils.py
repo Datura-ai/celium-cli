@@ -23,6 +23,7 @@ from lium.sdk import (
     LiumPermissionError,
     LiumRateLimitError,
     LiumServerError,
+    LiumSessionError,
     PodInfo,
 )
 from .themed_console import ThemedConsole
@@ -302,6 +303,8 @@ _HINTS_BY_CODE: Dict[str, str] = {
     "no_api_key": "Set LIUM_API_KEY, or run 'lium init' (headless: 'lium init --no-browser')",
     "invalid_api_key": "Check the key: 'lium config get api.api_key' shows which one is used; "
                        "a new one comes from https://lium.io/api-keys",
+    "session_required": "Run 'lium workspaces login' (or set LIUM_SESSION_TOKEN); "
+                        "the browser-session commands never take an API key",
     "permission_denied": "Check the account with 'lium balance'; an insufficient balance is "
                          "fixed with 'lium topup' or 'lium fund', a pending verification on https://lium.io",
     "insufficient_balance": "Add funds with 'lium topup' or 'lium fund', or pick a cheaper node "
@@ -444,6 +447,10 @@ def _classify_sdk_error(error: LiumError) -> tuple[str, int]:
         return "insufficient_balance", EXIT_PERMISSION_DENIED
     if isinstance(error, LiumPermissionError):
         return "permission_denied", EXIT_PERMISSION_DENIED
+    if isinstance(error, LiumSessionError):
+        # a missing/refused browser session (workspaces, keys): same exit 3 as any other
+        # refused call, but the hint must name the login, not an API key
+        return "session_required", EXIT_API_ERROR
     if isinstance(error, LiumAuthError):
         # Exit 3, as before: a 401 is the API refusing the call, and callers
         # (the live e2e suite among them) pin that number.

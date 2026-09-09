@@ -15,7 +15,7 @@ from rich.markup import escape
 
 from lium.sdk import Config, Lium
 from lium.sdk.config import workspace_section
-from lium.sdk.exceptions import LiumAuthError
+from lium.sdk.exceptions import LiumSessionError
 from lium.sdk.models import WorkspaceInfo
 from lium.sdk.workspaces import NEEDS_SESSION
 from lium.cli import ui
@@ -61,7 +61,7 @@ def target_workspace(lium: Lium, workspace: Optional[str]) -> WorkspaceInfo:
 def require_session(lium: Lium) -> None:
     """The session-only subcommands stop here, before any request, when there is no session token."""
     if not lium.workspaces.session_token:
-        raise LiumAuthError(NEEDS_SESSION)
+        raise LiumSessionError(NEEDS_SESSION)
 
 
 def _member_id(lium: Lium, workspace: WorkspaceInfo, who: str) -> str:

@@ -12,6 +12,7 @@ from .exceptions import (
     LiumPermissionError,
     LiumRateLimitError,
     LiumServerError,
+    LiumSessionError,
     PodStartError,
 )
 from .models import (
@@ -54,6 +55,7 @@ __all__ = [
     "PodStartError",
     "LiumHostKeyError",
     "LiumInsufficientBalanceError",
+    "LiumSessionError",
     "machine",
     "pod_ssh_command",
 ]

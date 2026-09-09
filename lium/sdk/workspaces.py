@@ -4,7 +4,7 @@ An API key acts in exactly one workspace and the server tells which on ``GET /us
 is also how this client knows the server has workspaces at all. Reads of the workspace the key acts
 in work with the key; anything that reshapes a team (create, invite, remove, transfer billing,
 delete) and anything on ``/keys`` is session-only on the server, so those calls need a browser-session
-token (``Lium.workspaces.login`` or LIUM_SESSION_TOKEN) and raise :class:`LiumAuthError` without one.
+token (``Lium.workspaces.login`` or LIUM_SESSION_TOKEN) and raise :class:`LiumSessionError` without one.
 
 Workspaces and members come back as :class:`WorkspaceInfo` / :class:`WorkspaceMember`; the write
 acknowledgements (``{"message": …}``), the invitation and the API-key rows are returned as the server's
@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import requests
 
-from .exceptions import LiumAuthError, LiumError
+from .exceptions import LiumAuthError, LiumError, LiumSessionError
 from .models import WorkspaceInfo, WorkspaceMember
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -91,10 +91,10 @@ class WorkspacesClient:
             )
         except LiumAuthError as e:
             # _request maps every 401 to "Invalid API key"; here no key was sent
-            raise LiumAuthError("Login refused: check the e-mail and password") from e
+            raise LiumSessionError("Login refused: check the e-mail and password") from e
         token = response.json().get("token")
         if not token:
-            raise LiumAuthError("Login did not return a session token")
+            raise LiumSessionError("Login did not return a session token")
         self._lium.config.session_token = token
         return token
 
@@ -103,7 +103,7 @@ class WorkspacesClient:
 
     def _session_headers(self, workspace_id: Optional[str] = None) -> Dict[str, str]:
         if not self.session_token:
-            raise LiumAuthError(NEEDS_SESSION)
+            raise LiumSessionError(NEEDS_SESSION)
         headers = {**self._plain_headers(), "Authorization": f"Bearer {self.session_token}"}
         if workspace_id:
             headers[WORKSPACE_HEADER] = workspace_id
@@ -117,7 +117,7 @@ class WorkspacesClient:
         except LiumAuthError as e:
             if str(e) == NEEDS_SESSION:
                 raise
-            raise LiumAuthError("The session token was refused (expired?); run `lium workspaces login` again") from e
+            raise LiumSessionError("The session token was refused (expired?); run `lium workspaces login` again") from e
 
     def _read(self, endpoint: str) -> requests.Response:
         # a session lists every workspace of the account; a key lists the one it acts in
