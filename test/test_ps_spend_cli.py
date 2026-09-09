@@ -278,6 +278,15 @@ def test_pod_spend_is_price_times_wall_time():
     assert row.since == (NOW - timedelta(hours=3)).isoformat(timespec="seconds")
 
 
+def test_pod_spend_labels_a_gpu_split_pod_with_its_own_count_as_ps_does():
+    split = _pod("split", "split", executor=_executor("RTX3090", count=3, price=0.6))
+    split.gpu_count = 1
+
+    row = report.pod_spend(split, now=NOW)
+
+    assert row.config == "RTX3090" and row.price_per_hour == 0.6
+
+
 def test_pod_spend_without_executor_or_timestamp_is_unknown_not_zero():
     bare = PodInfo(
         id="x", name="x", huid="x", status="FAILED", ssh_cmd=None, ports={}, created_at="", updated_at="",

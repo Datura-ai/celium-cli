@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 from rich.table import Table
 
 from lium.sdk import PodInfo
-from lium.cli.ps.display import _parse_timestamp
+from lium.cli.ps.display import _gpu_config, _parse_timestamp
 
 ESTIMATE_NOTE = (
     "spent is price × wall time since creation (it counts the start-up minutes; the API does not report billed "
@@ -53,9 +53,7 @@ def pod_spend(pod: PodInfo, now: Optional[datetime] = None) -> PodSpend:
     price = executor.price_per_hour if executor and executor.price_per_hour is not None else None
     created = _parse_timestamp(pod.created_at) if pod.created_at else None
     hours = round((now - created).total_seconds() / 3600, 3) if created else None
-    config = None
-    if executor:
-        config = f"{executor.gpu_count}×{executor.gpu_type}" if executor.gpu_count and executor.gpu_count > 1 else executor.gpu_type
+    config = _gpu_config(pod)  # the pod's own GPU count, as `ps` labels it — a split rental is not the whole host
     status = pod.status.upper() if pod.status else None
     if status in NOT_YET_BILLING:
         spent: Optional[float] = 0.0
