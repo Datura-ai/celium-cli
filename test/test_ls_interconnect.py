@@ -260,9 +260,15 @@ def _run_ls(monkeypatch, fleet: list[ExecutorInfo], *args: str):
         def __init__(self, *a, **k):
             pass
 
+        def unknown_gpu_type(self, gpu_type):
+            # the marketplace knows H100 and H200; anything else is a typo
+            return None if gpu_type.upper() in ("H100", "H200") else ["H100", "H200"]
+
         def ls(self, **kwargs):
             _FakeLium.kwargs = kwargs
             result = fleet
+            if kwargs.get("gpu_type"):
+                result = [e for e in result if kwargs["gpu_type"].upper() in (e.gpu_type or "").upper()]
             if kwargs.get("nvlink"):
                 result = [e for e in result if e.nvlink is True]
             if kwargs.get("min_download_mbps") is not None:
@@ -310,6 +316,17 @@ def test_ls_explains_an_empty_result_caused_by_the_new_filters(monkeypatch):
     assert "rented out" not in result.output
 
 
+def test_ls_names_a_gpu_typo_before_blaming_the_nvlink_filter(monkeypatch):
+    # `--gpu H2000 --nvlink`: the empty result is the typo, not an NVLink shortage
+    fleet = [_map(_executor_dict("hgx", interconnect=HGX, nvlink=True))]
+
+    result, _ = _run_ls(monkeypatch, fleet, "--gpu", "H2000", "--nvlink")
+
+    assert result.exit_code == 0, result.output
+    assert "No GPU type matches 'H2000'" in result.output
+    assert "NVLink between every GPU pair" not in result.output
+
+
 def test_ls_explains_an_empty_result_caused_by_min_download(monkeypatch):
     # the fixture's Download is 300 Mbps: the hint names the column the floor was judged on
     fleet = [_map(_executor_dict("old"))]
@@ -336,7 +353,8 @@ def test_ls_table_shows_the_link_column(monkeypatch):
     result, _ = _run_ls(monkeypatch, fleet)
 
     assert result.exit_code == 0, result.output
-    assert "NV" in result.output
+    assert "Link" in result.output
+    assert "NV18" in result.output
     assert "Net↓/↑" not in result.output
 
 
@@ -350,7 +368,7 @@ def test_ls_rejects_a_non_positive_min_download(monkeypatch, value):
 
 
 def test_validate_accepts_a_positive_min_download():
-    assert validate(None, None, None, None, None, 1000.0) == (True, None)
+    assert validate(None, None, None, None, min_download_mbps=1000.0) == (True, None)
 
 
 # -- lium describe -------------------------------------------------------------------------------------

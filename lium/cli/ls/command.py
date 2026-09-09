@@ -111,7 +111,8 @@ def ls_command(
     output_format = resolve_output_format(output_format, json_output)
 
     _, error = validation.validate(
-        limit, lat, lon, max_distance, min_cuda_version, min_vram_gb, max_price, min_cpus, min_download_mbps
+        limit, lat, lon, max_distance, min_cuda_version,
+        min_vram_gb=min_vram_gb, max_price=max_price, min_cpus=min_cpus, min_download_mbps=min_download_mbps,
     )
     if error:
         raise CliFailure("invalid_arguments", error, EXIT_CONFIGURATION_ERROR)
@@ -154,6 +155,12 @@ def ls_command(
             ui.error(f"No nodes match {node_filters.describe(filters)}")
             ui.info(f"Tip: loosen a filter, or {ui.styled('lium ls --gpu ' + gpu_type if gpu_type else 'lium ls', 'success')} to see everything")
             return
+        known = lium.unknown_gpu_type(gpu_type) if gpu_type else None
+        if known is not None:
+            ui.error(f"No GPU type matches '{gpu_type}'")
+            ui.info(f"Types on the marketplace: {', '.join(known)}")
+            ui.info(f"Tip: {ui.styled('lium ls --gpu RTX4090', 'success')} {ui.styled('# or just 4090', 'dim')}")
+            return
         if nvlink or min_download_mbps is not None:
             wanted = [w for w in (
                 "NVLink between every GPU pair" if nvlink else None,
@@ -171,12 +178,6 @@ def ls_command(
             ui.info(f"{'; '.join(rules)}. {tail}")
             return
         if gpu_type:
-            known = lium.unknown_gpu_type(gpu_type)
-            if known is not None:
-                ui.error(f"No GPU type matches '{gpu_type}'")
-                ui.info(f"Types on the marketplace: {', '.join(known)}")
-                ui.info(f"Tip: {ui.styled('lium ls --gpu RTX4090', 'success')} {ui.styled('# or just 4090', 'dim')}")
-                return
             ui.error(f"All {gpu_type} GPUs are currently rented out")
             ui.info(f"Tip: {ui.styled('lium ls', 'success')}")
         else:
