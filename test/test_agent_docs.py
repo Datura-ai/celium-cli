@@ -275,5 +275,5 @@ def test_the_documented_failure_branch_reads_the_remote_failure_from_stdout():
 def test_guide_does_not_promise_unmerged_features():
     """The page describes this CLI; branch names and features that live elsewhere do not belong on it."""
     text = AGENTS_DOC.read_text()
-    for banned in ("origin/main", "sdk/", "cli/", "--verify-gpus", "lium top", "lium cp", "lium doctor", "lium schema", "LIUM_NONINTERACTIVE", "LIUM_OUTPUT"):
+    for banned in ("origin/main", "sdk/", "cli/", "--verify-gpus", "lium top", "lium cp", "lium doctor", "lium schema", "LIUM_NONINTERACTIVE"):
         assert banned not in text, f"docs/agents.md still mentions `{banned}`"

@@ -5,7 +5,7 @@ One page for an LLM agent (or any unattended script) that has to rent a GPU pod,
 The rules of the road:
 
 1. **Authenticate from the environment.** `LIUM_API_KEY` wins over `~/.lium/config.ini`. Never run `lium init` from an agent.
-2. **Ask for JSON.** `--format json` on `ls`/`ps`, `--json` on `exec`/`describe`/`balance`: the result is on stdout and the exit code says whether it worked. On a `--json` command a runtime error is one JSON object on stderr; a usage error is click's plain text with exit 2; on `ls`/`ps --format json` errors are plain text on stdout (§2).
+2. **Ask for JSON.** `--format json` on `ls`/`ps`, `--json` on `exec`/`describe`/`balance`: the result is on stdout and the exit code says whether it worked. On any of them a runtime error is one JSON object on stderr (`LIUM_OUTPUT=json` switches that on for every command); a usage error is click's plain text with exit 2 (§2).
 3. **Never let a command wait for a human.** Pass `--yes` to anything that would confirm (`up`, `rm`); `reboot` never asks.
 4. **Always give a pod a lifetime** (`--ttl`) and always remove it when finished, including on failure.
 
@@ -29,12 +29,14 @@ Success: the JSON result is on **stdout**, exit code 0.
 Failure on a renter command that takes `--json` (`exec`, `describe`, `balance`, `audit`; `fund`, `signup`, `topup currencies` and `topup create` too): stdout is empty, **stderr** holds one JSON object, the exit code is non-zero:
 
 ```json
-{"ok": false, "error": {"code": "pod_not_found", "message": "No pods match targets: train-1"}}
+{"ok": false, "error": {"code": "pod_not_found", "message": "No pods match targets: train-1", "hint": "Run 'lium ps' to list pods; a name, huid, id or 1-based index is accepted", "exit_code": 5}}
 ```
+
+All four keys are always there: `error.hint` is the next command or option to try, `error.exit_code` repeats the process exit code. The codes and hints are listed in [docs/exit-codes.md](exit-codes.md).
 
 A usage error on any command — an unknown option, a missing argument — is click's plain-text `Usage: … Error: No such option '--bogus'` on stderr with exit 2, not the envelope: read exit 2 with non-JSON stderr as "fix the invocation".
 
-Failure on `ls --format json` / `ps --format json`: the exit code is the signal; the error is plain text on **stdout** (not JSON, and not stderr — `lium ps no-such-pod --format json` prints `Pod 'no-such-pod' not found` there and exits 5), so check the exit code (`set -o pipefail`) before handing stdout to `jq`. The envelope on `--format json` comes with lium#217, not released.
+Failure on `ls --format json` / `ps --format json`: the same envelope on **stderr**, stdout empty — `lium ps no-such-pod --format json` exits 5 with `{"ok": false, "error": {"code": "pod_not_found", …}}` on stderr. `LIUM_OUTPUT=json` in the environment turns the envelope on for every command's failures, flag or no flag; success output stays JSON only where `--format json`/`--json` asks for it.
 
 Exit codes:
 
