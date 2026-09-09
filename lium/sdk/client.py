@@ -50,7 +50,7 @@ from .models import (
     VolumeInfo,
 )
 from .ssh_key_cache import fingerprint, load_cache, save_cache
-from .utils import extract_gpu_type, generate_huid, with_retry
+from .utils import extract_gpu_type, generate_huid, normalize_gpu_short, with_retry
 
 load_dotenv()
 
@@ -1200,13 +1200,15 @@ class Lium:
         """
         try:
             available_machines = self._request("GET", "/machines").json()
-            gpu_short_normalized = gpu_short.upper()
+            gpu_short_normalized = normalize_gpu_short(gpu_short)
             matching_machines = []
 
             for machine in available_machines:
                 machine_name = machine.get("name", "")
-                # Check if the short name matches the extracted GPU type
-                if extract_gpu_type(machine_name).upper() == gpu_short_normalized:
+                # Both sides go through normalize_gpu_short: pattern hits are already
+                # upper-case, but a name with no pattern hit keeps its casing ("Ti", "Xp"),
+                # and `--gpu ti` must still find it.
+                if normalize_gpu_short(extract_gpu_type(machine_name)) == gpu_short_normalized:
                     matching_machines.append(machine_name)
 
             # Return comma-separated list of all matches
