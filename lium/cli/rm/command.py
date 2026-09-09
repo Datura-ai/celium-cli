@@ -7,7 +7,6 @@ import click
 
 from lium.sdk import Lium, PodInfo
 from lium.cli import ui
-from lium.cli.interactive import is_interactive
 from lium.cli.utils import (
     EXIT_CONFIGURATION_ERROR,
     EXIT_GENERAL_ERROR,
@@ -87,34 +86,36 @@ def human_approved_index_targets(matches: List[TargetMatch], yes: bool = False) 
 
     A number is the one way to name a pod the caller may never have looked at, so
     the pod behind it is spelled out here — huid and name — before anything is
-    removed, with or without --yes. Without a terminal the line is still printed
-    and the removal goes ahead: the index has already been checked against the
-    last `lium ps`.
+    removed, with or without --yes. Without a terminal nobody can answer, so the
+    command fails closed (``confirmation_required``) unless ``--yes`` was given:
+    a script names its intent with the flag, never by the absence of a prompt.
     """
     for match in matches:
         ui.info(f"Pod {describe_index_match(match)}")
-    if yes or not is_interactive():
+    if yes:
         return True
     try:
-        return ui.confirm(f"Remove {len(matches)} pod(s) selected by index?")
+        return ui.confirm(f"Remove {len(matches)} pod(s) selected by index?", hint="pass --yes to remove without a prompt")
     except EOFError:
         ui.warning("\nNo answer — nothing removed")
         return False
 
 
 def human_approved_removing_every_pod(pods: List[PodInfo]) -> bool:
-    """Ask before wiping the whole account — but only ask a human.
+    """Ask before wiping the whole account — and fail closed when nobody can answer.
 
-    A piped caller (or one that set ``LIUM_NONINTERACTIVE``) has already said
-    what it wants and cannot answer a prompt.
+    A piped caller (or one that set ``LIUM_NONINTERACTIVE``) cannot answer a
+    prompt; wiping every pod on the strength of a missing prompt is the one thing
+    this module exists to prevent, so the command fails with
+    ``confirmation_required`` and names ``--yes`` (the caller of this function
+    already skips it when ``--yes`` was given).
     """
-    if not is_interactive():
-        return True
     listed_huids = ", ".join(pod.huid for pod in pods)
     try:
-        return ui.confirm(f"Remove all {len(pods)} pods ({listed_huids})?")
-    except (EOFError, CliFailure):
-        # The terminal went away mid-prompt. No answer is not a yes.
+        return ui.confirm(f"Remove all {len(pods)} pods ({listed_huids})?", hint="pass --yes to remove every pod without a prompt")
+    except EOFError:
+        # The terminal went away mid-prompt. No answer is not a yes. (A refused prompt —
+        # nobody to answer — is the CliFailure ui.confirm raises; it propagates.)
         ui.warning("\nNo answer — nothing removed")
         return False
 

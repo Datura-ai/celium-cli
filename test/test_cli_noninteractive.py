@@ -191,14 +191,24 @@ def test_up_with_yes_never_looks_for_a_terminal(monkeypatch):
     assert len(_UpLium.rented) == 1
 
 
-def test_rm_all_when_piped_proceeds_as_before(monkeypatch):
-    """A piped `rm --all` has said what it wants; the opt-out env var reads the same."""
+def test_rm_all_and_rm_by_index_fail_closed_when_piped(monkeypatch):
+    """Wiping pods on the strength of a missing prompt is what this module prevents: without --yes a
+    piped `rm --all` or `rm <row>` fails with confirmation_required and names the flag; --yes proceeds."""
     from lium.cli.rm import command as rm_module
 
     _terminal(monkeypatch, attached=True)
     monkeypatch.setenv(interactive.NONINTERACTIVE_ENV, "1")
 
-    assert rm_module.human_approved_removing_every_pod([SimpleNamespace(huid="a")]) is True
+    with pytest.raises(CliFailure) as failure:
+        rm_module.human_approved_removing_every_pod([SimpleNamespace(huid="a")])
+    assert failure.value.code == "confirmation_required" and "--yes" in str(failure.value)
+
+    match = SimpleNamespace(index=1, pod=SimpleNamespace(huid="a", name="n", id="id-a"))
+    monkeypatch.setattr(rm_module, "describe_index_match", lambda m: "1 → a")
+    with pytest.raises(CliFailure) as failure:
+        rm_module.human_approved_index_targets([match])
+    assert failure.value.code == "confirmation_required"
+    assert rm_module.human_approved_index_targets([match], yes=True) is True
 
 
 def test_volumes_rm_without_yes_fails_fast_when_piped(monkeypatch):

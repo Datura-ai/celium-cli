@@ -378,7 +378,7 @@ def test_rm_by_index_names_the_pod_it_removes(config_dir, monkeypatch):
 def test_rm_by_index_asks_a_human_before_removing(config_dir, monkeypatch):
     _snapshot(config_dir, [MINE, THEIRS], when=datetime.now(timezone.utc))
     # CliRunner swaps sys.stdin for its own pipe; tell the module a human can answer (DAH-2883's is_interactive).
-    monkeypatch.setattr(rm_module, "is_interactive", lambda: True)
+    monkeypatch.setattr(rm_module.ui, "is_interactive", lambda: True)  # rm asks through ui.confirm
     monkeypatch.setattr(rm_module.ui, "confirm", lambda *a, **k: False)
 
     result, removed = _run_rm(monkeypatch, [MINE, THEIRS], ["1"])
