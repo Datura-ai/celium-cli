@@ -30,11 +30,12 @@ from ..utils import (
 UNKNOWN_REMOTE_FAILURE = 1
 
 # pip on an Ubuntu 24.04 image refuses to touch the system Python (PEP 668) and
-# prints Debian's apt/pipx advice, none of which applies to a GPU pod whose torch
-# lives in that system Python. The marker is the error's own name.
+# prints Debian's apt/pipx advice, none of which applies to a GPU pod. Only the
+# marker is visible here, not the image: a `--image`/`--dockerfile` pod may ship
+# no torch at all, so the hint promises nothing about what the system Python holds.
 PEP668_MARKER = "externally-managed-environment"
 PEP668_HINT = (
-    "Hint: pip on this image is PEP 668-managed and torch lives in the system Python. Either:",
+    "Hint: pip on this image is PEP 668-managed; --system-site-packages keeps any torch the image ships. Either:",
     "  pip install --break-system-packages <pkg>",
     "  python3 -m venv --system-site-packages /workspace/venv && /workspace/venv/bin/pip install <pkg>",
 )
