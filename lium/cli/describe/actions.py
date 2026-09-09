@@ -1,6 +1,8 @@
 import contextlib
 import re
 
+import requests
+
 from lium.sdk import Lium, LiumError, PodInfo
 from lium.cli.utils import loading_status
 
@@ -38,10 +40,11 @@ def pod_detail(lium: Lium, pod_id: str) -> dict:
     """GET /pods/{id}: the fields `ps` does not carry (last_event, the node's disk verdict).
 
     Best effort — a detail call failing must not take `describe` down with it, the listing
-    already answered.
+    already answered. `Lium.pod()` re-raises a transport error (`requests.RequestException`)
+    after its retries as-is, not as a `LiumError`, so both are swallowed here.
     """
     try:
         detail = lium.pod(pod_id)
-    except LiumError:
+    except (LiumError, requests.RequestException):
         return {}
     return detail if isinstance(detail, dict) else {}

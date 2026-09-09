@@ -104,6 +104,29 @@ def test_ps_of_one_pod_survives_a_failing_detail_call(monkeypatch):
     assert json.loads(result.stdout)[0]["last_event"] is None
 
 
+def test_ps_of_one_pod_survives_a_transport_error_on_the_detail_call(monkeypatch):
+    """`Lium.pod()` re-raises requests errors after its retries as-is (not a LiumError); the listing already answered."""
+    import requests
+
+    result = _run_ps(monkeypatch, [_pod()], ["eager-wolf-aa", "--format", "json"], detail=requests.ConnectionError("reset"))
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)[0]["last_event"] is None
+
+
+def test_describe_display_imports_on_its_own():
+    """The describe and ps packages import each other's display helpers; a module-level import from
+    ps.command back into describe made `import lium.cli.describe.display` fail while partially initialised."""
+    import subprocess
+    import sys
+
+    proc = subprocess.run(
+        [sys.executable, "-c", "import lium.cli.describe.display; import lium.cli.ps.command"],
+        capture_output=True, text=True, env={**__import__("os").environ, "PYTHONDONTWRITEBYTECODE": "1"},
+    )
+    assert proc.returncode == 0, proc.stderr
+
+
 def test_ps_of_an_unlisted_pod_points_at_describe(monkeypatch):
     result = _run_ps(monkeypatch, [_pod()], ["no-such-pod"])
 

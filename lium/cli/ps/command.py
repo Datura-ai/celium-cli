@@ -13,8 +13,6 @@ from lium.cli.utils import (
     ensure_config,
     store_pod_selection,
 )
-from lium.cli.describe.actions import pod_detail
-from lium.cli.describe.display import event_view, format_event
 from . import display
 from .actions import GetPodsAction
 
@@ -64,6 +62,12 @@ def ps_command(pod_id: Optional[str], output_format: str):
             )
         pods = [pod]
         # One pod asked for by name: worth the extra call for why it is REBOOT_FAILED / BROKEN.
+        # Imported here, not at the top: describe.display imports ps.display, and a module-level import
+        # back into describe from this package's __init__ chain made `import lium.cli.describe.display`
+        # fail with a partially initialised module.
+        from lium.cli.describe.actions import pod_detail
+        from lium.cli.describe.display import event_view
+
         last_event = event_view(pod_detail(lium, pod.id).get("last_event"))
     else:
         # Only a full listing defines what "pod 1" means; a filtered one does not.
@@ -94,4 +98,6 @@ def ps_command(pod_id: Optional[str], output_format: str):
     ui.info(header)
     ui.print(table)
     if last_event:
+        from lium.cli.describe.display import format_event
+
         ui.dim(f"last event: {format_event(last_event)}")
