@@ -382,6 +382,29 @@ def test_delete_after_a_rename_drops_the_section_saved_under_the_old_name(home, 
 
 
 @responses.activate
+def test_delete_keeps_a_same_named_section_that_holds_another_workspace(home, monkeypatch):
+    """Two workspaces named Research: deleting one must not drop the section, key and default saved for the other."""
+    other = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+    monkeypatch.setenv("LIUM_SESSION_TOKEN", "eyJ.fixture.session")
+    write_config(
+        home,
+        "[api]\napi_key = sk_test_default\n[ssh]\nkey_path = /dev/null\n[workspaces]\nactive = Research\n"
+        f"[workspace.research]\nid = {other}\napi_key = sk_test_first_research\n",
+    )
+    me()
+    responses.add(responses.GET, f"{API}/workspaces", json=fixture("workspaces_session"))
+    responses.add(responses.DELETE, f"{API}/workspaces/{RESEARCH}", json={"message": "Workspace deleted"})
+
+    result = run("workspaces", "delete", RESEARCH, "--yes")
+
+    assert result.exit_code == 0, result.output
+    assert responses.calls[-1].request.method == "DELETE" and RESEARCH in responses.calls[-1].request.url
+    text = config_text(home)
+    assert f"[workspace.research]\nid = {other}\napi_key = sk_test_first_research" in text  # the twin's section stays
+    assert "active = Research" in text
+
+
+@responses.activate
 def test_workspaces_use_stores_the_default_and_the_key_when_it_acts_there(home):
     me()
     responses.add(responses.GET, f"{API}/workspaces", json=fixture("workspaces_key"))

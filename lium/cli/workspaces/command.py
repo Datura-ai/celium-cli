@@ -122,7 +122,10 @@ def _forget(workspace: WorkspaceInfo) -> None:
     the `[workspaces] active` default when it names one of them; a deleted workspace's key is dead."""
     names = {section[len("workspace."):] for section in settings.sections("workspace.")}
     gone = {name for name in names if settings.get_in_section(f"workspace.{name}", "id") == workspace.id}
-    gone.add(workspace.name.lower())
+    # The name-keyed section goes only when it is this workspace's (or carries no id): a same-named
+    # workspace's saved id and key stay (the twin the `section_for` guard exists for).
+    if _saved_id(workspace.name) in (None, workspace.id):
+        gone.add(workspace.name.lower())
     for section in settings.sections("workspace."):
         if section[len("workspace."):] in gone:
             settings.remove_section(section)
