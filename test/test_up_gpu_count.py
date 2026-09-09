@@ -85,6 +85,9 @@ class _FakeLium:
     def __init__(self, *args, **kwargs):
         pass
 
+    def supports(self, feature):
+        return False  # an older backend: no rent_by_spec, the client picks the node (DAH-3047)
+
     def get_executor(self, executor_id):
         return _executor(self.node_gpus, free=self.node_free)
 
