@@ -3,7 +3,9 @@ run-name: ${{ github.event_name == 'release' && format('Release {0}', github.eve
 
 on:
   # Publishing a GitHub release on tag vX.Y.Z builds that tag and ships it: the version is the
-  # tag (hatch-vcs, pyproject.toml), nothing in the tree is bumped (DAH-3225).
+  # tag (hatch-vcs, pyproject.toml), nothing in the tree is bumped (DAH-3225). Create it with
+  # --prerelease: `latest` must not point at it until the assets are uploaded below, or install.sh
+  # and self-update see a release without binaries for ~3 min.
   release:
     types: [published]
   # A manual run only builds: no version input, nothing is published.
@@ -280,6 +282,11 @@ jobs:
           release-assets/darwin-arm64/lium-darwin-arm64.tar.gz.sha256 \
           release-assets/python-dist/* \
           --clobber
+
+    - name: Mark the release latest now that the assets are in place
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: gh release edit "$RELEASE_TAG" --prerelease=false --latest
 
   approve-and-publish:
     if: github.event_name == 'release'
