@@ -428,6 +428,7 @@ class Lium:
             "X-Lium-Client-Version": _get_client_version(),
         }
         self._features: Optional[set] = None
+        self._ssh_sessions: Dict[str, paramiko.SSHClient] = {}  # pod id -> connection held by ssh_session()
 
     def features(self) -> set:
         """Optional API capabilities the backend advertises on ``GET /version``.
@@ -1722,6 +1723,11 @@ class Lium:
         Yields:
             An active ``paramiko.SSHClient``.
         """
+        held = self._ssh_sessions.get(pod.id)
+        if held is not None:
+            yield held
+            return
+
         if not pod.ssh_cmd:
             raise ValueError(f"No SSH for pod {pod.name}")
 
@@ -1810,6 +1816,24 @@ class Lium:
     # here names a value, so the pod's argv never carries one.
     _ENV_FROM_STDIN = 'eval "$(cat)"'
 
+    @contextmanager
+    def ssh_session(self, pod: PodInfo, timeout: int = 30):
+        """Keep one SSH connection to ``pod`` open for the whole block.
+
+        Every :meth:`exec`, :meth:`stream_exec`, :meth:`upload` and :meth:`download`
+        inside it runs over this connection instead of paying a fresh TCP + SSH
+        handshake each (several seconds per call to a distant node).
+
+        Yields:
+            The active ``paramiko.SSHClient``.
+        """
+        with self.ssh_connection(pod, timeout) as client:
+            self._ssh_sessions[pod.id] = client
+            try:
+                yield client
+            finally:
+                self._ssh_sessions.pop(pod.id, None)
+
     def _prep_command(self, command: str, env: Optional[Dict[str, str]] = None) -> str:
         """Prefix ``command`` with the exports spelled out inline.
 
@@ -1875,36 +1899,50 @@ class Lium:
         *,
         command: str,
         env: Optional[Dict[str, str]] = None,
-    ) -> Generator[Dict[str, str], None, None]:
+        pty: bool = True,
+    ) -> Generator[Dict[str, str], None, int]:
         """Execute a shell command and stream incremental output.
 
         Args:
             pod: Pod to target.
             command: Shell command to run remotely.
             env: Optional environment variables exported before the command runs.
+            pty: Request a pseudo-terminal (default). A pty merges stderr into stdout
+                and turns ``\n`` into ``\r\n``; pass ``False`` to keep the two
+                streams apart, as :func:`lium.machine` does to relay a function's output.
 
         Yields:
             Streaming output chunks as ``{"type": "stdout"|"stderr", "data": str}``.
+
+        Returns:
+            The command's exit status (the generator's ``StopIteration.value``).
         """
         command = self._prep_command(command, env)
 
         with self.ssh_connection(pod) as client:
-            stdin, stdout, stderr = client.exec_command(command, get_pty=True)
+            stdin, stdout, stderr = client.exec_command(command, get_pty=pty)
             stdin.close()
 
             channel = stdout.channel
-            channel.settimeout(0.1)
-
-            while not channel.closed or channel.recv_ready() or channel.recv_stderr_ready():
+            while True:
+                got = False
                 if channel.recv_ready():
                     data = channel.recv(4096).decode("utf-8", errors="replace")
                     if data:
+                        got = True
                         yield {"type": "stdout", "data": data}
 
                 if channel.recv_stderr_ready():
                     data = channel.recv_stderr(4096).decode("utf-8", errors="replace")
                     if data:
+                        got = True
                         yield {"type": "stderr", "data": data}
+
+                if got:
+                    continue
+                if channel.exit_status_ready() and not channel.recv_ready() and not channel.recv_stderr_ready():
+                    return channel.recv_exit_status()
+                time.sleep(0.05)  # nothing pending: do not spin at 100% CPU until the command ends
 
     def exec_all(
         self,
