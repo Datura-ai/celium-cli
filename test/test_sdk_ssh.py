@@ -13,7 +13,7 @@ def _pod():
         name="backup-test",
         huid="swift-fox-c8",
         status="RUNNING",
-        ssh_cmd="ssh root@38.80.122.244 -p 20299",
+        ssh_cmd="ssh root@203.0.113.10 -p 20299",
         ports={},
         created_at="2026-05-14T00:00:00Z",
         updated_at="2026-05-14T00:00:00Z",
@@ -60,7 +60,7 @@ def test_ssh_connection_falls_back_to_agent_when_key_file_cannot_be_loaded(monke
 
     assert connect_calls == [
         {
-            "hostname": "38.80.122.244",
+            "hostname": "203.0.113.10",
             "port": 20299,
             "username": "root",
             "timeout": 30,
@@ -343,3 +343,37 @@ def test_edit_forgets_the_pinned_host_key(monkeypatch, tmp_path):
         ("PUT", "/templates/tpl-1", {"id": "tpl-1", "docker_image": "a", "startup_commands": "python main.py"}),
     ]
     assert not hosts_file.exists()
+
+
+def test_ssh_session_reuses_one_connection_for_every_operation_inside(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("LIUM_SSH_INSECURE", "1")  # no known_hosts file to load in this fake
+    key_path = tmp_path / "id_ed25519"
+    key_path.write_text("key")
+    monkeypatch.setattr(sdk_client.paramiko.Ed25519Key, "from_private_key_file", lambda p: object())
+    connects, closes = [], []
+
+    class FakeSSHClient:
+        def set_missing_host_key_policy(self, policy):
+            pass
+
+        def connect(self, **kwargs):
+            connects.append(kwargs["hostname"])
+
+        def close(self):
+            closes.append(True)
+
+    monkeypatch.setattr(sdk_client.paramiko, "SSHClient", FakeSSHClient)
+    client = Lium(Config(api_key="test", ssh_key_path=key_path))
+    pod = _pod()
+
+    with client.ssh_session(pod) as held:
+        with client.ssh_connection(pod) as a, client.ssh_connection(pod) as b:
+            assert a is held and b is held
+        assert connects == ["203.0.113.10"] and closes == []
+    assert closes == [True]                       # closed once, when the session ends
+    assert client._ssh_sessions == {}
+
+    with client.ssh_connection(pod):              # outside a session: a fresh connection again
+        pass
+    assert connects == ["203.0.113.10", "203.0.113.10"] and closes == [True, True]

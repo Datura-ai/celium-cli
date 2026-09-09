@@ -26,6 +26,12 @@ Example
 -------
 
 The ``@lium.machine`` decorator is the easiest way to offload work to a GPU pod.
+``machine`` is ``"<count>x<gpu>"`` or ``"<gpu>"`` (``"1xH200"``, ``"A100"``, ``"2xRTX4090"``;
+the count defaults to 1; the GPU is named as ``lium ls --gpu`` takes it and matched whole, so
+``"A100"`` never rents an RTX A1000) and the cheapest matching node is rented. ``timeout=`` (default one
+hour) bounds the run; the pod is scheduled for removal at ``timeout + 15 min`` — armed when the pod
+is rented and again once setup is done, so the run itself gets the full window — regardless of
+what happens to the caller.
 
 .. code-block:: python
 
@@ -41,6 +47,21 @@ The ``@lium.machine`` decorator is the easiest way to offload work to a GPU pod.
        return tokenizer.decode(out[0], skip_special_tokens=True)
 
    print(infer("Who discovered penicillin?"))
+
+``keep_warm=300`` keeps the pod five minutes for the next call or the next run of the
+script; ``infer.map(prompts)`` runs every item on one pod; ``infer.local(...)`` runs the
+function in this process (``local=True`` / ``LIUM_MACHINE_LOCAL=1`` does so for every
+call); ``infer.close()`` removes a warm pod. Arguments travel as a pickle; the
+result comes back as a JSON envelope plus an ``.npz`` sidecar for numpy arrays, read with
+``allow_pickle=False`` — nothing the pod writes is unpickled on your machine. What round-trips:
+``None``/``bool``/``int``/``float``/``str``/``bytes``, ``list``/``tuple``/``set``/``frozenset``/``dict``
+of those, ``datetime``/``date``/``time``/``timedelta``, ``Decimal``, ``pathlib.Path``, ``uuid.UUID``,
+``numpy.ndarray`` (any dtype without Python objects) and numpy scalars; anything else is a
+``lium.ResultEncodingError`` on the pod naming the type (return ``.tolist()``, ``dict(x)``,
+``x.value`` instead). Only the function's own ``def`` is sent, so import inside it. A remote exception is re-raised with
+its type when that type is a builtin (``except ValueError`` works; other types arrive as
+``lium.RemoteExecutionError`` with the name), with ``lium.RemoteExecutionError`` (remote traceback, exit code,
+output) as its cause. Progress lines go to stderr (``quiet=True`` to silence them).
 
 Direct SDK usage follows the same pattern:
 

@@ -211,8 +211,8 @@ def test_cheapest_sort_survives_the_whole_ls_command(monkeypatch, sort_by):
     assert [row["huid"] for row in json.loads(result.output)][0] == "cheap-node"
 
 
-def test_default_ls_ordering_still_puts_the_starred_node_first(monkeypatch):
-    """Without --sort the ★ ordering a human reads is unchanged."""
+def test_default_ls_ordering_puts_the_cheapest_node_first(monkeypatch):
+    """Without --sort the cheapest $/GPU·h leads; the ★ marks, it does not rank (DAH-3079)."""
     cheap = _executor("cheap-node", price_per_hour=0.30, download=10)
     expensive_but_starred = _executor("starred-node", price_per_hour=64.00, download=9999)
 
@@ -229,7 +229,9 @@ def test_default_ls_ordering_still_puts_the_starred_node_first(monkeypatch):
     result = CliRunner().invoke(cli, ["ls", "--format", "json"])
 
     assert result.exit_code == 0, result.output
-    assert json.loads(result.output)[0]["huid"] == "starred-node"
+    rows = json.loads(result.output)
+    assert [row["huid"] for row in rows] == ["cheap-node", "starred-node"]
+    assert [row["is_pareto"] for row in rows] == [False, True]
 
 
 def test_exec_script_flag_reads_the_file(monkeypatch, tmp_path):
@@ -679,6 +681,38 @@ def test_config_setup_failure_stops_the_command(monkeypatch):
     result = CliRunner().invoke(cli, ["ps"])
 
     assert result.exit_code == EXIT_CONFIGURATION_ERROR
+
+
+def test_missing_api_key_points_a_new_user_at_signup(monkeypatch):
+    """A first-time user has no account, so 'run lium init' alone sends them to a login they cannot do."""
+    from lium.cli import balance as balance_module
+
+    class _NoKeyLium:
+        def __init__(self, *args, **kwargs):
+            raise ValueError("No API key found. Set LIUM_API_KEY or ~/.lium/config.ini")
+
+    monkeypatch.setattr(balance_module, "Lium", _NoKeyLium)
+
+    result = CliRunner().invoke(cli, ["balance"])
+
+    assert result.exit_code == EXIT_CONFIGURATION_ERROR
+    assert "lium init" in result.output
+    assert "lium signup --email" in result.output
+
+
+def test_missing_api_key_in_a_pipe_points_a_new_user_at_signup(monkeypatch):
+    """ensure_config()'s non-interactive no_api_key carries its own hint; it must name signup too."""
+    from lium.cli import settings, utils as utils_module
+
+    monkeypatch.setattr(settings.config, "get", lambda key, default=None: None)
+    monkeypatch.setattr(utils_module, "is_interactive", lambda: False)
+
+    result = CliRunner().invoke(cli, ["ps", "--format", "json"])
+
+    assert result.exit_code == EXIT_CONFIGURATION_ERROR
+    envelope = json.loads(result.output)
+    assert envelope["error"]["code"] == "no_api_key"
+    assert "lium signup --email" in envelope["error"]["hint"]
 
 
 def test_ps_empty_account_is_not_a_failure(monkeypatch):

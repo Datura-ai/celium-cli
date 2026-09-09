@@ -5,7 +5,7 @@ from typing import Optional
 from rich.table import Table
 
 from lium.sdk import ExecutorInfo, PodInfo, pod_ssh_command
-from lium.cli.utils import console
+from lium.cli.utils import console, pod_gpu_count
 # Reused rather than reimplemented: the same timestamp handling and cost rounding
 # `lium ps` already applies, so describe and ps never disagree on spend.
 from lium.cli.ps.display import _parse_timestamp, _spent_usd
@@ -172,7 +172,7 @@ def build_manifest(pod: PodInfo, detail: Optional[dict] = None) -> dict:
         },
         "gpu": {
             "type": executor.gpu_type,
-            "count": executor.gpu_count,
+            "count": pod_gpu_count(pod),
             "model": executor.gpu_model or None,
             "driver_version": executor.driver_version or None,
             "max_cuda_version": executor.max_cuda_version,

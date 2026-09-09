@@ -327,11 +327,14 @@ def test_ls_explains_an_empty_result_caused_by_min_download(monkeypatch):
 
 def test_ls_table_shows_the_link_column(monkeypatch):
     fleet = [_map(_executor_dict("hgx", interconnect=HGX, nvlink=True))]
+    # Link is an optional column (priority 4): on CliRunner's 80-column pseudo-terminal the table drops
+    # it, so the width is pinned wide enough for every column (as test_ls_width.py pins it); the header
+    # order is asserted on the Table object in test_table_has_the_link_column_after_config
+    monkeypatch.setattr(ls_command_module.console, "_width", 200)
+    monkeypatch.setattr(ls_command_module.console, "_height", 25)
 
     result, _ = _run_ls(monkeypatch, fleet)
 
-    # CliRunner renders on an 80-column pseudo-terminal, so headers are ellipsised; the full header
-    # set is asserted on the Table object in test_table_has_the_link_column_after_config
     assert result.exit_code == 0, result.output
     assert "NV" in result.output
     assert "Net↓/↑" not in result.output

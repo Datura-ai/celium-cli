@@ -67,6 +67,14 @@ class ExecutorInfo:
         return gpu_details[0].get("name", "") if gpu_details else ""
 
     @property
+    def cpu_count(self) -> Optional[int]:
+        """Number of CPU threads the node reports (``specs.cpu.count``); None if unknown."""
+        try:
+            return int((self.specs.get("cpu") or {}).get("count"))
+        except (TypeError, ValueError):
+            return None
+
+    @property
     def download_speed(self) -> float:
         """Effective download speed in Mbps (backend-authoritative; 0.0 if unknown)."""
         return self.effective_download_speed_mbps or 0.0

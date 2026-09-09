@@ -103,7 +103,7 @@ def _specs_row(executor: ExecutorInfo) -> Dict[str, str]:
     """Extract display fields from an executor."""
     specs = executor.specs
     if not specs:
-        return {k: "—" for k in ["VRAM", "RAM", "Disk", "PCIe", "Mem", "TFLOPs", "Upload", "Download", "Ports"]}
+        return {k: "—" for k in ["VRAM", "RAM", "CPUs", "Disk", "DiskTotal", "PCIe", "Mem", "TFLOPs", "Upload", "Download", "Ports"]}
 
     d = _first_gpu_detail(specs)
     ram = specs.get("ram", {})
@@ -112,7 +112,11 @@ def _specs_row(executor: ExecutorInfo) -> Dict[str, str]:
     return {
         "VRAM": _maybe_gi_from_capacity(d.get("capacity")),
         "RAM": _maybe_gi_from_big_number(ram.get("total")),
-        "Disk": _maybe_gi_from_big_number(disk.get("total")),
+        "CPUs": _maybe_int((specs.get("cpu") or {}).get("count")),
+        # free, not total: a pod gets a share of the host's FREE disk (≈ (free − 20 GB) × its GPU share,
+        # 2/3 as the /root volume + 1/3 as /workspace), so the total is the one number a renter never sees
+        "Disk": _maybe_gi_from_big_number(disk.get("free")),
+        "DiskTotal": _maybe_gi_from_big_number(disk.get("total")),
         "Country": _country_name(specs.get("location")),
         "PCIe": _maybe_int(d.get("pcie_speed")),
         "Upload": _maybe_int(executor.upload_speed or None),
@@ -122,8 +126,10 @@ def _specs_row(executor: ExecutorInfo) -> Dict[str, str]:
 
 
 _SORT_KEY_FUNCS: Dict[str, Callable[[ExecutorInfo], Any]] = {
-    "price_gpu": lambda e: e.price_per_gpu or 0.0,
-    "price_total": lambda e: e.price_per_hour or 0.0,
+    # The SDK stores a missing price as 0; sorted as 0 it would be row 1 and `lium up 1` would
+    # rent an unpriced node as "the cheapest". Unknown prices go last.
+    "price_gpu": lambda e: (not e.price_per_gpu, e.price_per_gpu or 0.0),
+    "price_total": lambda e: (not e.price_per_hour, e.price_per_hour or 0.0),
     "loc": lambda e: _country_name(e.location),
     "id": lambda e: e.huid,
     "gpu": lambda e: (e.gpu_type, e.gpu_count),
@@ -137,7 +143,8 @@ SORT_KEY_ALIASES = {
     "price_per_hour": "price_total",
 }
 
-DEFAULT_SORT_KEY = "download"
+# Cheapest $/GPU·h first: what a renter or an agent scans for (owner, 7 Sep 2026; DAH-3079).
+DEFAULT_SORT_KEY = "price_gpu"
 SORT_KEYS = list(_SORT_KEY_FUNCS)
 
 
@@ -147,22 +154,65 @@ def _sort_key_factory(name: str) -> Callable[[ExecutorInfo], Any]:
     return _SORT_KEY_FUNCS.get(name, _SORT_KEY_FUNCS[DEFAULT_SORT_KEY])
 
 
-def _add_table_columns(t: Table) -> None:
-    """Add columns to the table with fixed widths."""
-    t.add_column("", justify="right", width=3, no_wrap=True, style="dim")
-    t.add_column("Id", justify="left", ratio=8, min_width=24, overflow="fold")
-    t.add_column("Config", justify="left", width=12, no_wrap=True)
-    t.add_column("Link", justify="left", width=9, no_wrap=True)
-    t.add_column("Tier", justify="left", width=8, no_wrap=True)
-    t.add_column("Max CUDA", justify="right", width=10, no_wrap=True)
-    t.add_column("$/GPU·h", justify="right", width=8, no_wrap=True)
-    t.add_column("Location", justify="left", ratio=4, min_width=10, overflow="fold")
-    t.add_column("VRAM (Gb)", justify="right", width=11, no_wrap=True)
-    t.add_column("RAM (Gb)", justify="right", width=10, no_wrap=True)
-    t.add_column("Disk (Gb)", justify="right", width=11, no_wrap=True)
-    t.add_column("Upload (Mbps)", justify="right", width=14, no_wrap=True)
-    t.add_column("Download (Mbps)", justify="right", width=16, no_wrap=True)
-    t.add_column("Ports", justify="left", ratio=3, min_width=5, overflow="fold")
+# (header, nominal width, priority, column options) in display order. Priority
+# None = shown at any width: the index, the Id to rent, the GPU config, the price
+# and the country. The rest is kept in priority order (1 first) while the terminal
+# has room, and dropped from the end when it has not — Rich would otherwise squeeze
+# every column evenly, which at 80 columns hides Id and prints the price as "0…".
+# Nominal widths: Id fits "★ golden-matrix-ff (DinD)", Location most country names;
+# both grow with the terminal.
+_COLUMNS = [
+    ("", 3, None, dict(justify="right", width=3, no_wrap=True, style="dim")),
+    ("Id", 25, None, dict(justify="left", ratio=8, min_width=25, overflow="fold")),
+    ("Config", 12, None, dict(justify="left", width=12, no_wrap=True)),
+    ("Link", 9, 4, dict(justify="left", width=9, no_wrap=True)),
+    ("Tier", 8, 1, dict(justify="left", width=8, no_wrap=True)),
+    ("Max CUDA", 10, 5, dict(justify="right", width=10, no_wrap=True)),
+    ("$/GPU·h", 8, None, dict(justify="right", width=8, no_wrap=True)),
+    ("Location", 13, None, dict(justify="left", ratio=4, min_width=13, overflow="fold")),
+    ("VRAM (Gb)", 11, 3, dict(justify="right", width=11, no_wrap=True)),
+    ("RAM (Gb)", 10, 7, dict(justify="right", width=10, no_wrap=True)),
+    ("CPUs", 5, 8, dict(justify="right", width=5, no_wrap=True)),
+    ("Disk free (Gb)", 14, 9, dict(justify="right", width=14, no_wrap=True)),
+    ("Upload (Mbps)", 14, 6, dict(justify="right", width=14, no_wrap=True)),
+    ("Download (Mbps)", 16, 2, dict(justify="right", width=16, no_wrap=True)),
+    ("Ports", 5, 10, dict(justify="left", ratio=3, min_width=5, overflow="fold")),
+]
+_COLUMN_GAP = 2  # padding=(0, 1) on both sides of a cell, pad_edge=False
+
+
+def fit_columns(width: Optional[int]) -> tuple[List[str], List[str]]:
+    """Split the table headers into (shown, hidden) for a terminal ``width`` wide.
+
+    ``None`` shows everything. Otherwise the always-on columns are placed first,
+    then optional columns in priority order until the next one no longer fits.
+    """
+    if width is None:
+        return [h for h, *_ in _COLUMNS], []
+    shown = [c for c in _COLUMNS if c[2] is None]
+    used = sum(c[1] for c in shown) + _COLUMN_GAP * (len(shown) - 1)
+    for column in sorted((c for c in _COLUMNS if c[2] is not None), key=lambda c: c[2]):
+        if used + _COLUMN_GAP + column[1] > width:
+            break
+        shown.append(column)
+        used += _COLUMN_GAP + column[1]
+    headers = [c[0] for c in _COLUMNS if c in shown]
+    return headers, [c[0] for c in _COLUMNS if c not in shown]
+
+
+def format_hidden_columns(hidden: List[str]) -> str:
+    """Footer saying how many columns a narrow terminal dropped."""
+    return (
+        f"{len(hidden)} more column{'s' if len(hidden) != 1 else ''} hidden "
+        f"— widen the terminal or use {console.get_styled('--format json', 'success')}"
+    )
+
+
+def _add_table_columns(t: Table, headers: List[str]) -> None:
+    """Add the chosen columns to the table, in display order."""
+    for header, _, _, options in _COLUMNS:
+        if header in headers:
+            t.add_column(header, **options)
 
 
 def format_header(executor_count: int, pareto_count: int, show_pareto: bool) -> str:
@@ -175,7 +225,11 @@ def format_header(executor_count: int, pareto_count: int, show_pareto: bool) -> 
 
 def format_tip() -> str:
     """Format tip message."""
-    return f"Tip: {console.get_styled('lium up <index>', 'success')} {console.get_styled('# e.g. lium up 1', 'dim')}"
+    return (
+        f"Tip: {console.get_styled('lium up <index>', 'success')} {console.get_styled('# e.g. lium up 1', 'dim')}\n"
+        f"{console.get_styled('default order: cheapest $/GPU·h first; --sort picks another key', 'dim')}\n"
+        f"{console.get_styled('★ = no other node beats it: a 10% faster download wins outright, else better on price and specs (VRAM, RAM, disk, PCIe, memory bandwidth, TFLOPS, upload, US location)', 'dim')}"
+    )
 
 
 def compact_executor(exe: ExecutorInfo, is_pareto: bool, index: int) -> Dict[str, Any]:
@@ -191,9 +245,13 @@ def compact_executor(exe: ExecutorInfo, is_pareto: bool, index: int) -> Dict[str
         "price_per_gpu_hour": exe.price_per_gpu,
         "price_per_hour": exe.price_per_hour,
         "country": _country_name(exe.location),
+        "country_code": ((exe.location or {}).get("country_code") or (exe.location or {}).get("iso_code") or None),
+        "city": (exe.location or {}).get("city") or None,
         "vram_gb": _intish(s["VRAM"]),
         "ram_gb": _intish(s["RAM"]),
+        "cpu_count": _intish(s["CPUs"]),
         "disk_gb": _intish(s["Disk"]),
+        "disk_total_gb": _intish(s["DiskTotal"]),
         "upload_mbps": _intish(s["Upload"]),
         "download_mbps": _intish(s["Download"]),
         "available_ports": _intish(s["Ports"]),
@@ -205,6 +263,7 @@ def compact_executor(exe: ExecutorInfo, is_pareto: bool, index: int) -> Dict[str
         "nvlink": exe.nvlink,
         "p2p": exe.p2p,
         "interconnect": exe.interconnect,
+        "machine_name": getattr(exe, "machine_name", None),
     }
 
 
@@ -214,24 +273,18 @@ def sort_executors(
     limit: Optional[int] = None,
     show_pareto: bool = True,
 ) -> tuple[List[ExecutorInfo], List[bool]]:
-    """Apply Pareto-aware sort and limit. Returns (sorted_executors, pareto_flags).
+    """Sort and limit. Returns (sorted_executors, pareto_flags).
 
-    ``sort_by=None`` is the default view a human skims, where starred nodes float
-    to the top. An explicit key is an instruction and outranks the star —
-    otherwise "cheapest first" returns the most expensive node.
+    The default is cheapest $/GPU·h first; the ★ marks the Pareto-optimal nodes
+    wherever they land instead of pulling them above cheaper ones (DAH-3079).
     """
     if not executors:
         return [], []
 
-    pareto_first = sort_by is None
     pareto_flags = calculate_pareto_frontier(executors) if show_pareto else [False] * len(executors)
     pairs = list(zip(executors, pareto_flags))
     sort_key = _sort_key_factory(sort_by or DEFAULT_SORT_KEY)
-
-    if pareto_first:
-        pairs.sort(key=lambda x: (not x[1], sort_key(x[0])))
-    else:
-        pairs.sort(key=lambda x: sort_key(x[0]))
+    pairs.sort(key=lambda x: sort_key(x[0]))
 
     if isinstance(limit, int) and limit > 0:
         pairs = pairs[:limit]
@@ -244,11 +297,18 @@ def build_executors_table(
     sort_by: Optional[str] = None,
     limit: Optional[int] = None,
     show_pareto: bool = True,
+    width: Optional[int] = None,
 ) -> tuple[Table, List[ExecutorInfo], str, str]:
-    """Build executors table, returns (table, sorted_executors, header, tip)."""
+    """Build executors table, returns (table, sorted_executors, header, tip).
+
+    ``width`` is the terminal width the table has to fit (see ``fit_columns``);
+    ``None`` keeps every column.
+    """
 
     if not executors:
         return None, [], "", ""
+
+    headers, _ = fit_columns(width)
 
     sorted_executors, pareto_flags = sort_executors(
         executors, sort_by=sort_by, limit=limit, show_pareto=show_pareto
@@ -266,7 +326,7 @@ def build_executors_table(
         expand=True,
         padding=(0, 1),
     )
-    _add_table_columns(table)
+    _add_table_columns(table, headers)
 
     # Add rows
     for idx, (exe, is_pareto) in enumerate(zip(sorted_executors, pareto_flags), 1):
@@ -287,22 +347,24 @@ def build_executors_table(
 
         cuda_display = f"{exe.max_cuda_version:.1f}" if exe.max_cuda_version is not None else "-"
 
-        table.add_row(
-            str(idx),
-            huid_display,
-            _cfg(exe),
-            _link_display(exe),
-            _tier_display(exe),
-            cuda_display,
-            console.get_styled(_money(exe.price_per_gpu), 'success'),
-            _country_name(exe.location),
-            s["VRAM"],
-            s["RAM"],
-            s["Disk"],
-            s["Upload"],
-            dl_display,
-            s["Ports"]
-        )
+        cells = {
+            "": str(idx),
+            "Id": huid_display,
+            "Config": _cfg(exe),
+            "Link": _link_display(exe),
+            "Tier": _tier_display(exe),
+            "Max CUDA": cuda_display,
+            "$/GPU·h": console.get_styled(_money(exe.price_per_gpu), 'success'),
+            "Location": _country_name(exe.location),
+            "VRAM (Gb)": s["VRAM"],
+            "RAM (Gb)": s["RAM"],
+            "CPUs": s["CPUs"],
+            "Disk free (Gb)": s["Disk"],
+            "Upload (Mbps)": s["Upload"],
+            "Download (Mbps)": dl_display,
+            "Ports": s["Ports"],
+        }
+        table.add_row(*(cells[h] for h in headers))
 
     header = format_header(len(sorted_executors), pareto_count, show_pareto)
     tip = format_tip()
