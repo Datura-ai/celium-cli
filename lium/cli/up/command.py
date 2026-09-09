@@ -346,7 +346,8 @@ def up_command(
     )
 
     if not result.ok:
-        raise CliFailure("node_selection_failed", result.error, EXIT_GENERAL_ERROR)
+        # the spec path's 409 carries the server's hint and request_id in data (DAH-3057)
+        raise CliFailure("node_selection_failed", result.error, EXIT_GENERAL_ERROR, data=result.data or None)
 
     executor = result.data["executor"]
     # What the rental bills: the server's figure when it picked (a split of a larger node
