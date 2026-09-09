@@ -264,6 +264,7 @@ def audit_command(
             f"{exc}. If the key works for 'lium ps', this backend does not yet open /users/me/events to API keys.",
             EXIT_API_ERROR,
             data=_api_error_data(exc),
+            hint=exc.hint,
         )
 
     if json_output:

@@ -164,10 +164,12 @@ def test_a_request_id_with_rich_markup_is_printed_not_parsed(capsys):
 
 
 def test_cli_failure_carrying_api_context_prints_and_exports_it(capsys):
-    """A command that wraps an API refusal in a CliFailure hands the hint and id over in ``data``."""
+    """A command that wraps an API refusal in a CliFailure hands the id over in ``data`` and the
+    server's hint as its own (it replaces the default hint for the code)."""
     api = LiumError("API error 400: Node is not available.", code="node_unavailable",
                     hint="Pick another node (lium ls).", request_id="abc123def456")
-    failure = CliFailure(api.code, f"Node x could not be rented: {api}.", EXIT_API_ERROR, data=_api_error_data(api))
+    failure = CliFailure(api.code, f"Node x could not be rented: {api}.", EXIT_API_ERROR,
+                         data=_api_error_data(api), hint=api.hint)
 
     with pytest.raises(SystemExit):
         _failing_command(failure).main([], standalone_mode=False)
@@ -179,7 +181,8 @@ def test_cli_failure_carrying_api_context_prints_and_exports_it(capsys):
         _failing_command(failure).main(["--json"], standalone_mode=False)
     envelope = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
     assert envelope["error"]["code"] == "node_unavailable"
-    assert envelope["data"] == {"hint": "Pick another node (lium ls).", "request_id": "abc123def456"}
+    assert envelope["error"]["hint"] == "Pick another node (lium ls)."
+    assert envelope["data"] == {"request_id": "abc123def456"}
 
 
 def test_up_on_a_refused_rent_prints_the_hint_and_the_request_id(monkeypatch):

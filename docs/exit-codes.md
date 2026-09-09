@@ -47,9 +47,9 @@ When a command is run for a machine reader, every failure is one JSON object:
 
 - `ok` is always `false`; a success payload never has `"ok": false`.
 - `code` is a stable `snake_case` identifier to branch on; `message` is for people and may change wording.
-- `hint` is always present: the next command or option to try.
+- `hint` is always present: the next command or option to try. When the API sent a hint with its refusal, that is the one you get; the CLI's own hint for the code otherwise.
 - `exit_code` repeats the process exit status for readers that only see the streams.
-- `data` (optional) carries anything the caller must not lose along with the failure — `lium signup --json`, for one, returns the credentials it generated.
+- `data` (optional) carries anything the caller must not lose along with the failure — `lium signup --json`, for one, returns the credentials it generated; an API refusal puts the server's `request_id` here (also printed as `request_id: …` in the text rendering) to quote to support.
 
 The envelope goes to **stderr**, stdout is left empty, and the process exits
 with `exit_code`. On success stdout carries the result JSON. Read both streams;

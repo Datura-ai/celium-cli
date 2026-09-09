@@ -346,8 +346,11 @@ def up_command(
     )
 
     if not result.ok:
-        # the spec path's 409 carries the server's hint and request_id in data (DAH-3057)
-        raise CliFailure("node_selection_failed", result.error, EXIT_GENERAL_ERROR, data=result.data or None)
+        # the spec path's 409 carries the server's hint and request_id in data (DAH-3057): the
+        # hint becomes the failure's own (the envelope's error.hint), the id stays in data
+        data = dict(result.data or {})
+        hint = data.pop("hint", None)
+        raise CliFailure("node_selection_failed", result.error, EXIT_GENERAL_ERROR, data=data or None, hint=hint)
 
     executor = result.data["executor"]
     # What the rental bills: the server's figure when it picked (a split of a larger node
@@ -516,13 +519,14 @@ def up_command(
         # that nothing was created. (On the spec path Lium.rent posts once and already looked
         # the pod up by name before raising, so the hint is only conservative there.)
         # The server's code, hint and request_id ride along (DAH-3057): the code replaces the
-        # generic rent_rejected, the hint and the id are printed under the error line.
+        # generic rent_rejected, the hint replaces the default one, the id is printed under it.
         raise CliFailure(
             exc.code or "rent_rejected",
             f"Node {executor.huid} could not be rented: {exc}. Run 'lium ps' to check whether a pod was created. "
             "Run 'lium ls --format json' for the nodes rentable now.",
             EXIT_API_ERROR,
             data=_api_error_data(exc),
+            hint=exc.hint,
         )
 
     pod_id = result.data["pod_id"]

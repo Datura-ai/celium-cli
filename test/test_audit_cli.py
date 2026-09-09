@@ -180,7 +180,8 @@ def test_auth_failure_keeps_the_servers_hint_and_request_id(monkeypatch):
     result = _run(monkeypatch, "--json", error=error)
     envelope = json.loads(result.stderr)
     assert envelope["error"]["code"] == "invalid_api_key"
-    assert envelope["data"] == {"hint": "Create a key at https://lium.io/settings.", "request_id": "req-401-0001"}
+    assert envelope["error"]["hint"] == "Create a key at https://lium.io/settings."
+    assert envelope["data"] == {"request_id": "req-401-0001"}
 
 
 @pytest.mark.parametrize("value", ["0", "1001", "-5", "many"])

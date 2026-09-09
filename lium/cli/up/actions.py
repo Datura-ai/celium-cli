@@ -71,8 +71,10 @@ class ResolveExecutorAction:
                     raise  # auth, permission, not-found, rate-limit and server errors keep their own codes
                 # "No node matches …" (client-side) or the server's 409: the same outcome as the
                 # Pareto path's empty list below — node_selection_failed, not an API error. The
-                # server's hint and request_id ride along in data (DAH-3057).
-                return ActionResult(ok=False, data=_api_error_data(exc) or {}, error=str(exc))
+                # server's hint and request_id ride along in data (DAH-3057); the command lifts
+                # the hint out into the failure's own.
+                data = {**(_api_error_data(exc) or {}), **({"hint": exc.hint} if exc.hint else {})}
+                return ActionResult(ok=False, data=data, error=str(exc))
             return ActionResult(
                 ok=True,
                 data={
