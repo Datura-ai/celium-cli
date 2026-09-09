@@ -272,6 +272,10 @@ class _FakeLium:
     def ps(self):
         return list(self.pods)
 
+    def pod(self, pod_id):
+        # DAH-2932: `ps <pod>` asks GET /pods/{id} for the last lifecycle event; nothing to add here
+        return {}
+
 
 def _run(monkeypatch, module, pods, args, fake=None, **kwargs):
     fake = fake or _FakeLium
