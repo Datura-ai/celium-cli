@@ -373,6 +373,20 @@ legitimately re-provisioned. Fingerprints are `SHA256:…`, as `ssh-keygen -lf` 
 reported with its fingerprint). `lium ssh` runs OpenSSH with an argument list built from the
 pod's user, address and port; the API's connection string is never handed to a shell.
 
+### Scripts and agents (non-interactive use)
+
+The CLI never waits on a prompt it cannot show. When stdin is not a terminal, or
+`LIUM_NONINTERACTIVE=1` is set, a command that would have asked a question either
+takes its documented default or fails immediately (exit code 2) with a hint naming
+the flag to pass:
+
+```bash
+export LIUM_API_KEY=...            # no browser login is attempted without a terminal
+lium up --gpu H100 -y --no-ssh     # -y: rent without the confirmation prompt
+lium rm my-pod -y                  # -y on every destructive command
+lium fund -w default -a 1.5 -y     # values that would be prompted for must be passed as options
+```
+
 ## Requirements
 
 - Python 3.9+
