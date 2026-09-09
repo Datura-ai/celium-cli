@@ -367,7 +367,8 @@ def test_the_cost_line_uses_what_the_rental_bills(fake, capsys, monkeypatch):
     assert D.machine(machine="A100")(double)(3) == 6
     err = capsys.readouterr().err
     assert "rented 1xA100 $0.45/h (eight, US)" in err
-    assert "(~$0.0" in err.split("done in")[1]
+    cost_line = err.split("done in")[1].splitlines()[0]
+    assert "(~$0.4500)" in cost_line and "3.60" not in cost_line
 
 
 def test_timeout_none_means_no_kill_and_24h_ttl(fake):
