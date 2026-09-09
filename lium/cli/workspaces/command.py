@@ -19,6 +19,7 @@ from lium.sdk.exceptions import LiumAuthError
 from lium.sdk.models import WorkspaceInfo
 from lium.sdk.workspaces import NEEDS_SESSION
 from lium.cli import ui
+from lium.cli.interactive import is_interactive, noninteractive_reason
 from lium.cli.settings import config as settings
 from lium.cli.utils import CliFailure, EXIT_CONFIGURATION_ERROR, ensure_config, handle_errors
 
@@ -216,19 +217,30 @@ def workspaces_use_command(workspace: str):
 
 
 @workspaces_command.command("login")
-@click.option("--email", prompt=True, help="The e-mail of your Lium account")
+@click.option("--email", help="The e-mail of your Lium account (asked for on a terminal when omitted)")
 @click.option(
     "--password-stdin", is_flag=True, help="Read the password from stdin (for scripts) instead of prompting"
 )
 @handle_errors
-def workspaces_login_command(email: str, password_stdin: bool):
+def workspaces_login_command(email: Optional[str], password_stdin: bool):
     """Sign in with e-mail and password; the session token is kept for the session-only subcommands.
 
     Accounts created with GitHub or Google sign-in set a password with "Forgot password" on lium.io first.
+    Without a terminal (or with LIUM_NONINTERACTIVE=1) nothing is asked: pass --email and --password-stdin.
     """
     lium = workspace_client()
     lium.workspaces.require_enabled()  # nothing to sign in for on a server without workspaces
-    password = sys.stdin.readline().rstrip("\n") if password_stdin else click.prompt("Password", hide_input=True)
+    email = email or ui.prompt("E-mail", hint="pass --email")
+    if password_stdin:
+        password = sys.stdin.readline().rstrip("\n")
+    elif not is_interactive():
+        raise CliFailure(
+            "input_required",
+            f"Input required: Password (no prompt shown because {noninteractive_reason()}; pass --password-stdin)",
+            EXIT_CONFIGURATION_ERROR,
+        )
+    else:
+        password = click.prompt("Password", hide_input=True)
     token = lium.workspaces.login(email, password)
     settings.set("session.token", token)
     ui.success("Signed in; `lium workspaces` subcommands can now manage your teams")

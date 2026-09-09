@@ -478,7 +478,11 @@ def test_workspaces_members_invite_remove_transfer_delete_go_through_the_session
     members = run("workspaces", "members", "Research")
     invite = run("workspaces", "invite", "dana@example.com", "Research", "--role", "member")
     remove = run("workspaces", "remove", "ben@example.com", "Research", "--yes")
+    # CliRunner swaps sys.stdin for a pipe; tell ui a human can answer the confirm (DAH-2883's is_interactive)
+    monkeypatch.setattr("lium.cli.ui.is_interactive", lambda: True)
     declined = run("workspaces", "transfer-billing", BEN, "Research", input="n\n")
+    monkeypatch.setattr("lium.cli.ui.is_interactive", lambda: False)
+    refused = run("workspaces", "transfer-billing", BEN, "Research", input="n\n")
     transfer = run("workspaces", "transfer-billing", BEN, "Research", "--yes")
     delete = run("workspaces", "delete", "Research", "--yes")
 
@@ -488,6 +492,8 @@ def test_workspaces_members_invite_remove_transfer_delete_go_through_the_session
     assert json.loads(sent.request.body) == {"email": "dana@example.com", "role": "member"}
     assert remove.exit_code == 0 and "Member removed" in remove.output
     assert declined.exit_code == 0 and "Nothing transferred" in declined.output
+    refused_text = " ".join(refused.output.split())
+    assert refused.exit_code == 2 and "Confirmation required" in refused_text and "--yes" in refused_text  # nothing done
     assert transfer.exit_code == 0 and f"{BEN} now pays for Research" in transfer.output
     assert sum(1 for c in responses.calls if c.request.url.endswith("/billing-owner/transfer")) == 1  # only after yes
     assert delete.exit_code == 0 and "Workspace deleted" in delete.output
@@ -573,6 +579,21 @@ def test_login_keeps_the_session_token_in_config(home):
     assert result.exit_code == 0, result.output
     assert "[session]\ntoken = eyJ.fixture.session" in config_text(home)
     assert json.loads(responses.calls[1].request.body) == {"email": "ana@example.com", "password": "pw"}
+
+
+@responses.activate
+def test_login_without_a_terminal_asks_nothing_and_names_the_flags(home):
+    """DAH-2883: a piped `lium workspaces login` never waits on the e-mail or password prompt."""
+    me()
+
+    no_email = run("workspaces", "login")
+    no_password = run("workspaces", "login", "--email", "ana@example.com")
+
+    no_email_text, no_password_text = " ".join(no_email.output.split()), " ".join(no_password.output.split())
+    assert no_email.exit_code == 2 and "Input required: E-mail" in no_email_text and "--email" in no_email_text
+    assert no_password.exit_code == 2 and "Input required: Password" in no_password_text
+    assert "--password-stdin" in no_password_text
+    assert not any(c.request.url.endswith("/users/login") for c in responses.calls)  # nothing was sent
 
 
 @responses.activate
