@@ -109,6 +109,12 @@ def ls_command(
             click.echo("[]")
             return
         if gpu_type:
+            known = lium.unknown_gpu_type(gpu_type)
+            if known is not None:
+                ui.error(f"No GPU type matches '{gpu_type}'")
+                ui.info(f"Types on the marketplace: {', '.join(known)}")
+                ui.info(f"Tip: {ui.styled('lium ls --gpu RTX4090', 'success')} {ui.styled('# or just 4090', 'dim')}")
+                return
             ui.error(f"All {gpu_type} GPUs are currently rented out")
             ui.info(f"Tip: {ui.styled('lium ls', 'success')}")
         else:
