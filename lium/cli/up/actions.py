@@ -53,6 +53,7 @@ class ResolveExecutorAction:
                 "gpu_count": count or 1,
                 "country": country,
                 "min_ports": ports,
+                "min_cpus": min_cpus,
                 # the floor the Pareto path below has always applied
                 "min_download_mbps": MIN_DOWNLOAD_MBPS,
             }

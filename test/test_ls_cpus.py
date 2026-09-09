@@ -17,6 +17,7 @@ from lium.cli.ls import display
 from lium.cli.up import validation as up_validation
 from lium.cli.up.actions import ResolveExecutorAction
 from lium.sdk import Config, Lium
+from lium.sdk.exceptions import LiumError
 
 
 def _executor_dict(executor_id: str, cpu_count) -> dict:
@@ -106,6 +107,9 @@ def test_up_passes_min_cpus_to_the_listing_and_names_it_when_nothing_matches(mon
     seen: dict = {}
 
     class _FakeLium:
+        def supports(self, feature):
+            return False  # an older backend: the CLI lists the fleet and filters it here
+
         def ls(self, **kwargs):
             seen.update(kwargs)
             return []
@@ -116,6 +120,29 @@ def test_up_passes_min_cpus_to_the_listing_and_names_it_when_nothing_matches(mon
     assert seen["min_cpus"] == 24
     assert not result.ok
     assert "min CPUs=24" in result.error
+
+
+def test_up_sends_min_cpus_in_the_spec_when_the_backend_picks():
+    """On a rent_by_spec backend the fleet is never listed, so the CPU floor has to travel in the
+    spec the server matches — for the dry run and for the rent that follows."""
+    seen: dict = {}
+
+    class _SpecLium:
+        def supports(self, feature):
+            return feature == "rent_by_spec"
+
+        def ls(self, **kwargs):
+            raise AssertionError("the fleet must not be listed when the backend can pick")
+
+        def rent(self, **kwargs):
+            seen.update(kwargs)
+            raise LiumError("No node matches gpu_type=H100 min_cpus=24")
+
+    result = ResolveExecutorAction().execute({"lium": _SpecLium(), "gpu": "H100", "min_cpus": 24})
+
+    assert seen["min_cpus"] == 24
+    assert seen["dry_run"] is True
+    assert not result.ok
 
 
 @pytest.mark.parametrize(
