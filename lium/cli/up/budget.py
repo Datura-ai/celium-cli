@@ -27,8 +27,8 @@ def rental_price_per_hour(executor, gpu_count: Optional[int]) -> Optional[float]
     """What a rental of ``gpu_count`` GPUs on ``executor`` bills per hour, before the pod exists.
 
     A whole node bills its ``price_per_hour``; a split (fewer GPUs than the node has)
-    bills ``price_per_gpu × gpu_count``. On a base where ``-c`` only filters nodes by
-    exact GPU count the two are equal; once a split can be rented they are not.
+    bills ``price_per_gpu × gpu_count``. A rent with no ``--count`` gets the node's free
+    GPUs (``rented_gpu_count``), so on a partially rented host it is priced as a split.
     """
     per_gpu = getattr(executor, "price_per_gpu", None)
     node_gpus = getattr(executor, "gpu_count", None)

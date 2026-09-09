@@ -447,7 +447,9 @@ def up_command(
 
     if budget_usd is not None:
         # What the rental will bill: price_per_gpu × GPUs for a split, the node's total otherwise.
-        price_per_hour = rental_price_per_hour(executor, count)
+        # No --count rents the node's free GPUs (rented_gpu_count), not the whole host: on a
+        # partially rented split host the host total would overstate the price and refuse a valid budget.
+        price_per_hour = rental_price_per_hour(executor, count if count is not None else rented_gpu_count(executor))
         hours = budget_hours(budget_usd, price_per_hour)
         if hours is None:
             raise CliFailure(

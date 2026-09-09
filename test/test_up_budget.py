@@ -205,8 +205,8 @@ def test_ps_spent_column_is_wide_enough_for_a_three_digit_cap():
 # --- lium up --budget -----------------------------------------------------------------------
 
 
-def _run_up(monkeypatch, args, *, price=PRICE, pod=None, removed=None):
-    executor = SimpleNamespace(
+def _run_up(monkeypatch, args, *, price=PRICE, pod=None, removed=None, executor=None):
+    executor = executor or SimpleNamespace(
         id="exec-1", huid="brave-fox-3a", gpu_count=1, gpu_type="H100",
         price_per_hour=price, available_port_count=10, download_speed=1000,
     )
@@ -301,6 +301,21 @@ def test_up_budget_that_buys_under_five_minutes_is_refused_before_renting(monkey
     assert result.exit_code == EXIT_CONFIGURATION_ERROR, result.output
     assert "rented" not in scheduled
     assert f"minimum is {MIN_BUDGET_MINUTES} min" in result.output
+
+
+def test_up_budget_without_a_count_prices_the_free_gpus_not_the_whole_host(monkeypatch):
+    """A rent with no --count gets the node's free GPUs and bills for those (DAH-2877): on a split host
+    with 2 of 8 GPUs free, $1 buys 6 min at 2 × $5/h, not 1.5 min at the host's $40/h."""
+    split_host = SimpleNamespace(
+        id="exec-1", huid="brave-fox-3a", gpu_count=8, available_gpu_count=2, gpu_type="H100",
+        price_per_hour=40.0, price_per_gpu=5.0, available_port_count=10, download_speed=1000,
+    )
+    pod, _created = _fresh_pod(minutes_ago=1)
+    result, scheduled = _run_up(monkeypatch, ["--budget", "1.00"], pod=pod, executor=split_host)
+
+    assert result.exit_code == 0, result.output
+    assert scheduled.get("rented") is True
+    assert "Budget $1.00 at $10.00/h" in result.output
 
 
 def test_up_budget_without_a_node_price_is_refused_before_renting(monkeypatch):
