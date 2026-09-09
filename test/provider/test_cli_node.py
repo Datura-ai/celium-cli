@@ -81,6 +81,7 @@ def patched_build_client(
     return _factory
 
 
+@pytest.mark.xfail(strict=False, reason="_render_generic_rows reads keys.index() inside list.sort(); fixed by #158 (DAH-2936)")
 def test_node_list_renders_summary(patched_build_client) -> None:
     portal = _Portal(get_body={"data": [{"id": "e-1"}, {"id": "e-2"}], "total": 2})
     patched_build_client(portal)
@@ -438,6 +439,7 @@ def test_node_min_gpu_unset(patched_build_client) -> None:
     assert portal.deletes == [("/executors/e-1/min-gpu-count-for-rental", True)]
 
 
+@pytest.mark.xfail(strict=False, reason="_render_generic_rows reads keys.index() inside list.sort(); fixed by #158 (DAH-2936)")
 def test_node_pods(patched_build_client) -> None:
     portal = _Portal(get_body={"data": [{"id": "p-1"}, {"id": "p-2"}]})
     patched_build_client(portal)

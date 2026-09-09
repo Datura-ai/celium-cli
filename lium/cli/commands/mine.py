@@ -55,6 +55,26 @@ def _get_public_ip() -> str:
                 return ip
     return "Unable to determine"
 
+def _subprocess_env() -> dict:
+    """The environment for the tools `lium mine` shells out to.
+
+    The Linux binary is a PyInstaller bundle: it puts its own ``_internal/`` (an older libstdc++) on
+    ``LD_LIBRARY_PATH`` and keeps the caller's value in ``LD_LIBRARY_PATH_ORIG``. Children such as
+    ``apt-get`` then load that libstdc++ and die with ``GLIBCXX_3.4.32 not found`` — the install
+    script's ``apt update failed after 5 attempts`` on Ubuntu 22.04/24.04. Give them the host's.
+    """
+    import os
+    import sys
+
+    env = dict(os.environ)
+    if getattr(sys, "frozen", False):
+        orig = env.pop("LD_LIBRARY_PATH_ORIG", None)
+        env.pop("LD_LIBRARY_PATH", None)
+        if orig:
+            env["LD_LIBRARY_PATH"] = orig
+    return env
+
+
 def _run(cmd: list | str, check=True, capture=True, cwd: Optional[str] = None) -> Tuple[str, str]:
     import subprocess
     if isinstance(cmd, list):
@@ -67,12 +87,16 @@ def _run(cmd: list | str, check=True, capture=True, cwd: Optional[str] = None) -
         cwd=cwd,
         text=True,
         capture_output=capture,
+        env=_subprocess_env(),
     )
     if check and result.returncode != 0:
+        # the cause of a failed step is the LAST thing a tool prints; the first 4000 chars of a
+        # `docker compose up` are image-pull progress and the error is cut off
         raise RuntimeError(
             f"Command failed ({result.returncode}): {cmd_str}\n"
-            f"--- stdout ---\n{(result.stdout or '')[:4000]}\n"
-            f"--- stderr ---\n{(result.stderr or '')[:4000]}"
+            # DAH-3075/3076: the tail — compose puts the error after screens of pull progress
+            f"--- stdout ---\n{(result.stdout or '')[-4000:]}\n"
+            f"--- stderr ---\n{(result.stderr or '')[-4000:]}"
         )
     return (result.stdout or ""), (result.stderr or "")
 
@@ -194,11 +218,9 @@ def _setup_executor_env(
         elif k == "SSH_PORT":
             put(k, ssh_port)
         elif k == "SSH_PUBLIC_PORT":
-            # only write if provided; otherwise keep template as-is or blank it
-            if ssh_public_port:
-                put(k, ssh_public_port)
-            else:
-                out_lines.append(line)  # preserve whatever template had
+            # DAH-3075: blank means "same as SSH_PORT" (the documented meaning); keeping the template's
+            # hard-coded 2200 while SSH_PORT changed sent the validator to a port nothing listens on
+            put(k, ssh_public_port or ssh_port)
         elif k == "RENTING_PORT_RANGE":
             if port_range:
                 put(k, port_range)
@@ -219,6 +241,154 @@ def _setup_executor_env(
             out_lines.append(f"{k}={v}")
 
     env_f.write_text("\n".join(map(str, out_lines)) + "\n")
+
+
+def _listening_process(port: int) -> str:
+    """Best-effort 'who owns this port' hint from ``ss -ltnp`` (Linux only)."""
+    if not _exists("ss"):
+        return ""
+    out, _ = _run("ss -ltnp", check=False)
+    # Without root, ss hides the owner of other users' sockets (e.g. docker-proxy).
+    if "users:" not in out and _exists("sudo"):
+        sudo_out, _ = _run("sudo -n ss -ltnp", check=False)
+        out = sudo_out or out
+    for line in out.splitlines():
+        if re.search(rf"[:\]]{port}\s", line):
+            m = re.search(r'users:\(\("([^"]+)",pid=(\d+)', line)
+            if m:
+                return f"{m.group(1)} pid {m.group(2)}"
+            return "unknown process"
+    return ""
+
+
+def _port_in_use(port: int, host: str = "0.0.0.0") -> bool:
+    """True when ``docker compose up`` could not bind ``<host>:<port>`` on this host.
+
+    This is a probe, not a listener: the socket is bound for an instant,
+    never ``listen()``-ed, and closed on return. ``host`` defaults to the
+    wildcard address because the executor's ``docker-compose.app.yml``
+    publishes ``EXTERNAL_PORT`` and ``SSH_PORT`` on every interface, so the
+    probe must fail exactly where ``docker compose up`` would: a wildcard
+    bind fails when a listener holds the port on any single interface, which
+    a ``127.0.0.1`` probe would miss.
+
+    On Linux the probe binds with ``SO_REUSEADDR``, as docker-proxy's own bind
+    does (Go sets it on every listener): a port whose only sockets are in
+    ``TIME_WAIT`` left by a socket that had the option itself — the executor's
+    own connections for up to 60 s after ``docker compose down``, the case a
+    re-run hits — is free again, while a ``LISTEN`` socket on any address still
+    refuses the bind (Linux ignores ``TIME_WAIT`` only when both sockets set the
+    option, and never a listener). Without the option the plain bind refused
+    ``TIME_WAIT`` too and reported a port nobody held. BSD/macOS reads the option
+    differently (a wildcard bind may sit next to a specific-address listener),
+    so there the plain bind stays; ``lium mine`` brings up a Linux host. IPv4
+    only: the executor's compose publishes ``0.0.0.0``; an IPv6-only listener on
+    the port is not seen here (compose would then fail at ``:::<port>``). Only
+    ``EADDRINUSE`` means taken: ``EACCES`` on a privileged port from an
+    unprivileged ``lium mine`` is left to compose, which binds as root.
+    """
+    import errno
+    import socket
+    import sys
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        if sys.platform.startswith("linux"):
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind((host, port))
+        except OSError as e:
+            # only "somebody holds it" is a conflict: EACCES on a port below 1024 says this uid may not bind it,
+            # which compose (root) can — a provider running `lium mine` unprivileged must not be told 443 is taken
+            return e.errno == errno.EADDRINUSE
+    return False
+
+
+def _host_ports_from_answers(answers: dict) -> dict[str, int]:
+    """Host ports docker compose will publish, from the gathered answers.
+
+    The public SSH port is only a NAT forward on the provider's router, so
+    it is not bound on this host and is not checked.
+    """
+    ports: dict[str, int] = {}
+    for label, key in (("service port", "external_port"), ("SSH port", "ssh_port")):
+        v = str(answers.get(key) or "").strip()
+        if v.isdigit():
+            ports[label] = int(v)
+    return ports
+
+
+def _compose_project_running(executor_dir: Path) -> bool:
+    """Whether this executor's own ``executor`` service is in the ``running`` state.
+
+    On a re-run (`lium mine` on a host whose executor is up: the update path) the ports are
+    held by the project's own ``docker-proxy``; ``docker compose up -d`` is then a no-op, so
+    the pre-check must not fail on our own listener. The question is asked of the ``executor``
+    service alone (``docker-compose.app.yml``, the file the health wait reads too): the project's
+    ``watchtower`` sidecar is always running, and an executor whose port bind failed ("address
+    already in use" — the case this check exists for) is left ``created``, not ``running`` (its
+    start never succeeded, so no restart policy applies; the runner is what restarts), so the
+    ports are then checked as on a first run.
+    """
+    try:
+        out, _ = _run("docker compose -f docker-compose.app.yml ps -q --status running executor",
+                      check=False, cwd=str(executor_dir))
+    except OSError:   # no such directory yet (first run): nothing of ours is running
+        return False
+    return bool(out.strip())
+
+
+def _check_ports_free(ports: dict[str, int], executor_dir: Optional[Path] = None) -> None:
+    """Fail before ``docker compose up`` when a configured host port is taken.
+
+    ``ports`` maps a human label to the port number, e.g.
+    ``{"service port": 8080, "SSH port": 2200}``. Without this check the
+    executor container enters a restart loop and the caller only sees the
+    health check time out three minutes later. Skipped when the executor's
+    own ``executor`` service is already running (``executor_dir`` given):
+    those listeners are ours and ``compose up`` keeps them.
+    """
+    if executor_dir is not None and _compose_project_running(executor_dir):
+        return
+    for label, port in ports.items():
+        if not port or not _port_in_use(port):
+            continue
+        owner = _listening_process(port)
+        who = f" ({owner})" if owner else ""
+        raise Exception(
+            f"Port {port} ({label}) is already in use on this host{who}. "
+            "Free it or pick another port (run `lium mine` without --auto to choose ports)."
+        )
+
+
+# the executor project is two compose files: the default one declares `executor-runner` (and `watchtower`),
+# `docker-compose.app.yml` declares `executor`, which the runner starts. Compose checks a named service against
+# the file it loaded (`no such service` otherwise), so each file is asked for its own service.
+_COMPOSE_SERVICES = (("", "executor-runner"), ("-f docker-compose.app.yml ", "executor"))
+
+
+def _compose_diagnostics(executor_dir: Path, tail: int = 30) -> str:
+    """``docker compose ps -a`` of both files + the last log lines of ``executor-runner`` and ``executor``.
+
+    ``-a`` because an executor whose port bind failed is left ``created`` (its start never
+    succeeded, so no restart policy applies) and plain ``ps`` would not list it. Used when the
+    health check times out so the actual failure (port conflict, image pull error, bad .env) is
+    on screen instead of only 'timed out'.
+    """
+    parts = []
+    for file_opt, _service in _COMPOSE_SERVICES:
+        ps, _ = _run(f"docker compose {file_opt}ps -a", check=False, cwd=str(executor_dir))
+        if ps.strip():
+            parts.append(f"--- docker compose {file_opt}ps -a ---\n" + ps.strip())
+    for file_opt, service in _COMPOSE_SERVICES:
+        logs, err = _run(
+            f"docker compose {file_opt}logs --no-color --tail {tail} {service}",
+            check=False,
+            cwd=str(executor_dir),
+        )
+        text = (logs or "") + (err or "")
+        if text.strip():
+            parts.append(f"--- last {tail} log lines ({service}) ---\n" + text.strip()[-4000:])
+    return "\n".join(parts)
 
 
 def _start_executor(executor_dir: Path, wait_secs: int = 180):
@@ -246,7 +416,11 @@ def _start_executor(executor_dir: Path, wait_secs: int = 180):
             if health_status == "healthy":
                 return
         time.sleep(3)
-    raise Exception(f"Node health check timed out after {wait_secs}s")
+    diag = _compose_diagnostics(executor_dir)
+    raise Exception(
+        f"Node health check timed out after {wait_secs}s."
+        + (f"\n{diag}" if diag else "")
+    )
 
 def _apply_env_overrides(
     executor_dir: Path,
@@ -266,8 +440,9 @@ def _apply_env_overrides(
     set_or_append("INTERNAL_PORT", internal)
     set_or_append("EXTERNAL_PORT", external)
     set_or_append("SSH_PORT", ssh)
-    if ssh_pub:
-        set_or_append("SSH_PUBLIC_PORT", ssh_pub)
+    # the executor advertises SSH_PUBLIC_PORT or SSH_PORT (miner_service.py); the template ships
+    # SSH_PUBLIC_PORT=2200, so a blank answer must not leave 2200 next to a different SSH_PORT
+    set_or_append("SSH_PUBLIC_PORT", ssh_pub or ssh)
     if rng:
         set_or_append("RENTING_PORT_RANGE", rng)
     env_f.write_text("\n".join(content) + "\n")
@@ -326,26 +501,102 @@ def _gather_inputs(
     return answers
 
 
-def _validate_executor(extra_args=None):
+PREFLIGHT_IMAGE = "daturaai/lium-validator:latest"
+
+
+class _StepMessage:
+    """Step label the spinner re-reads on every redraw, so a detail can change while it runs."""
+
+    def __init__(self, text: str):
+        self.text = text
+        self.detail = ""
+
+    def __str__(self) -> str:
+        return f"{self.text} ({self.detail})" if self.detail else self.text
+
+
+def _start_preflight_pull():
+    """Pull the preflight image in the background.
+
+    The image is ~900 MB (30–60 s on a typical provider link). Started right after the
+    prerequisites pass, the pull overlaps steps 4–5 (env, compose up, health wait) instead
+    of being paid inside "Validating node".
     """
-    Validate the executor using the Lium validator Docker image.
-    Returns (passed, message) tuple.
+    import subprocess
+
+    return subprocess.Popen(
+        f"docker pull {PREFLIGHT_IMAGE}",
+        shell=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=_subprocess_env(),
+    )
+
+
+def _validate_executor(extra_args=None, on_check=None):
+    """Run the validator's preflight image and raise on a failed verdict.
+
+    ``on_check(name)`` is called as each check starts (GPU configuration, matrix
+    work-proof, VerifyX), read from the image's ``--debug`` log on stderr; the JSON
+    verdict stays on stdout.
     """
-    # Build the docker command with any extra arguments
-    docker_cmd = "docker run --rm --gpus all daturaai/lium-validator:latest"
+    import subprocess
+
+    docker_cmd = f"docker run --rm --gpus all {PREFLIGHT_IMAGE} --debug"
     if extra_args:
-        # Join the extra arguments as a string
         docker_cmd += " " + " ".join(extra_args)
 
-    out, _ = _run(docker_cmd, check=False)
+    # errors="replace": in --debug mode the matrix check echoes its raw cipher bytes
+    # on stdout ahead of the JSON verdict.
+    proc = subprocess.Popen(
+        docker_cmd,
+        shell=True,
+        text=True,
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=_subprocess_env(),
+    )
+    # Both pipes are drained at once: stdout on a thread, stderr here. Reading stderr to EOF
+    # first would deadlock once the --debug stdout (cipher bytes ahead of the verdict) filled
+    # the 64 KiB pipe — the child blocks on write, stderr never closes.
+    import threading
 
-    # Parse JSON output
-    result = json.loads(out.strip())
-    passed = result.get("passed", False)
-    message = result.get("message", "")
+    captured: dict[str, str] = {}
 
-    if not passed:
-        raise Exception(message)
+    def _drain_stdout() -> None:
+        captured["out"] = proc.stdout.read()
+
+    reader = threading.Thread(target=_drain_stdout, daemon=True)
+    reader.start()
+    err_tail: list[str] = []
+    for line in proc.stderr:
+        err_tail = (err_tail + [line.rstrip()])[-20:]
+        m = re.search(r"Running check: (.+)$", line)
+        if m and on_check:
+            on_check(m.group(1).strip())
+    reader.join()
+    out = captured.get("out", "")
+    proc.wait()
+
+    result = _preflight_verdict(out)
+    if result is None:
+        raise Exception(
+            "Preflight image produced no verdict (exit %s):\n%s"
+            % (proc.returncode, "\n".join(err_tail)[-2000:])
+        )
+    if not result.get("passed", False):
+        raise Exception(result.get("message", ""))
+
+
+def _preflight_verdict(stdout: str) -> Optional[dict]:
+    """The image's JSON verdict: the last object that starts at a line beginning on stdout."""
+    for m in reversed(list(re.finditer(r"^\{", stdout, re.M))):
+        try:
+            return json.loads(stdout[m.start():])
+        except ValueError:
+            continue
+    return None
 
 
 # --------------------------
@@ -360,6 +611,14 @@ def _validate_executor(extra_args=None):
 @click.pass_context
 @handle_errors
 def mine_command(ctx, hotkey, dir_, branch, auto, verbose):
+    """Set up this host as a Lium provider node: clone, configure, start and validate the executor.
+
+    Before `docker compose up`, the service and SSH ports are checked on this host: a port
+    another process holds fails fast, naming that process, instead of a three-minute health
+    timeout. On a host whose executor service is already running the check is skipped (the
+    ports are ours). The preflight image is pulled while the node starts; its checks are shown
+    as they run. Exit 1 on any failed step, with the step and the reason.
+    """
     if verbose:
         _show_setup_summary()   # keep the banner only when asked
 
@@ -377,6 +636,9 @@ def mine_command(ctx, hotkey, dir_, branch, auto, verbose):
 
         with timed_step_status(3, TOTAL_STEPS, "Checking prerequisites"):
             _check_prereqs()
+
+        # Docker is confirmed; fetch the preflight image while steps 4–5 run.
+        preflight_pull = _start_preflight_pull()
 
         with timed_step_status(4, TOTAL_STEPS, "Configuring environment"):
             executor_dir = target_dir / "neurons" / "executor"
@@ -397,16 +659,37 @@ def mine_command(ctx, hotkey, dir_, branch, auto, verbose):
                 rng=answers["port_range"],
             )
 
+            # A taken host port makes `docker compose up` loop on
+            # "address already in use" and the health check below time out
+            # with no explanation. Catch it here, before the 3-minute wait.
+            _check_ports_free(_host_ports_from_answers(answers), executor_dir)
+
         with timed_step_status(5, TOTAL_STEPS, "Starting node"):
             _start_executor(executor_dir)
 
-        with timed_step_status(6, TOTAL_STEPS, "Validating node"):
+        console.dim(
+            "Validation runs the validator's preflight image: GPU check, matrix "
+            "work-proof and VerifyX (RAM, disk throughput, network). Typically 2–4 minutes."
+        )
+        step6 = _StepMessage("Validating node")
+        with timed_step_status(6, TOTAL_STEPS, step6):
+            if preflight_pull.poll() is None:
+                step6.detail = "pulling preflight image"
+                preflight_pull.wait()
+
+            def _show_check(name: str) -> None:
+                step6.detail = name
+
             # Pass any extra arguments to the validator
-            _validate_executor(ctx.args if ctx.args else None)
+            _validate_executor(ctx.args if ctx.args else None, on_check=_show_check)
 
     except Exception as e:
-        console.error(f"❌ {e}")
-        return
+        # the message carries tool output verbatim (compose `ps -a`, log tails, a stderr tail): escaped, or a
+        # `[type=…]` / `[/x]` token in it is Rich markup — eaten, or a MarkupError in place of the diagnosis
+        from rich.markup import escape
+
+        console.error(f"❌ {escape(str(e))}")
+        raise SystemExit(1)   # a failed step is a failed command: mine.sh and scripts read the exit code
 
     # Get executor details for summary
     gpu_info = _get_gpu_info()
@@ -444,5 +727,33 @@ def mine_command(ctx, hotkey, dir_, branch, auto, verbose):
     # Build full URL with proper encoding
     add_url = f"https://provider.lium.io/nodes?{urlencode(params)}"
     
-    console.print("\n[bold cyan]Add this node via web interface:[/bold cyan]")
+    console.print("\n[bold cyan]Register this node in the Provider Portal:[/bold cyan]")
     console.print(f"[yellow]{add_url}[/yellow]\n")
+    console.print("[bold cyan]…or from this terminal:[/bold cyan]")
+    console.print(f"[yellow]{_provider_add_command(gpu_info, public_ip, external_port)}[/yellow]")
+    console.dim(_registration_note())
+
+
+def _provider_add_command(gpu_info: dict, public_ip: str, external_port: str | int) -> str:
+    """The `lium provider node add` equivalent of the portal Add-Node modal."""
+    import shlex
+
+    gpu_type = gpu_info.get("gpu_type") or "Unknown"
+    # _get_public_ip() answers "Unable to determine" when every IP service failed: printed bare that is three
+    # extra argv words, so the placeholder says what to fill in instead
+    ip = public_ip if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", public_ip or "") else "<public IPv4>"
+    return (
+        "lium provider node add "
+        f"--gpu-type {shlex.quote(gpu_type)} --gpu-count {gpu_info.get('gpu_count', 0)} "
+        f"--ip {ip} --port {external_port} --yes"
+    )
+
+
+def _registration_note() -> str:
+    return (
+        "Validators only reach nodes of providers with a running coordinator: opt in to the "
+        "Lium Central Provider Server (`lium provider config opt-in --yes`, or Profile Settings "
+        "in the portal) or run a self-hosted provider. Until then the node stays "
+        "VALIDATION_PENDING. The first validation takes roughly 15 minutes; add --price to "
+        "`node add` to override the default price."
+    )

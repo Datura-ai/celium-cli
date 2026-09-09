@@ -68,10 +68,13 @@ def _pod(ports=_DEFAULT, executor=_DEFAULT, template=_DEFAULT) -> PodInfo:
 
 
 class _FakeLium:
-    """Stands in for the SDK: the pods a test dictates, or the error it dictates."""
+    """Stands in for the SDK: the pods a test dictates, or the error it dictates; plus the
+    detail and event log the backend keeps for a pod (DAH-2932)."""
 
     pods: list = []
     error: Exception | None = None
+    detail: dict = {}
+    events: dict = {}
 
     def __init__(self, *args, **kwargs):
         pass
@@ -81,12 +84,28 @@ class _FakeLium:
             raise self.error
         return list(self.pods)
 
+    def pod(self, pod_id):
+        return dict(self.detail)
 
-def _run_describe(monkeypatch, pods: list, target: str = "my-pod", error: Exception | None = None):
+    def pod_events(self, pod_id):
+        return list(self.events.get(pod_id, []))
+
+
+def _run_describe(
+    monkeypatch,
+    pods: list,
+    target: str = "my-pod",
+    error: Exception | None = None,
+    detail: dict | None = None,
+    events: dict | None = None,
+    json_output: bool = True,
+):
     _FakeLium.pods = pods
     _FakeLium.error = error
+    _FakeLium.detail = detail or {}
+    _FakeLium.events = events or {}
     monkeypatch.setattr(describe_module, "Lium", _FakeLium)
-    return CliRunner().invoke(cli, ["describe", target, "--json"])
+    return CliRunner().invoke(cli, ["describe", target, *(["--json"] if json_output else [])])
 
 
 def test_manifest_names_the_port_direction():
@@ -212,3 +231,203 @@ def test_describe_does_not_blame_the_pod_id_for_an_api_failure(monkeypatch):
 
     assert result.exit_code not in (0, EXIT_POD_NOT_FOUND)
     assert json.loads(result.stderr)["error"]["code"] != "pod_not_found"
+
+
+# --- DAH-2932: last event, a pod that is gone, the node's disk ------------------------------------
+
+LAST_EVENT = {
+    "created_at": "2026-09-06T00:20:28",
+    "event_type": "pod-lifecycle",
+    "sub_event_type": "pod-lifecycle.status",
+    "from_status": "REBOOT_PENDING",
+    "to_status": "REBOOT_FAILED",
+    "reason": "reboot_failed",
+    "detail": "Container creation failed due to Failed create_container (failure_step: ssh_connect)",
+    "error": None,
+}
+GONE_EVENTS = [
+    {"created_at": "2026-09-05T20:17:56", "sub_event_type": "pod-create.success", "pod_name": "vault", "error": None},
+    {"created_at": "2026-09-05T23:35:48", "sub_event_type": "pod-lifecycle.status", "pod_name": "vault",
+     "from_status": "RUNNING", "to_status": "DELETING", "reason": "user_initiated", "detail": None, "error": None},
+    {"created_at": "2026-09-05T23:36:32", "sub_event_type": "pod-lifecycle.status", "pod_name": "vault",
+     "from_status": "DELETING", "to_status": "DELETED", "reason": "user_initiated", "detail": None, "error": None},
+]
+GONE_ID = "0942d1f7-08b4-4746-bafa-894c20631914"
+BAD_DISK = {
+    "read_only_mounts": ["/var/lib/docker"], "write_probe": "failed", "kernel_io_errors": 4,
+    "kernel_io_error_lines": ["critical medium error, dev nvme1n1"], "block_io_errors": {}, "nvme_states": {},
+    "smart": "unavailable",
+}
+
+
+def _executor_with_disk(health: dict) -> ExecutorInfo:
+    executor = _executor()
+    executor.specs = {**executor.specs, "disk_health": health}
+    return executor
+
+
+def test_manifest_carries_the_last_event_from_the_detail():
+    manifest = display.build_manifest(_pod(), {"last_event": LAST_EVENT})
+
+    assert manifest["last_event"] == {
+        "at": "2026-09-06T00:20:28",
+        "type": "pod-lifecycle.status",
+        "from_status": "REBOOT_PENDING",
+        "to_status": "REBOOT_FAILED",
+        "reason": "reboot_failed",
+        "detail": "Container creation failed due to Failed create_container (failure_step: ssh_connect)",
+    }
+
+
+def test_manifest_last_event_is_null_without_a_detail_or_an_event():
+    assert display.build_manifest(_pod())["last_event"] is None
+    assert display.build_manifest(_pod(), {"last_event": None})["last_event"] is None
+
+
+def test_format_event_reads_as_one_line_with_status_reason_detail_and_time():
+    line = display.format_event(display.event_view(LAST_EVENT))
+
+    assert line == (
+        "REBOOT_FAILED (reboot_failed) — Container creation failed due to Failed create_container "
+        "(failure_step: ssh_connect) · 2026-09-06T00:20:28"
+    )
+
+
+def test_table_shows_the_last_event_when_there_is_one():
+    table = display.build_manifest_table(display.build_manifest(_pod(), {"last_event": LAST_EVENT}))
+
+    labels = [str(cell) for cell in table.columns[0]._cells]
+    assert "Last event" in labels
+
+
+def test_manifest_node_disk_is_unknown_without_a_probe():
+    manifest = display.build_manifest(_pod())
+
+    assert manifest["node_disk"] is None
+    assert display.format_disk_health(manifest["node_disk"]) == "unknown (not probed)"
+
+
+def test_manifest_node_disk_carries_the_readings_and_the_backend_verdict():
+    pod = _pod(executor=_executor_with_disk(BAD_DISK))
+
+    manifest = display.build_manifest(pod, {"executor": {"disk_health_ok": False}})
+
+    assert manifest["node_disk"]["ok"] is False
+    assert manifest["node_disk"]["read_only_mounts"] == ["/var/lib/docker"]
+    assert manifest["node_disk"]["kernel_io_errors"] == 4
+    assert display.format_disk_health(manifest["node_disk"]) == (
+        "PROBLEM — read-only: /var/lib/docker; write probe failed; 4 kernel I/O errors"
+    )
+
+
+def test_format_disk_health_says_ok_for_a_clean_probe():
+    clean = {**BAD_DISK, "read_only_mounts": [], "write_probe": "ok", "kernel_io_errors": 0, "kernel_io_error_lines": []}
+    pod = _pod(executor=_executor_with_disk(clean))
+
+    view = display.build_manifest(pod, {"executor": {"disk_health_ok": True}})["node_disk"]
+
+    assert display.format_disk_health(view) == "ok"
+
+
+def test_describe_json_includes_last_event_and_node_disk(monkeypatch):
+    pod = _pod(executor=_executor_with_disk(BAD_DISK))
+
+    result = _run_describe(
+        monkeypatch, [pod], detail={"last_event": LAST_EVENT, "executor": {"disk_health_ok": False}}
+    )
+
+    assert result.exit_code == 0, result.output
+    manifest = json.loads(result.stdout)
+    assert manifest["last_event"]["reason"] == "reboot_failed"
+    assert manifest["node_disk"]["ok"] is False
+
+
+def test_describe_survives_a_detail_call_that_fails(monkeypatch):
+    class _Failing(_FakeLium):
+        def pod(self, pod_id):
+            raise LiumNotFoundError("Resource not found")
+
+    _Failing.pods = [_pod()]
+    monkeypatch.setattr(describe_module, "Lium", _Failing)
+
+    result = CliRunner().invoke(cli, ["describe", "my-pod", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["last_event"] is None
+
+
+def test_describe_of_a_deleted_pod_by_id_prints_its_events_instead_of_not_found(monkeypatch):
+    result = _run_describe(monkeypatch, [_pod()], target=GONE_ID, events={GONE_ID: GONE_EVENTS})
+
+    assert result.exit_code == 0, result.output
+    manifest = json.loads(result.stdout)
+    assert manifest["pod"] == {
+        "id": GONE_ID, "huid": None, "name": "vault", "status": "GONE", "created_at": None, "uptime_hours": None
+    }
+    assert manifest["last_event"]["to_status"] == "DELETED"
+    assert manifest["last_event"]["reason"] == "user_initiated"
+    assert [event["type"] for event in manifest["events"]] == [
+        "pod-create.success", "pod-lifecycle.status", "pod-lifecycle.status"
+    ]
+
+
+def test_gone_manifest_headline_is_the_latest_lifecycle_event_not_the_delete_success_row():
+    # a normal delete ends with `pod-delete.success`, which carries no to_status or reason
+    events = GONE_EVENTS + [
+        {"created_at": "2026-09-05T23:36:40", "sub_event_type": "pod-delete.success", "pod_name": "vault", "error": None}
+    ]
+
+    manifest = display.build_gone_manifest(GONE_ID, events)
+
+    assert manifest["last_event"]["type"] == "pod-lifecycle.status"
+    assert manifest["last_event"]["to_status"] == "DELETED"
+    assert manifest["last_event"]["reason"] == "user_initiated"
+    assert manifest["events"][-1]["type"] == "pod-delete.success"  # the log itself is complete
+
+
+def test_gone_manifest_falls_back_to_the_last_event_without_a_lifecycle_row():
+    events = [
+        {"created_at": "2026-09-05T20:17:56", "sub_event_type": "pod-create.success", "pod_name": "vault", "error": None},
+        {"created_at": "2026-09-05T20:18:10", "sub_event_type": "pod-delete.success", "pod_name": "vault", "error": None},
+    ]
+
+    manifest = display.build_gone_manifest(GONE_ID, events)
+
+    assert manifest["last_event"]["type"] == "pod-delete.success"
+    assert display.build_gone_manifest(GONE_ID, [])["last_event"] is None
+
+
+def test_describe_of_a_deleted_pod_renders_a_table_for_humans(monkeypatch):
+    monkeypatch.setattr(describe_module, "ensure_config", lambda: None)
+
+    result = _run_describe(monkeypatch, [_pod()], target=GONE_ID, events={GONE_ID: GONE_EVENTS}, json_output=False)
+
+    assert result.exit_code == 0, result.output
+    output = " ".join(result.output.split())
+    assert f"Pod {GONE_ID} is no longer listed" in output
+    assert "DELETED (user_initiated)" in output
+    assert "pod-create.success" in output
+
+
+def test_describe_of_an_unknown_id_with_no_events_is_still_not_found(monkeypatch):
+    result = _run_describe(monkeypatch, [_pod()], target=GONE_ID, events={})
+
+    assert result.exit_code == EXIT_POD_NOT_FOUND
+    assert json.loads(result.stderr)["error"]["code"] == "pod_not_found"
+
+
+def test_describe_never_looks_up_events_for_a_name_or_huid(monkeypatch):
+    class _Counting(_FakeLium):
+        calls = 0
+
+        def pod_events(self, pod_id):
+            _Counting.calls += 1
+            return []
+
+    _Counting.pods = [_pod()]
+    monkeypatch.setattr(describe_module, "Lium", _Counting)
+
+    result = CliRunner().invoke(cli, ["describe", "no-such-pod-zz", "--json"])
+
+    assert result.exit_code == EXIT_POD_NOT_FOUND
+    assert _Counting.calls == 0

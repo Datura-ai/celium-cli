@@ -10,10 +10,12 @@ import inspect
 import json
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 
 import pytest
+
+# tomllib is 3.11+; the pyproject check runs on the 3.12 CI leg
+tomllib = pytest.importorskip("tomllib")
 
 from lium.cli.utils import EXIT_CONFIGURATION_ERROR
 

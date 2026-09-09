@@ -1,6 +1,6 @@
 """Datamodels used across the Lium SDK."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
 from typing import Dict, List, Optional
 
@@ -24,6 +24,11 @@ class ExecutorInfo:
     effective_download_speed_mbps: Optional[float] = None
     max_cuda_version: Optional[float] = None
     tier: Optional[str] = None  # "spot" or "secure"; reclaim/penalty risk signal
+    # GPUs free to rent on the node right now (the API's ``available_gpu_count``),
+    # None when the API did not send it. ``gpu_count`` is the whole host; on a
+    # partially rented split host this is the smaller number, and a rent that names
+    # no count takes and is billed for exactly these.
+    available_gpu_count: Optional[int] = None
 
     @property
     def driver_version(self) -> str:
@@ -48,6 +53,31 @@ class ExecutorInfo:
 
 
 @dataclass
+class RentResult:
+    """What :meth:`Lium.rent` chose and, unless it was a dry run, rented.
+
+    ``pod`` is the same dict :meth:`Lium.up` returns (``id``, ``name``, ``executor_id``, …) and
+    is ``None`` on a dry run. ``gpu_count`` is the GPUs rented and ``price_per_hour`` what the
+    rental bills (``price_per_gpu`` × ``gpu_count``); both differ from ``executor.gpu_count`` /
+    ``executor.price_per_hour`` when the server rents a split of a larger node.
+    ``alternatives`` are the runners-up in the order they would have been tried; ``attempts`` is
+    how many rents the server made before one succeeded (0 on a dry run, > 1 when the first pick
+    was taken meanwhile); ``server_side`` says whether the backend chose the node or this client did.
+    """
+
+    executor: ExecutorInfo
+    price_per_hour: float
+    gpu_count: int = 1
+    pod: Optional[Dict] = None
+    template_id: Optional[str] = None
+    candidates: int = 1
+    alternatives: List[Dict] = field(default_factory=list)
+    attempts: int = 0
+    dry_run: bool = False
+    server_side: bool = False
+
+
+@dataclass
 class PodInfo:
     id: str
     name: str
@@ -64,6 +94,39 @@ class PodInfo:
     jupyter_url: Optional[str]
     enable_volume_encryption: bool | None = None
     volume_encryption_status: str | None = None
+    # DAH-3005: set by the API only while the pod is PENDING / REBOOT_PENDING. Seconds left of the
+    # backend's estimate (0 once it has run over), what the estimate rests on
+    # (executor_history | class_median | cold_pull_estimate | fleet_default) and the creation step
+    # (queued, preparing node, connecting to node, pulling image, creating volume, starting
+    # container, mounting encrypted volume, configuring ssh). None on older backends and once RUNNING.
+    estimated_ready_seconds: int | None = None
+    eta_basis: str | None = None
+    phase: str | None = None
+
+    # GPUs this pod is billed for: the pod row's own ``gpu_count`` from ``/pods``,
+    # None when the API did not send it. ``executor`` describes the whole host, so
+    # for a GPU-split rental (2 of the host's 8) this is the smaller number.
+    gpu_count: Optional[int] = None
+
+    def eta_hint(self) -> Optional[str]:
+        """One line for a pod that is still starting, e.g. ``est. ready in ~18 s (phase: pulling image)``.
+
+        ``None`` when the API sent neither an estimate nor a phase (older backend, or the pod is
+        already RUNNING).
+        """
+        if self.estimated_ready_seconds is None and not self.phase:
+            return None
+        if self.estimated_ready_seconds is None:
+            eta = None
+        elif self.estimated_ready_seconds <= 0:
+            eta = "est. ready any moment now"
+        elif self.estimated_ready_seconds < 90:
+            eta = f"est. ready in ~{self.estimated_ready_seconds} s"
+        else:
+            eta = f"est. ready in ~{round(self.estimated_ready_seconds / 60)} min"
+        if not self.phase:
+            return eta
+        return f"{eta} (phase: {self.phase})" if eta else f"phase: {self.phase}"
 
     @property
     def host(self) -> Optional[str]:

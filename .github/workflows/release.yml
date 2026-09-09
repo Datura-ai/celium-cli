@@ -121,6 +121,11 @@ jobs:
         ./dist/lium/lium --version
         ./dist/lium/lium --help >/dev/null
 
+    # same check as ci.yml: release-assets needs this job, so a bundle with OpenSSL below 1.1.1w-0+deb11u8
+    # (what 0.0.34 shipped, #223) cannot be published.
+    - name: Report what the bundle ships, fail below the OpenSSL floor
+      run: python3 scripts/linux_bundle_report.py --bundle dist/lium --image lium-build:${GITHUB_SHA}-${{ matrix.asset_name }} --name ${{ matrix.asset_name }}
+
     - name: Generate Linux checksums
       run: |
         cd dist
@@ -167,6 +172,13 @@ jobs:
           echo "Expected macOS runner architecture ${{ matrix.expected_machine }}, got $actual_machine" >&2
           exit 1
         fi
+        if [[ "$actual_machine" == "x86_64" ]]; then
+          # cryptography >= 49 ships no macOS Intel wheel, so uv builds it from source here. Link OpenSSL statically
+          # (openssl-sys reads OPENSSL_STATIC / OPENSSL_DIR) so the bundle carries no Homebrew libssl.3.dylib: with a dynamic
+          # link, PyInstaller kept python.org's older libssl.3.dylib under the same name and the binary died at import
+          # (`Symbol not found: _SSL_get0_group_name`, run 34155591936). arm64 installs the wheel, which is static already.
+          export OPENSSL_STATIC=1 OPENSSL_DIR="$(brew --prefix openssl@3)"
+        fi
         uv sync --frozen --extra dev --extra provider
         rm -rf dist/lium
         uv run pyinstaller lium.spec --clean
@@ -176,6 +188,17 @@ jobs:
       run: |
         ./dist/lium/lium --version
         ./dist/lium/lium --help >/dev/null
+        # cryptography must carry its OpenSSL inside _rust.abi3.so (static); a libssl/libcrypto dylib reference is the
+        # 0.0.37 Intel failure coming back.
+        so=dist/lium/_internal/cryptography/hazmat/bindings/_rust.abi3.so
+        test -f "$so"
+        deps="$(otool -L "$so")"
+        if grep -E 'libssl|libcrypto' <<<"$deps"; then
+          echo "cryptography links a shared OpenSSL; the bundle would ship a mismatched libssl.3.dylib" >&2
+          exit 1
+        fi
+        # the OpenSSL baked into cryptography (the wheel's on arm64, Homebrew openssl@3's on Intel), for the record
+        strings -a "$so" | grep -m1 -E '^OpenSSL [0-9]+\.[0-9]+\.[0-9]+' | tee -a "$GITHUB_STEP_SUMMARY"
 
     - name: Generate macOS checksums
       run: |

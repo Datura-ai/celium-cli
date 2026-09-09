@@ -65,6 +65,7 @@ def update_command(target: str, jupyter: Optional[int]):
             "jupyter_install_failed",
             result.error or "Failed to install Jupyter Notebook",
             EXIT_GENERAL_ERROR,
+            hint=f"Check the pod is RUNNING in 'lium ps', then retry 'lium update {target} --jupyter {jupyter}'",
         )
 
     jupyter_url = result.data.get("jupyter_url")
