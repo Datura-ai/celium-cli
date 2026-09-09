@@ -3,6 +3,7 @@
 import base64
 import getpass
 import hashlib
+import ipaddress
 import os
 import re
 import shlex
@@ -14,11 +15,12 @@ import warnings
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any, Dict, Generator, List, Optional, Union
+from typing import Any, Callable, Dict, Generator, List, Optional, Union
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import paramiko
 import requests
@@ -32,24 +34,38 @@ from .exceptions import (
     LiumError,
     LiumHostKeyError,
     LiumNotFoundError,
+    LiumInsufficientBalanceError,
     LiumPermissionError,
     LiumRateLimitError,
     LiumServerError,
+    PodStartError,
 )
 from .models import (
     BackupConfig,
     BackupLog,
     ExecutorInfo,
     PodInfo,
+    RentResult,
     RestoreLog,
     SSHKey,
     Template,
     VolumeInfo,
 )
 from .ssh_key_cache import fingerprint, load_cache, save_cache
-from .utils import expand_gpu_shorthand, extract_gpu_type, generate_huid, with_retry
+from .utils import extract_gpu_type, generate_huid, normalize_gpu_short, with_retry
+
+# The backend feature `Lium.rent` looks for on GET /version before using POST /executors/rent-by-spec.
+RENT_BY_SPEC = "rent_by_spec"
+# Node specs report RAM and disk in KiB and GPU memory in MiB.
+_KIB_PER_GB = 1024 * 1024
+_MIB_PER_GB = 1024
 
 load_dotenv()
+
+# A POSIX shell identifier: what ``export`` accepts on the pod.
+ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")  # checked with fullmatch: `$` would let a trailing newline through
+# HTTP methods that are safe to repeat after a lost response; see ``Lium._request``.
+IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 # Public API key for the pay API (pay-tao-api-v2). Single source of truth so the
 # literal is not re-typed across every pay-API call site.
@@ -94,14 +110,101 @@ def forget_host_key(pod: Union[PodInfo, str]) -> None:
         pass  # best effort; a pin we cannot delete surfaces as LiumHostKeyError on the next connection, which names the file
 
 
-def _ensure_known_hosts_file(path: Path) -> None:
+def _ensure_known_hosts_dir(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         os.chmod(path.parent, 0o700)
     except OSError:
         pass  # best effort (read-only or foreign filesystem); the per-file 0600 mode below is what protects the pins
+
+
+def _ensure_known_hosts_file(path: Path) -> None:
+    _ensure_known_hosts_dir(path)
     if not path.exists():
         path.touch(mode=0o600)
+
+
+def openssh_host_key_options(pod: PodInfo, *, create_pin_file: bool = True) -> List[str]:
+    """The ``-o`` arguments that make the OpenSSH client check a pod's host key.
+
+    Pinned per pod under ``~/.lium/known_hosts/<pod id>`` (created here), accepted
+    on the first connection and refused by ssh itself when the pod later presents
+    a different key — the same rule :meth:`Lium.ssh_connection` applies through
+    paramiko. ``LIUM_SSH_INSECURE=1`` returns the old accept-anything options.
+    ``create_pin_file=False`` creates only the directory (a listing that prints the
+    command should not leave a file per pod behind; ssh writes the file itself).
+    """
+    if ssh_insecure():
+        return ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]
+    hosts_file = known_hosts_path(pod)
+    if create_pin_file:
+        _ensure_known_hosts_file(hosts_file)
+    else:
+        try:
+            _ensure_known_hosts_dir(hosts_file)
+        except OSError:
+            pass  # a read-only home: the command is still right, ssh says it could not record the key
+    # OpenSSH splits an unquoted UserKnownHostsFile value on whitespace (it takes several files); the
+    # quotes keep a home directory with a space in it as one path.
+    return ["-o", "StrictHostKeyChecking=accept-new", "-o", f'UserKnownHostsFile="{hosts_file}"']
+
+
+_SSH_USER_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]*")   # no leading "-": ssh would read the destination as an option
+_SSH_HOSTNAME_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?")
+
+
+def ssh_target(ssh_cmd: Optional[str]) -> tuple[str, str, int]:
+    """``(user, host, port)`` from the API's ``ssh_connect_cmd``, or ``ValueError``.
+
+    The API sends ``ssh <user>@<host> -p <port>`` and nothing else. Only that shape
+    (``-p <port>`` optional, default 22) is accepted — every token is checked, so a
+    value that carries anything besides a user, an address and a port (an extra ssh
+    option, a shell character) is refused instead of being handed to ssh or to a shell.
+    """
+    if not ssh_cmd:
+        raise ValueError("No SSH command for this pod")
+    try:
+        tokens = shlex.split(ssh_cmd)
+    except ValueError as e:
+        raise ValueError(f"Unexpected ssh command from the API: {ssh_cmd!r} ({e})") from e
+    if len(tokens) not in (2, 4) or tokens[0] != "ssh":
+        raise ValueError(f"Unexpected ssh command from the API: {ssh_cmd!r}")
+    user, sep, host = tokens[1].partition("@")
+    if not sep or len(user) > 32 or len(host) > 253 or not _SSH_USER_RE.fullmatch(user):
+        raise ValueError(f"Unexpected ssh command from the API: {ssh_cmd!r}")
+    if not _SSH_HOSTNAME_RE.fullmatch(host):
+        try:
+            if "%" in host:  # an IPv6 scope id is not an address the API sends
+                raise ValueError(host)
+            ipaddress.ip_address(host)
+        except ValueError:
+            raise ValueError(f"Unexpected ssh command from the API: {ssh_cmd!r}") from None
+    port = 22
+    if len(tokens) == 4:
+        if tokens[2] != "-p" or not re.fullmatch(r"[0-9]{1,5}", tokens[3]) or not 1 <= int(tokens[3]) <= 65535:
+            raise ValueError(f"Unexpected ssh command from the API: {ssh_cmd!r}")
+        port = int(tokens[3])
+    return user, host, port
+
+
+def pod_ssh_command(pod: PodInfo) -> Optional[str]:
+    """The pod's ssh command for a shell, with the host-key options and without a key.
+
+    ``ssh -p <port> -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=<pin> <user>@<host>``
+    (:func:`ssh_target` + :func:`openssh_host_key_options`, shell-quoted): what
+    ``lium ps --format json`` and ``lium describe`` show as ``ssh_command``. It
+    carries no ``-i <key>`` — the key path lives in the SDK config, not in the pod
+    record; :meth:`Lium.ssh` adds it. Unlike :meth:`Lium.ssh` it creates no pin
+    file (only the directory): a listing leaves nothing per pod behind. None when
+    the pod has no ssh command yet or the API's value is not ``ssh <user>@<host>
+    [-p <port>]``; both views keep the raw ``ssh_cmd`` next to it.
+    """
+    try:
+        user, host, port = ssh_target(pod.ssh_cmd)
+    except ValueError:
+        return None
+    options = openssh_host_key_options(pod, create_pin_file=False)
+    return shlex.join(["ssh", "-p", str(port), *options, f"{user}@{host}"])
 
 
 class _PinOnFirstUsePolicy(paramiko.MissingHostKeyPolicy):
@@ -140,6 +243,95 @@ class _InsecureAcceptPolicy(paramiko.MissingHostKeyPolicy):
             f"{hostname}: {_SSH_INSECURE_ENV}=1 disabled host key verification",
             stacklevel=2,
         )
+
+
+def _satisfies_spec(executor: ExecutorInfo, spec: Dict[str, Any]) -> bool:
+    """The client-side reading of a rent spec, for backends without ``rent_by_spec``.
+
+    Mirrors the server's constraints on the fields ``GET /executors`` carries; a node that
+    does not report a figure fails the floor on it, as on the server.
+    """
+    specs = executor.specs or {}
+    gpu_details = (specs.get("gpu") or {}).get("details") or []
+    gpu_detail = gpu_details[0] if gpu_details and isinstance(gpu_details[0], dict) else {}
+    disk = specs.get("hard_disk") or {}
+    disk_kib = disk.get("free") if disk.get("free") is not None else disk.get("total")
+    floors = {
+        "min_vram_gb": (gpu_detail.get("capacity") or 0) / _MIB_PER_GB if gpu_detail.get("capacity") else None,
+        "min_cpus": (specs.get("cpu") or {}).get("count"),
+        "min_ram_gb": ((specs.get("ram") or {}).get("total") or 0) / _KIB_PER_GB if (specs.get("ram") or {}).get("total") else None,
+        "min_disk_gb": disk_kib / _KIB_PER_GB if disk_kib else None,
+        "min_download_mbps": executor.effective_download_speed_mbps,
+        "min_ports": executor.available_port_count,
+    }
+    if executor.gpu_count != spec.get("gpu_count", 1):
+        return False
+    for key, have in floors.items():
+        wanted = spec.get(key)
+        if wanted is not None and (have is None or have < wanted):
+            return False
+    if spec.get("max_price_per_gpu_hour") is not None and (
+        executor.price_per_gpu is None or executor.price_per_gpu > spec["max_price_per_gpu_hour"]
+    ):
+        return False
+    if spec.get("country") and ((executor.location or {}).get("country_code") or "").upper() != spec["country"].upper():
+        return False
+    if spec.get("docker_in_docker") and not executor.docker_in_docker:
+        return False
+    if spec.get("interconnect") == "nvlink" and (specs.get("interconnect") or {}).get("nvlink") is not True:
+        return False
+    return True
+
+
+_USD = r"\$([0-9][0-9,]*(?:\.[0-9]+)?)"
+# The platform's balance refusals: "Insufficient balance" from the auth dependency and
+# "Insufficient balance. This node costs $X/hour, so renting it requires at least $Y
+# (N minutes of runtime). Your balance is $Z." from the rent path.
+_REQUIRED_RE = re.compile(r"requires at least " + _USD, re.I)
+_AVAILABLE_RE = re.compile(r"balance is " + _USD, re.I)
+
+
+def _response_error_code(response: requests.Response) -> Optional[str]:
+    """The stable ``error.code`` of the platform's error body, when it sends one.
+
+    lium-platform#210 (DAH-3056) answers every 4xx/5xx with
+    ``{"error": {"code", "message", "hint", "request_id"}, ...}``; older servers
+    send ``error`` as a string or not at all, and then this is ``None``.
+    """
+    try:
+        payload = response.json()
+    except ValueError:  # not a JSON body: older servers answer plain text, and then there is no code
+        return None
+    error = payload.get("error") if isinstance(payload, dict) else None
+    code = error.get("code") if isinstance(error, dict) else None
+    return code if isinstance(code, str) and code else None
+
+
+def permission_error(detail: str, code: Optional[str] = None) -> LiumPermissionError:
+    """The exception for a 403: :class:`LiumInsufficientBalanceError` when the server
+    refused for lack of funds (with ``required``/``available`` when it said them),
+    else a plain :class:`LiumPermissionError`.
+
+    ``code`` is the platform's structured ``error.code`` when the response carried
+    one (:func:`_response_error_code`); it decides. Without it the message text
+    decides, which is what every server before lium-platform#210 sends.
+    """
+    message = f"Permission denied: {detail}"
+    if code is not None:
+        insufficient = code == "insufficient_balance"
+    else:
+        insufficient = "insufficient balance" in (detail or "").lower()
+    if not insufficient:
+        return LiumPermissionError(message)
+
+    def usd(match: Optional[re.Match]) -> Optional[float]:
+        return float(match.group(1).replace(",", "")) if match else None
+
+    return LiumInsufficientBalanceError(
+        message,
+        required=usd(_REQUIRED_RE.search(detail)),
+        available=usd(_AVAILABLE_RE.search(detail)),
+    )
 
 
 def _response_error_message(response: requests.Response) -> str:
@@ -184,6 +376,19 @@ def _response_error_message(response: requests.Response) -> str:
     return str(message or "Request failed")
 
 
+def _int_or_none(row: Dict[str, Any], key: str) -> Optional[int]:
+    """``int(row[key])``, or None when the key is absent, null or not a number."""
+    try:
+        return int(row[key])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _pod_gpu_count(row: Dict[str, Any]) -> Optional[int]:
+    """The pod's own billed GPU count from a ``/pods`` row (a string in the payload), or None."""
+    return _int_or_none(row, "gpu_count")
+
+
 def _get_client_version() -> str:
     try:
         return version("lium.io")
@@ -218,6 +423,26 @@ class Lium:
             "X-Source": source,
             "X-Lium-Client-Version": _get_client_version(),
         }
+        self._features: Optional[set] = None
+
+    def features(self) -> set:
+        """Optional API capabilities the backend advertises on ``GET /version``.
+
+        Read once per client. A backend that predates the list, or one that cannot be
+        reached, advertises nothing — callers then take their client-side path.
+        """
+        if self._features is None:
+            try:
+                data = self._request("GET", "/version").json()
+                names = data.get("features") if isinstance(data, dict) else None
+                self._features = {str(name) for name in names} if isinstance(names, list) else set()
+            except Exception:  # noqa: BLE001 — an unreachable /version is "no features", not an error
+                self._features = set()
+        return self._features
+
+    def supports(self, feature: str) -> bool:
+        """Whether the backend advertises ``feature`` (see :meth:`features`)."""
+        return feature in self.features()
 
     def _request(
         self,
@@ -225,22 +450,34 @@ class Lium:
         endpoint: str,
         base_url: Optional[str] = None,
         headers: Optional[Dict[str, str]] = None,
-        retry: bool = True,
+        retry: Optional[bool] = None,
         **kwargs,
     ) -> requests.Response:
         """Make API request with error handling.
 
-        Transient failures (429, 5xx, network errors) are retried unless
-        ``retry`` is False. A call that creates something must pass ``False``:
-        a timed-out POST may well have succeeded server-side, and repeating it
-        blindly creates a duplicate.
+        Transient failures (429, 5xx, network errors) are retried up to three
+        times for idempotent methods (``GET``, ``HEAD``, ``OPTIONS``). Anything
+        that mutates (``POST``, ``PUT``, ``PATCH``, ``DELETE``) is repeated only
+        after a 429: the server answered instead of running the request, so
+        sending it again cannot duplicate anything. A 5xx or a lost connection
+        is not repeated for them — a timed-out POST may well have succeeded
+        server-side, and repeating it blindly creates a second template, volume,
+        backup or pod; a repeated DELETE turns a completed removal into "not
+        found". ``retry=True`` retries every transient failure, ``retry=False``
+        sends exactly once, whatever the method.
         """
-        if retry:
+        if retry is True or (retry is None and method.upper() in IDEMPOTENT_METHODS):
             return self._request_with_retry(method, endpoint, base_url=base_url, headers=headers, **kwargs)
-        return self._request_once(method, endpoint, base_url=base_url, headers=headers, **kwargs)
+        if retry is False:
+            return self._request_once(method, endpoint, base_url=base_url, headers=headers, **kwargs)
+        return self._request_backing_off_rate_limits(method, endpoint, base_url=base_url, headers=headers, **kwargs)
 
     @with_retry()
     def _request_with_retry(self, method: str, endpoint: str, **kwargs) -> requests.Response:
+        return self._request_once(method, endpoint, **kwargs)
+
+    @with_retry(exceptions=(LiumRateLimitError,))
+    def _request_backing_off_rate_limits(self, method: str, endpoint: str, **kwargs) -> requests.Response:
         return self._request_once(method, endpoint, **kwargs)
 
     def _request_once(
@@ -253,16 +490,33 @@ class Lium:
     ) -> requests.Response:
         url = f"{base_url or self.config.base_url}/{endpoint.lstrip('/')}"
         request_headers = headers or self.headers
-        resp = requests.request(method, url, headers=request_headers, timeout=30, **kwargs)
+        timeout = kwargs.pop("timeout", 30)
+        resp = requests.request(method, url, headers=request_headers, timeout=timeout, **kwargs)
+        try:
+            self._raise_for_status(resp)
+        except Exception:
+            # A streamed response (logs) that is never read keeps its socket
+            # until garbage collection; the caller only gets the exception.
+            close = getattr(resp, "close", None)
+            if callable(close):
+                close()
+            raise
+        return resp
 
+    @staticmethod
+    def _raise_for_status(resp: requests.Response) -> None:
+        """Map a non-2xx response to the SDK exception for its status.
+
+        The single place this mapping lives; every HTTP path (``_request`` and
+        the streaming ``logs``) goes through it so a 403 reads the same
+        everywhere.
+        """
         if resp.ok:
-            return resp
-
-        # Map errors
+            return
         if resp.status_code == 401:
             raise LiumAuthError("Invalid API key")
         if resp.status_code == 403:
-            raise LiumPermissionError(f"Permission denied: {_response_error_message(resp)}")
+            raise permission_error(_response_error_message(resp), _response_error_code(resp))
         if resp.status_code == 404:
             raise LiumNotFoundError(f"Resource not found: {_response_error_message(resp)}")
         if resp.status_code == 429:
@@ -398,6 +652,7 @@ class Lium:
             effective_download_speed_mbps=executor_dict.get("effective_download_speed_mbps"),
             max_cuda_version=executor_dict.get("max_cuda_version"),
             tier=executor_dict.get("tier"),
+            available_gpu_count=_int_or_none(executor_dict, "available_gpu_count"),
         )
 
     def list_ssh_keys(self) -> List[SSHKey]:
@@ -662,12 +917,27 @@ class Lium:
         interval: float,
         exclude: frozenset = frozenset(),
     ) -> Optional[Dict[str, Any]]:
-        """A pod called ``name`` on ``executor_id`` if one shows up in ``ps``.
+        """The dict :meth:`up` returns for a pod called ``name`` on ``executor_id``, if one
+        shows up in ``ps`` (see :meth:`_find_pod_info_by_name`)."""
+        pod = self._find_pod_info_by_name(name, executor_id, attempts=attempts, interval=interval, exclude=exclude)
+        return None if pod is None else self._created_pod_record(pod, executor_id)
 
-        Used when the rent response did not say what it created. The executor
-        is matched when the listing includes one, so two pods sharing a generic
-        name on different nodes are not confused, and pods whose id is in
-        ``exclude`` (the ones that existed before the rent) are never returned.
+    def _find_pod_info_by_name(
+        self,
+        name: Optional[str],
+        executor_id: Optional[str],
+        *,
+        attempts: int,
+        interval: float,
+        exclude: frozenset = frozenset(),
+    ) -> Optional[PodInfo]:
+        """A pod called ``name`` if one shows up in ``ps``.
+
+        Used when the rent response did not say what it created. With ``executor_id`` the
+        executor is matched when the listing includes one, so two pods sharing a generic
+        name on different nodes are not confused; ``None`` (a rent-by-spec, where the server
+        chose the node) matches on the name alone. Pods whose id is in ``exclude`` (the ones
+        that existed before the rent) are never returned.
         """
         if not name:
             return None
@@ -676,9 +946,14 @@ class Lium:
             for pod in self._list_pods_or_none() or []:
                 if pod.id in exclude or pod.name != name:
                     continue
-                if pod.executor is not None and pod.executor.id and pod.executor.id != executor_id:
+                if (
+                    executor_id
+                    and pod.executor is not None
+                    and pod.executor.id
+                    and pod.executor.id != executor_id
+                ):
                     continue
-                return self._created_pod_record(pod, executor_id)
+                return pod
         return None
 
     @staticmethod
@@ -692,6 +967,247 @@ class Lium:
             "ssh_cmd": pod.ssh_cmd,
             "executor_id": executor_id,
         }
+
+    def rent(
+        self,
+        *,
+        gpu_type: str,
+        gpu_count: int = 1,
+        name: str = "Your Pod",
+        template_id: Optional[str] = None,
+        dockerfile_content: Optional[str] = None,
+        min_vram_gb: Optional[float] = None,
+        min_cpus: Optional[int] = None,
+        min_ram_gb: Optional[float] = None,
+        min_disk_gb: Optional[float] = None,
+        min_download_mbps: Optional[float] = None,
+        min_ports: Optional[int] = None,
+        max_price_per_gpu_hour: Optional[float] = None,
+        country: Optional[str] = None,
+        docker_in_docker: Optional[bool] = None,
+        interconnect: Optional[str] = None,
+        volume_id: Optional[str] = None,
+        ports: Optional[int] = None,
+        ssh_keys: Optional[List[str]] = None,
+        ssh_name: Optional[str] = None,
+        enable_volume_encryption: bool | None = True,
+        backup_id: Optional[str] = None,
+        restore_path: Optional[str] = None,
+        dry_run: bool = False,
+    ) -> RentResult:
+        """Rent the cheapest available node that satisfies a spec, without listing the fleet.
+
+        When the backend advertises ``rent_by_spec`` (``GET /version``), one call to
+        ``POST /executors/rent-by-spec`` selects and rents: the server picks the cheapest
+        ``$/GPU·h`` node that meets every constraint (ties: faster ingress, then reliability,
+        then id), rents it under its own locks and, if that node is taken meanwhile, tries the
+        next candidate. Against an older backend the same arguments make today's client-side
+        pick — list, filter, cheapest exact match — and rent it with :meth:`up`.
+
+        Args:
+            gpu_type: Short or full GPU name — ``"H100"``, ``"RTX4090"``, ``"NVIDIA H200"``.
+            gpu_count: GPUs to rent (default 1). Server-side this also admits a split of a
+                larger node when its provider allows one; client-side it is the node's size.
+            name: Pod name.
+            template_id: Template to run. Omitted: the node's recommended image.
+                Mutually exclusive with ``dockerfile_content``.
+            dockerfile_content: Build the image from this Dockerfile instead (see :meth:`up`).
+            min_vram_gb, min_cpus, min_ram_gb, min_disk_gb, min_download_mbps, min_ports:
+                Floors on the host; a host that does not report the figure does not qualify.
+            max_price_per_gpu_hour: Ceiling on ``price_per_gpu``.
+            country: ISO country code.
+            docker_in_docker: Require a sysbox host.
+            interconnect: ``"nvlink"`` — every GPU pair on NVLink (unreported counts as no).
+                Client-side only: a rent-by-spec backend has no such field, so the call is
+                refused there rather than sent with a constraint the server would not check.
+            volume_id, ports, ssh_keys, ssh_name, enable_volume_encryption, backup_id,
+                restore_path: as in :meth:`up`.
+            dry_run: Choose and price only; nothing is rented and no SSH key is registered
+                with the account. Against a rent-by-spec backend the request still carries
+                your SSH public key (``ssh_keys`` or the configured key: the server validates
+                a dry run as a rent); the client-side pick needs no key.
+
+        Returns:
+            :class:`RentResult` — the node, the GPUs rented, the hourly price, the pod (``None``
+            on a dry run), the template used, how many nodes qualified and the runners-up.
+
+        Raises:
+            LiumError: No node satisfies the spec. The message names the constraint that
+                left no candidate and the best value on offer, e.g.
+                ``min_cpus=64: none of the 12 node(s) matching the earlier constraints
+                satisfies it; the best on offer is 48``.
+            LiumError: ``interconnect`` was given and the backend rents by spec (nothing is
+                registered or rented).
+            LiumServerError, requests.RequestException: the rent-by-spec response was lost. The
+                rent is posted once (a repeat could rent a second node); the pod is looked up
+                by name for ~9 s and returned when it appears, otherwise the error propagates
+                and the pod may still exist — check :meth:`ps`.
+        """
+        if template_id is not None and dockerfile_content is not None:
+            raise ValueError("Provide either template_id or dockerfile_content, not both")
+        if bool(backup_id) != bool(restore_path):
+            raise ValueError("backup_id and restore_path must be provided together")
+
+        spec = {
+            "gpu_type": gpu_type,
+            "gpu_count": gpu_count,
+            "min_vram_gb": min_vram_gb,
+            "min_cpus": min_cpus,
+            "min_ram_gb": min_ram_gb,
+            "min_disk_gb": min_disk_gb,
+            "min_download_mbps": min_download_mbps,
+            "min_ports": min_ports,
+            "max_price_per_gpu_hour": max_price_per_gpu_hour,
+            "country": country,
+            "docker_in_docker": docker_in_docker,
+            "interconnect": interconnect,
+        }
+        spec = {key: value for key, value in spec.items() if value is not None}
+        rental = {
+            "name": name,
+            "template_id": template_id,
+            "dockerfile_content": dockerfile_content,
+            "volume_id": volume_id,
+            "ports": ports,
+            "ssh_keys": ssh_keys,
+            "ssh_name": ssh_name,
+            "enable_volume_encryption": enable_volume_encryption,
+            "backup_id": backup_id,
+            "restore_path": restore_path,
+        }
+        if self.supports(RENT_BY_SPEC):
+            return self._rent_on_server(spec, rental, dry_run)
+        return self._rent_client_side(spec, rental, dry_run)
+
+    def _rent_on_server(self, spec: Dict[str, Any], rental: Dict[str, Any], dry_run: bool) -> RentResult:
+        # RentBySpecRequest has no `interconnect` field: the server would drop the key and rent a
+        # node without checking it. Refuse before anything is registered or rented.
+        if "interconnect" in spec:
+            raise LiumError(
+                "interconnect is not a constraint this backend's rent-by-spec accepts, so it would "
+                "rent a node without checking it. Drop interconnect, or pick the node with ls() and "
+                "rent it with up()."
+            )
+        # The server's RentBySpecRequest requires user_public_key on a dry run too (it validates
+        # the request as a rent), so the key is needed either way; only the registration is skipped.
+        ssh_material = rental["ssh_keys"] or self.config.ssh_public_keys
+        if not ssh_material:
+            raise ValueError("No SSH keys found")
+        if not dry_run:
+            self._ensure_ssh_keys_registered(ssh_material, name=rental["ssh_name"])
+
+        payload = {
+            **spec,
+            "pod_name": rental["name"],
+            "template_id": rental["template_id"],
+            "dockerfile_content": rental["dockerfile_content"],
+            "volume_id": rental["volume_id"],
+            "user_public_key": ssh_material,
+            "initial_port_count": rental["ports"],
+            "enable_volume_encryption": rental["enable_volume_encryption"],
+            "backup_log_id": rental["backup_id"],
+            "restore_path": rental["restore_path"],
+            "dry_run": dry_run,
+        }
+        gpu_count = int(spec.get("gpu_count") or 1)
+        # A rent is billable and a lost response may have succeeded server-side, so it is sent
+        # once, as in `up`; a dry run rents nothing and keeps the retries. Pods that exist before
+        # the rent can never be the one it created (see `up`).
+        known_pod_ids = frozenset() if dry_run else self._pod_ids_before_rent()
+        try:
+            data = self._request("POST", "/executors/rent-by-spec", json=payload, retry=dry_run).json()
+        except (requests.RequestException, LiumServerError, LiumRateLimitError):
+            if dry_run:
+                raise
+            # The server may have rented before the response was lost: hand back the pod it
+            # created rather than an error next to a billing pod. Nothing is posted again — a
+            # second rent-by-spec could pick another node — so when no pod appears the error
+            # propagates and the docstring tells the caller to check `ps`.
+            pod = self._find_pod_info_by_name(
+                rental["name"], None, attempts=3, interval=3, exclude=known_pod_ids
+            )
+            if pod is None or pod.executor is None:
+                raise
+            return RentResult(
+                executor=pod.executor,
+                price_per_hour=pod.executor.price_per_hour,  # ps() anchors it on the pod's billed price
+                gpu_count=gpu_count,
+                pod=self._created_pod_record(pod, pod.executor.id),
+                template_id=rental["template_id"],
+                candidates=1,
+                attempts=1,
+                server_side=True,
+            )
+        executor = self._dict_to_executor_info(data.get("selected_executor") or {})
+        if executor is None:
+            raise LiumError("rent-by-spec returned no node")
+        pod_id = data.get("pod_id")
+        return RentResult(
+            executor=executor,
+            price_per_hour=float(data.get("price_per_hour") or executor.price_per_hour),
+            gpu_count=gpu_count,
+            pod=None
+            if pod_id is None
+            else {"id": pod_id, "name": rental["name"], "status": "PENDING", "executor_id": executor.id},
+            template_id=data.get("template_id"),
+            candidates=int(data.get("candidates") or 1),
+            alternatives=list(data.get("alternatives_considered") or []),
+            attempts=int(data.get("attempts") or 0),
+            dry_run=bool(data.get("dry_run", dry_run)),
+            server_side=True,
+        )
+
+    def _rent_client_side(self, spec: Dict[str, Any], rental: Dict[str, Any], dry_run: bool) -> RentResult:
+        # Today's pick, for a backend without rent-by-spec: cheapest $/GPU·h node with exactly
+        # gpu_count GPUs that meets the constraints; ties keep the faster ingress, then the id.
+        executors = self.ls(gpu_type=spec["gpu_type"])
+        matches = [e for e in executors if _satisfies_spec(e, spec)]
+        if not matches:
+            on_offer = sorted({f"{e.gpu_count}x{e.gpu_type} ${e.price_per_hour:.2f}/h" for e in executors})
+            hint = f" Available: {', '.join(on_offer)}." if on_offer else ""
+            wanted = ", ".join(f"{key}={value}" for key, value in spec.items())
+            raise LiumError(f"No node matches {wanted}.{hint}")
+        matches.sort(key=lambda e: (e.price_per_gpu or float("inf"), -e.download_speed, e.id))
+        executor = matches[0]
+        alternatives = [
+            {
+                "id": e.id,
+                "machine_name": e.machine_name,
+                "gpu_count": e.gpu_count,
+                "price_per_gpu": e.price_per_gpu,
+                "price_per_hour": e.price_per_hour,
+                "download_mbps": e.download_speed,
+                "country_code": (e.location or {}).get("country_code"),
+            }
+            for e in matches[1:6]
+        ]
+        pod = None
+        if not dry_run:
+            pod = self.up(
+                executor_id=executor.id,
+                name=rental["name"],
+                template_id=rental["template_id"],
+                dockerfile_content=rental["dockerfile_content"],
+                volume_id=rental["volume_id"],
+                ports=rental["ports"],
+                ssh_keys=rental["ssh_keys"],
+                ssh_name=rental["ssh_name"],
+                enable_volume_encryption=rental["enable_volume_encryption"],
+                backup_id=rental["backup_id"],
+                restore_path=rental["restore_path"],
+            )
+        return RentResult(
+            executor=executor,
+            price_per_hour=executor.price_per_hour,
+            gpu_count=executor.gpu_count,  # exact match on gpu_count: the whole node is rented
+            pod=pod,
+            template_id=rental["template_id"],
+            candidates=len(matches),
+            alternatives=alternatives,
+            attempts=0 if dry_run else 1,
+            dry_run=dry_run,
+            server_side=False,
+        )
 
     def pod(
         self,
@@ -725,22 +1241,20 @@ class Lium:
             Log lines as bytes.
         """
         params = {"tail": tail, "follow": str(follow).lower()}
-        url = f"{self.config.base_url}/pods/{pod_id}/logs"
 
-        with requests.get(url, headers=self.headers, params=params, stream=True, timeout=None if follow else 30) as response:
-            if not response.ok:
-                if response.status_code == 401:
-                    raise LiumAuthError("Invalid API key")
-                if response.status_code == 403:
-                    raise LiumPermissionError(f"Permission denied: {response.text}")
-                if response.status_code == 404:
-                    raise LiumNotFoundError(f"Pod not found: {pod_id}")
-                if response.status_code == 429:
-                    raise LiumRateLimitError("Rate limit exceeded")
-                if 500 <= response.status_code < 600:
-                    raise LiumServerError(f"Server error: {response.status_code}")
-                raise LiumError(f"API error {response.status_code}: {response.text}")
+        try:
+            response = self._request(
+                "GET",
+                # the id comes from the caller: quoted so a stray "/" or "?" cannot point the request at another route
+                f"/pods/{quote(str(pod_id), safe='')}/logs",
+                params=params,
+                stream=True,
+                timeout=None if follow else 30,
+            )
+        except LiumNotFoundError:
+            raise LiumNotFoundError(f"Pod not found: {pod_id}") from None
 
+        with response:
             for line in response.iter_lines():
                 if line:
                     yield line
@@ -875,6 +1389,10 @@ class Lium:
                 jupyter_url=d.get("jupyter_url"),
                 enable_volume_encryption=d.get("enable_volume_encryption"),
                 volume_encryption_status=d.get("volume_encryption_status"),
+                estimated_ready_seconds=d.get("estimated_ready_seconds"),
+                eta_basis=d.get("eta_basis"),
+                phase=d.get("phase"),
+                gpu_count=_pod_gpu_count(d),
             ))
 
         return pods
@@ -1060,13 +1578,15 @@ class Lium:
         """
         try:
             available_machines = self._request("GET", "/machines").json()
-            gpu_short_normalized = gpu_short.upper()
+            gpu_short_normalized = normalize_gpu_short(gpu_short)
             matching_machines = []
 
             for machine in available_machines:
                 machine_name = machine.get("name", "")
-                # Check if the short name matches the extracted GPU type
-                if extract_gpu_type(machine_name).upper() == gpu_short_normalized:
+                # Both sides go through normalize_gpu_short: pattern hits are already
+                # upper-case, but a name with no pattern hit keeps its casing ("Ti", "Xp"),
+                # and `--gpu ti` must still find it.
+                if normalize_gpu_short(extract_gpu_type(machine_name)) == gpu_short_normalized:
                     matching_machines.append(machine_name)
 
             # Return comma-separated list of all matches
@@ -1200,11 +1720,42 @@ class Lium:
         finally:
             client.close()
 
+    @staticmethod
+    def _env_exports(env: Dict[str, str]) -> str:
+        """``export NAME=value`` statements for ``env``, shell-quoted so each value
+        reaches the pod byte-for-byte (spaces, quotes, ``$``, newlines).
+
+        Names must be valid shell identifiers (DAH-2894); anything else raises
+        :class:`ValueError` here rather than failing with an opaque
+        ``export: not a valid identifier`` on the pod.
+        """
+        exports = []
+        for name, value in env.items():
+            if not ENV_NAME.fullmatch(name):
+                raise ValueError(
+                    f"Invalid environment variable name {name!r}: use letters, digits and "
+                    "underscores, not starting with a digit"
+                )
+            exports.append(f"export {name}={shlex.quote(str(value))}")
+        return " && ".join(exports)
+
+    # Read the exports from stdin and evaluate them in the remote shell. Nothing
+    # here names a value, so the pod's argv never carries one.
+    _ENV_FROM_STDIN = 'eval "$(cat)"'
+
     def _prep_command(self, command: str, env: Optional[Dict[str, str]] = None) -> str:
-        """Prepare command with environment variables."""
+        """Prefix ``command`` with the exports spelled out inline.
+
+        The values end up in the remote argv, so this form is for pty transports
+        only: :meth:`stream_exec` requests a pty, which echoes stdin back into the
+        output and never delivers the client's EOF, so the exports cannot travel
+        the way :meth:`exec` sends them. Anything that runs through
+        :meth:`exec` (a detached launcher, a background job) passes ``env=`` to
+        it instead — the launching shell exports over stdin and its children
+        inherit the environment without a value ever reaching ``ps``.
+        """
         if env:
-            env_str = " && ".join([f'export {k}="{v}"' for k, v in env.items()])
-            return f"{env_str} && {command}"
+            return f"{self._env_exports(env)} && {command}"
         return command
 
     def exec(
@@ -1220,14 +1771,26 @@ class Lium:
             pod: Pod to target.
             command: Shell command to run remotely.
             env: Optional environment variables exported before the command runs.
+                The values are sent over the session's stdin, not in the remote
+                command line, so ``ps`` on the pod never shows them.
 
         Returns:
             Dict containing stdout, stderr, exit_code, and success flag.
+
+        Raises:
+            ValueError: an ``env`` name is not a shell identifier. Raised before
+                the connection is opened, so nothing reaches the pod.
         """
-        command = self._prep_command(command, env)
+        # Build (and so name-check) the exports first: once ``eval "$(cat)" && cmd``
+        # has been sent, a failure here would leave ``cmd`` running with no env.
+        exports = self._env_exports(env) if env else ""
+        if exports:
+            command = f"{self._ENV_FROM_STDIN} && {command}"
 
         with self.ssh_connection(pod) as client:
             stdin, stdout, stderr = client.exec_command(command)
+            if exports:
+                stdin.write(exports.encode("utf-8"))
             # Send EOF: a remote command that reads stdin waits forever otherwise,
             # and this call has no stdin to give it.
             stdin.close()
@@ -1293,35 +1856,154 @@ class Lium:
             max_workers: Maximum number of SSH workers to spawn.
 
         Returns:
-            List of result dictionaries mirroring :meth:`exec`.
+            List of result dictionaries mirroring :meth:`exec`, each with the pod
+            id under ``"pod"``. When SSH fails for a pod its entry is
+            ``{"pod": <id>, "error": <message>, "success": False}`` — same key,
+            same type as the successful entries, so callers can index results
+            by pod id without checking which shape they got.
+
+        Raises:
+            ValueError: an ``env`` name is not a shell identifier. Checked once,
+                before any pod is contacted — a caller's mistake is not one
+                failure entry per pod.
         """
+        if env:
+            self._env_exports(env)  # the name check; exec() builds the exports again per pod
+
         def exec_single(pod: PodInfo):
             try:
                 result = self.exec(pod, command=command, env=env)
                 result["pod"] = pod.id
                 return result
             except Exception as e:
-                return {"pod": pod, "error": str(e), "success": False}
+                return {"pod": pod.id, "error": str(e), "success": False}
 
         with ThreadPoolExecutor(max_workers=min(max_workers, len(pods))) as executor:
             return list(executor.map(exec_single, pods))
+
+    # Statuses a pod never leaves. Seeing one while waiting means "stop waiting",
+    # not "keep polling until the timeout".
+    TERMINAL_POD_STATUSES = frozenset(
+        {
+            "FAILED",
+            "STOPPED",
+            "ERROR",
+            "TERMINATED",
+            "DELETED",
+            "REMOVED",
+            "CANCELLED",
+            # The backend's own names for a rent that will not come up: a failed create is
+            # CREATION_FAILED for three minutes before its row is deleted, a force-closed pod is
+            # BROKEN, a reboot the host never came back from is REBOOT_FAILED, a delete in flight
+            # is DELETING.
+            "CREATION_FAILED",
+            "BROKEN",
+            "REBOOT_FAILED",
+            "DELETING",
+        }
+    )
+    # How long a pod that was never listed may stay out of ``ps`` before it is declared
+    # missing (a wrong id, or a rent the backend dropped). A time budget, not a poll count:
+    # at the 2 s schedule a count of 3 gave a pod ~4 s to appear instead of the ~20 s it had
+    # at 10 s, so one listing hiccup would have failed ``lium up`` on a pod already billing.
+    MISSING_GRACE_SECONDS = 20
+    # DAH-3002: the backend marks a cached-template pod RUNNING at p50 22.5 s after the rent
+    # (7 d to 6 Sep 2026); polled every 10 s the caller learnt it 0–10 s late. Poll every
+    # 2 s while a normal start is still plausible, then fall back to the old 10 s.
+    FAST_POLL_SECONDS = 2
+    FAST_POLL_WINDOW_SECONDS = 90
+    SLOW_POLL_SECONDS = 10
+
+    @classmethod
+    def poll_delay(cls, elapsed: float, poll_interval: Optional[int] = None) -> float:
+        """Seconds to sleep between two ``wait_ready`` polls.
+
+        A caller-given ``poll_interval`` is used as-is; ``None`` selects the adaptive
+        schedule (:attr:`FAST_POLL_SECONDS` for the first :attr:`FAST_POLL_WINDOW_SECONDS`
+        seconds, :attr:`SLOW_POLL_SECONDS` after that).
+        """
+        if poll_interval is not None:
+            return poll_interval
+        return cls.FAST_POLL_SECONDS if elapsed < cls.FAST_POLL_WINDOW_SECONDS else cls.SLOW_POLL_SECONDS
+
+    def pod_events(self, pod_id: str) -> List[Dict[str, Any]]:
+        """The pod's event log, oldest first — creation, reboots, failures with their error, and
+        lifecycle entries saying why it left RUNNING. Answers for a pod whose row is already gone.
+
+        Returns ``[]`` against a backend that predates the endpoint.
+        """
+        try:
+            # One attempt: this is read on the failure path, after the wait's budget is spent, so the
+            # retry backoff would only delay the PodStartError the caller is about to see.
+            data = self._request("GET", f"/pods/{quote(str(pod_id), safe='')}/events", retry=False).json()
+        except LiumNotFoundError:
+            return []
+        # dict entries only: pod_failure_cause reads them on a failure path and must not raise there
+        return [e for e in data if isinstance(e, dict)] if isinstance(data, list) else []
+
+    def pod_failure_cause(self, pod_id: str) -> Optional[str]:
+        """What the backend recorded as the reason the pod failed or was closed, or ``None``.
+
+        The latest event carrying an ``error`` (a failed create or reboot: the validator's headline)
+        or a lifecycle ``reason``/``detail`` wins. Never raises — this is read on a failure path.
+        """
+        try:
+            events = self.pod_events(pod_id)
+        except Exception:
+            # ``_request`` raises ``requests.RequestException`` or a ``LiumError`` on a failed call, and a
+            # network blip here must not turn a ``PodStartError`` into "Unexpected error".
+            return None
+        for event in reversed(events):
+            if event.get("error"):
+                return event["error"]
+            if event.get("reason"):
+                detail = event.get("detail")
+                return f"{event['reason']}: {detail}" if detail else event["reason"]
+        return None
+
+    def _never_listed_error(self, pod_id: str, missing_polls: int, elapsed: float) -> PodStartError:
+        """The error for an id that was never in the pod list once :attr:`MISSING_GRACE_SECONDS` are spent."""
+        cause = self.pod_failure_cause(pod_id)
+        return PodStartError(
+            f"Pod {pod_id} is not in the pod list after {missing_polls} checks over {elapsed:.0f} s"
+            + (f"; cause: {cause}" if cause else ""),
+            pod_id=pod_id, cause=cause,
+        )
 
     def wait_ready(
         self,
         pod: Union[str, PodInfo, Dict],
         *,
-        timeout: int = 300,
-        poll_interval: int = 10,
+        timeout: Optional[int] = 300,
+        poll_interval: Optional[int] = None,
+        on_poll: Optional[Callable[[Optional[PodInfo], str, float], None]] = None,
     ) -> Optional[PodInfo]:
         """Poll until a pod reports RUNNING + SSH metadata.
 
         Args:
             pod: Pod identifier, PodInfo, or dict with an ``id`` field.
-            timeout: Maximum number of seconds to wait.
-            poll_interval: Interval between successive ``ps`` calls.
+            timeout: Maximum number of seconds to wait; ``None`` waits until the
+                pod is ready or fails.
+            poll_interval: Fixed interval between successive ``ps`` calls; ``None``
+                (default) polls every :attr:`FAST_POLL_SECONDS` for the first
+                :attr:`FAST_POLL_WINDOW_SECONDS` seconds, then every
+                :attr:`SLOW_POLL_SECONDS` — see :meth:`poll_delay`.
+            on_poll: Called after every poll with the pod as last listed (or
+                ``None``), its status (``"missing"`` when not listed) and the
+                seconds elapsed, so a caller can show progress while waiting.
 
         Returns:
-            PodInfo when the pod is ready, otherwise ``None`` if timeout expires.
+            PodInfo when the pod is ready, otherwise ``None`` if the timeout
+            expires while the pod is still starting.
+
+        Raises:
+            PodStartError: The pod reached a terminal status (``FAILED``,
+                ``CREATION_FAILED``, ``STOPPED``, …), vanished from the pod list
+                after being seen, or was still not listed
+                :attr:`MISSING_GRACE_SECONDS` seconds after the first poll. The error carries the
+                last ``PodInfo``, its status, the status history and the cause
+                the backend recorded (``cause``), so a caller can tell a dead pod
+                from a slow one and clean up instead of retrying.
         """
         if isinstance(pod, PodInfo):
             pod_id = pod.id
@@ -1331,14 +2013,58 @@ class Lium:
             pod_id = pod
 
         start = time.time()
-        while time.time() - start < timeout:
+        history: List[str] = []
+        last_seen: Optional[PodInfo] = None
+        missing_polls = 0
+        while True:
+            elapsed = time.time() - start
+            if timeout is not None and elapsed >= timeout:
+                if last_seen is None and missing_polls and elapsed >= self.MISSING_GRACE_SECONDS:
+                    # The budget and the grace ran out together: an id that was never listed in
+                    # 20 s is a missing pod, not a slow one — say so instead of answering None
+                    # (wait_ready('00000000-…', timeout=20), the DAH-1942 audit case).
+                    raise self._never_listed_error(pod_id, missing_polls, elapsed)
+                break
             fresh_pods = self.ps()
             current = next((p for p in fresh_pods if p.id == pod_id), None)
 
-            if current and current.status.upper() == "RUNNING" and current.ssh_cmd:
-                return current
+            if current is None:
+                missing_polls += 1
+                if on_poll:
+                    on_poll(last_seen, "missing", elapsed)
+                if last_seen is not None:
+                    cause = self.pod_failure_cause(pod_id)
+                    raise PodStartError(
+                        f"Pod {last_seen.huid} ({pod_id}) disappeared while starting; "
+                        f"last status {history[-1] if history else 'unknown'}"
+                        + (f"; cause: {cause}" if cause else ""),
+                        pod_id=pod_id, pod=last_seen, status=history[-1] if history else None,
+                        history=history, cause=cause,
+                    )
+                if elapsed >= self.MISSING_GRACE_SECONDS:
+                    raise self._never_listed_error(pod_id, missing_polls, elapsed)
+                time.sleep(self.poll_delay(elapsed, poll_interval))
+                continue
 
-            time.sleep(poll_interval)
+            missing_polls = 0
+            last_seen = current
+            status = (current.status or "unknown").upper()
+            if not history or history[-1] != status:
+                history.append(status)
+            if on_poll:
+                on_poll(current, status, elapsed)
+
+            if status == "RUNNING" and current.ssh_cmd:
+                return current
+            if status in self.TERMINAL_POD_STATUSES:
+                cause = self.pod_failure_cause(pod_id)
+                raise PodStartError(
+                    f"Pod {current.huid} ({pod_id}) will not start: status {status}"
+                    f" (seen: {' → '.join(history)})" + (f"; cause: {cause}" if cause else ""),
+                    pod_id=pod_id, pod=current, status=status, history=history, cause=cause,
+                )
+
+            time.sleep(self.poll_delay(elapsed, poll_interval))
         return None
 
     def scp(self, pod: PodInfo, *, local: str, remote: str) -> None:
@@ -1379,22 +2105,74 @@ class Lium:
         """
         self.scp(pod, local=local, remote=remote)
 
-    def ssh(self, pod: PodInfo) -> str:
+    def ssh_argv(self, pod: PodInfo) -> List[str]:
+        """The OpenSSH argument list that opens a shell on a pod.
+
+        Built from the user, host and port the API's ``ssh_connect_cmd`` names
+        (:func:`ssh_target`; any other shape is refused), with ``-i <configured
+        key>`` when one is configured and the host-key options of
+        :func:`openssh_host_key_options`. Run it with ``subprocess.run(argv)`` —
+        no shell is involved, so nothing in the API's value is ever interpreted.
+
+        Raises:
+            ValueError: The pod has no SSH command, or it is not ``ssh <user>@<host> [-p <port>]``.
+        """
+        user, host, port = ssh_target(pod.ssh_cmd)
+        argv = ["ssh"]
+        if self.config.ssh_key_path:
+            argv += ["-i", str(Path(self.config.ssh_key_path).expanduser())]
+        argv += ["-p", str(port), *openssh_host_key_options(pod), f"{user}@{host}"]
+        return argv
+
+    def refresh_pod(self, pod: Union[str, PodInfo]) -> PodInfo:
+        """Re-read one pod from the API.
+
+        A ``PodInfo`` is a snapshot: after a restart the pod's host, port and
+        ``ssh_cmd`` can all change, and the copy a caller holds says nothing
+        about it. Call this before reconnecting to a pod held for a while.
+
+        Args:
+            pod: A ``PodInfo``, a pod id or a huid.
+
+        Returns:
+            The current ``PodInfo`` for that pod (one ``/pods`` call).
+
+        Raises:
+            LiumNotFoundError: The pod is no longer in the account's pod list.
+        """
+        pod_id = pod.id if isinstance(pod, PodInfo) else pod
+        current = next((p for p in self.ps() if pod_id in (p.id, p.huid)), None)
+        if current is None:
+            raise LiumNotFoundError(f"Pod not found: {pod_id}")
+        return current
+
+    def ssh(self, pod: PodInfo, *, refresh: bool = False) -> str:
         """Get SSH command string for connecting to a pod.
+
+        The shell-quoted form of :meth:`ssh_argv`: the configured key, the pinned
+        host-key options and the pod's ``user@host``, ready to paste into a POSIX shell.
+        Building it creates the pod's ``~/.lium/known_hosts/<pod id>`` file when it does
+        not exist yet (empty until the first connection pins the key).
 
         Args:
             pod: The pod to generate SSH command for.
+            refresh: Re-read the pod first (see :meth:`refresh_pod`), so the
+                command reflects the host and port the pod has *now*, not the
+                ones it had when ``pod`` was fetched.
 
         Returns:
             SSH command string with the configured SSH key path.
 
         Raises:
             ValueError: If SSH is not configured for the pod or no SSH key path is set.
+            LiumNotFoundError: ``refresh=True`` and the pod is gone.
         """
+        if refresh:
+            pod = self.refresh_pod(pod)
         if not pod.ssh_cmd or not self.config.ssh_key_path:
             raise ValueError("No SSH configured")
 
-        return pod.ssh_cmd.replace("ssh ", f"ssh -i {self.config.ssh_key_path} ")
+        return shlex.join(self.ssh_argv(pod))
 
     def rsync(self, pod: PodInfo, *, local: str, remote: str) -> None:
         """Sync directories with rsync.
@@ -1410,14 +2188,11 @@ class Lium:
         if not pod.ssh_cmd or not self.config.ssh_key_path:
             raise ValueError("No SSH configured")
 
-        ssh_cmd = f"ssh -i {shlex.quote(str(self.config.ssh_key_path))} -p {pod.ssh_port}"
-        if ssh_insecure():
-            ssh_cmd += " -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
-        else:
-            hosts_file = known_hosts_path(pod)
-            _ensure_known_hosts_file(hosts_file)
-            ssh_cmd += f" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={shlex.quote(str(hosts_file))}"
-        cmd = ["rsync", "-avz", "-e", ssh_cmd, local,  f"{pod.username}@{pod.host}:{remote}"]
+        user, host, port = ssh_target(pod.ssh_cmd)
+        ssh_cmd = shlex.join(
+            ["ssh", "-i", str(self.config.ssh_key_path), "-p", str(port), *openssh_host_key_options(pod)]
+        )
+        cmd = ["rsync", "-avz", "-e", ssh_cmd, local, f"{user}@{host}:{remote}"]
 
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
@@ -1924,7 +2699,9 @@ class Lium:
 
     def backup_cancel(self, backup_id: str) -> Dict[str, Any]:
         """Request cancellation of an active backup while retaining its history."""
-        return self._request("POST", f"/backup-logs/{backup_id}/cancel").json()
+        # Idempotent payload: a repeat after the first cancel took is answered with an error, never a
+        # second action, so a 5xx or a lost response is retried.
+        return self._request("POST", f"/backup-logs/{quote(str(backup_id), safe='')}/cancel", retry=True).json()
 
     def backup_log_delete(self, backup_id: str) -> Dict[str, Any]:
         """Delete the stored data for a completed backup and retain its audit row."""
@@ -2000,7 +2777,9 @@ class Lium:
 
     def restore_cancel(self, restore_id: str) -> Dict[str, Any]:
         """Request cancellation of an active restore."""
-        return self._request("POST", f"/restore-logs/{restore_id}/cancel").json()
+        # Idempotent payload: a repeat after the first cancel took is answered with an error, never a
+        # second action, so a 5xx or a lost response is retried.
+        return self._request("POST", f"/restore-logs/{quote(str(restore_id), safe='')}/cancel", retry=True).json()
 
     def get_deployment_estimate(self, executor_id: str, template_id: str) -> dict:
         """Estimate deployment time for a template on a node.
@@ -2027,6 +2806,31 @@ class Lium:
             Floating-point balance value reported by ``/users/me``.
         """
         return float(self._request("GET", "/users/me").json().get("balance") or 0)
+
+    def events(
+        self,
+        *,
+        since: Optional[datetime] = None,
+        pod_id: Optional[str] = None,
+        api_key_id: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """The account's event log, newest first (``GET /users/me/events``).
+
+        Each entry is one recorded action — a rent request, creation, reboot, deletion with its
+        reason, an API/SSH key or template change — with ``actor`` naming the session or API key
+        (``api_key_id``, ``api_key_name``) that made the request; ``null`` when the platform acted
+        by itself. ``pod_id`` also answers for a pod that has since been deleted.
+        """
+        params: Dict[str, Any] = {"limit": limit}
+        if since is not None:
+            params["since"] = since.isoformat()
+        if pod_id:
+            params["pod_id"] = pod_id
+        if api_key_id:
+            params["api_key_id"] = api_key_id
+        data = self._request("GET", "/users/me/events", params=params).json()
+        return data if isinstance(data, list) else []
 
     def topup_currencies(self, refresh: bool = False) -> List[Dict[str, Any]]:
         """List stablecoin currencies/networks supported for self-serve top-ups.
@@ -2147,7 +2951,9 @@ class Lium:
             Response from the schedule termination API
         """
         payload = {"removal_scheduled_at": termination_time}
-        return self._request("POST", f"/pods/{pod.id}/schedule-removal", json=payload).json()
+        # Idempotent payload: the same removal time twice is one schedule, so a 5xx or a lost response
+        # is retried — one blip after `lium up --ttl` must not leave the pod without its auto-stop.
+        return self._request("POST", f"/pods/{quote(str(pod.id), safe='')}/schedule-removal", json=payload, retry=True).json()
 
     def cancel_scheduled_termination(self, pod: PodInfo) -> Dict[str, Any]:
         """Cancel a scheduled termination for a pod.

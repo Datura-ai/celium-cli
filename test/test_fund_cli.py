@@ -259,7 +259,7 @@ def test_balance_json(monkeypatch):
     result = CliRunner().invoke(cli, ["balance", "--json"])
 
     assert result.exit_code == 0
-    assert json.loads(result.output) == {"balance_usd": 42.5}
+    assert json.loads(result.output) == {"balance": 42.5, "balance_usd": 42.5, "currency": "USD"}
 
 
 def test_sdk_no_longer_exposes_nowpayments():
@@ -708,7 +708,7 @@ def test_alpha_json_missing_hotkey(monkeypatch):
 def test_alpha_missing_hotkey_interactive_prompts(monkeypatch):
     sub = FakeSubtensor([[_stake(stake=5.0)]], fee=0.01)
     _patch_common(monkeypatch, sub)
-    monkeypatch.setattr(fund_module.Prompt, "ask", staticmethod(lambda *a, **k: HK))
+    monkeypatch.setattr(fund_module.ui, "prompt", lambda *a, **k: HK)
 
     result = CliRunner().invoke(
         cli, ["fund", "--alpha", "-w", "default", "-a", "2", "-y"]

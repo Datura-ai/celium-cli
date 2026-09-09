@@ -13,15 +13,15 @@ class SshAction:
         lium: Lium = ctx["lium"]
         pod: PodInfo = ctx["pod"]
 
+        # The argument list comes from the pod's user, host and port, never from the
+        # API's string as-is, and runs without a shell; the pod's host key is pinned.
         try:
-            ssh_cmd = lium.ssh(pod)
-        except ValueError:
-            ssh_cmd = pod.ssh_cmd
-
-        ssh_cmd += " -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+            ssh_argv = lium.ssh_argv(pod)
+        except ValueError as e:
+            return ActionResult(ok=False, data={}, error=f"Pod '{pod.huid}': {e}")
 
         try:
-            result = subprocess.run(ssh_cmd, shell=True, check=False)
+            result = subprocess.run(ssh_argv, check=False)
         except KeyboardInterrupt:
             # Ctrl+C out of a session is the user's own doing, not a lium failure.
             ui.warning("\nSSH session interrupted")
