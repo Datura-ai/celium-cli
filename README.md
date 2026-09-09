@@ -322,7 +322,7 @@ lium update my-pod
 
 # Manage volumes
 lium volumes list
-lium volumes new mydata -d "My dataset"
+lium volumes new mydata --desc "My dataset"
 lium volumes rm <VOLUME_HUID>
 
 # Manage backups

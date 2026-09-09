@@ -26,7 +26,7 @@ SSH: the CLI and SDK use the first of `~/.ssh/id_ed25519`, `~/.ssh/id_rsa`, `~/.
 
 Success: the JSON result is on **stdout**, exit code 0.
 
-Failure on a renter command that takes `--json` (`exec`, `describe`, `balance`; `fund`, `signup`, `topup currencies` and `topup create` too): stdout is empty, **stderr** holds one JSON object, the exit code is non-zero:
+Failure on a renter command that takes `--json` (`exec`, `describe`, `balance`, `audit`; `fund`, `signup`, `topup currencies` and `topup create` too): stdout is empty, **stderr** holds one JSON object, the exit code is non-zero:
 
 ```json
 {"ok": false, "error": {"code": "pod_not_found", "message": "No pods match targets: train-1"}}
