@@ -126,7 +126,7 @@ def _in_hours(termination_time: datetime) -> str:
     "budget_usd",
     type=click.FloatRange(min=0, min_open=True),
     metavar="USD",
-    help="Auto-terminate once the pod has spent this much (price/h × uptime), scheduled client-side like --ttl. Combined with --ttl/--until the earlier deadline wins.",
+    help="Auto-terminate once the pod has spent this much (price/h × uptime), scheduled client-side through the same removal mechanism as --ttl. Set once the pod is ready: a pod that never becomes ready is not capped by --budget (add --ttl for that). Combined with --ttl/--until the earlier deadline wins.",
 )
 @click.option("--jupyter", is_flag=True, help="Install Jupyter Notebook (automatically selects available port)")
 @click.option("--no-ssh", "no_ssh", is_flag=True, help="Create the pod and return instead of opening an SSH session")
@@ -625,10 +625,12 @@ def up_command(
         # differently from a stuck pod — and with its removal time, when there is one.
         hint = result.data.get("eta_hint")
         backend = f" (backend: {hint})" if hint else ""
-        # A --budget cap is scheduled only once the pod is ready (below), so say when it was not;
-        # --ttl/--until were scheduled at the rent and _termination_note covers them.
+        # A --budget cap is computed from the ready pod (below), so a wait that gives up leaves the pod
+        # uncapped by it — say so and name the remedy; --ttl/--until were scheduled at the rent and
+        # _termination_note covers them.
         budget_not_scheduled = (
-            " The --budget cap was NOT scheduled; it is set once the pod is ready."
+            f" The --budget cap was NOT scheduled (it is computed from the ready pod); cap it with "
+            f"'lium rm {pod_name} --in <duration>' or remove the pod."
             if budget_usd is not None else ""
         )
         raise CliFailure(

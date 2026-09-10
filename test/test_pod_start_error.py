@@ -306,7 +306,9 @@ def test_up_ready_timeout_with_ttl_names_the_removal_time(monkeypatch):
     result = _run_up(monkeypatch, _Wait, ["--ready-timeout", "90", "--budget", "5"])
 
     assert result.exit_code == EXIT_GENERAL_ERROR, result.output
-    assert "The --budget cap was NOT scheduled" in " ".join(result.output.split())
+    text = " ".join(result.output.split())
+    assert "The --budget cap was NOT scheduled (it is computed from the ready pod)" in text
+    assert "lium rm train --in <duration>" in text
 
     result = _run_up(monkeypatch, _Wait, ["--ready-timeout", "90"])
 
