@@ -16,7 +16,6 @@ from click.testing import CliRunner
 
 from lium.cli.commands import mine
 from lium.cli.commands import mine_register as reg
-from lium.provider.errors import ProviderError
 from lium.provider.portal_http import PortalHTTP
 
 HOTKEY = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY"
@@ -118,13 +117,13 @@ class _Snapshot:
 
 
 def test_resolve_price_uses_the_portal_default_unless_given(monkeypatch) -> None:
-    monkeypatch.setattr(reg, "fetch_shared_config", lambda: _Snapshot())
+    monkeypatch.setattr(reg, "fetch_shared_config", _Snapshot)
     assert reg.resolve_price("NVIDIA L4", None) == 0.11
     assert reg.resolve_price("NVIDIA L4", 0.09) == 0.09
 
 
 def test_resolve_price_names_the_closest_portal_name_for_an_unknown_model(monkeypatch) -> None:
-    monkeypatch.setattr(reg, "fetch_shared_config", lambda: _Snapshot())
+    monkeypatch.setattr(reg, "fetch_shared_config", _Snapshot)
     with pytest.raises(reg.RegisterError) as e:
         reg.resolve_price("NVIDIA A10G", None)
     assert "does not list the GPU model this host reports ('NVIDIA A10G')" in str(e.value)
@@ -239,7 +238,7 @@ def test_register_node_treats_the_duplicate_400_as_already_registered() -> None:
     ],
 )
 def test_register_node_turns_portal_refusals_into_named_fixes(monkeypatch, status, detail, expect) -> None:
-    monkeypatch.setattr(reg, "fetch_shared_config", lambda: _Snapshot())
+    monkeypatch.setattr(reg, "fetch_shared_config", _Snapshot)
     portal = _Portal()
     portal.on("POST", "/executors", _Resp(status, {"detail": detail}))
     with pytest.raises(reg.RegisterError, match=expect):
@@ -477,7 +476,7 @@ def test_mine_register_runs_the_install_then_registers_and_waits(monkeypatch, tm
     monkeypatch.setattr(mine, "_start_preflight_pull", lambda: _Pull())
     monkeypatch.setattr(mine, "_run", lambda cmd, **k: ("NVIDIA L4, 23034\n", "") if "nvidia-smi" in cmd else ("", ""))
     monkeypatch.setattr(mine, "_get_public_ip", lambda: "203.0.113.7")
-    monkeypatch.setattr(reg, "fetch_shared_config", lambda: _Snapshot())
+    monkeypatch.setattr(reg, "fetch_shared_config", _Snapshot)
 
     portal = _Portal()
     portal.on("POST", "/executors", _Resp(200, {"success": True, "data": {"message": "queued"}}))
@@ -532,7 +531,7 @@ def test_mine_register_exit_one_on_a_named_fix_and_zero_with_wait_zero(monkeypat
     monkeypatch.setattr(mine, "_start_preflight_pull", lambda: _Pull())
     monkeypatch.setattr(mine, "_run", lambda cmd, **k: ("NVIDIA L4, 23034\n", ""))
     monkeypatch.setattr(mine, "_get_public_ip", lambda: "203.0.113.7")
-    monkeypatch.setattr(reg, "fetch_shared_config", lambda: _Snapshot())
+    monkeypatch.setattr(reg, "fetch_shared_config", _Snapshot)
     monkeypatch.setattr(reg, "wait_until_listed", _wait_no_sleep)
 
     portal = _Portal()
@@ -567,7 +566,7 @@ def test_mine_register_reports_the_add_and_exits_zero_when_the_list_lags(monkeyp
     monkeypatch.setattr(mine, "_start_preflight_pull", lambda: _Pull())
     monkeypatch.setattr(mine, "_run", lambda cmd, **k: ("NVIDIA L4, 23034\n", ""))
     monkeypatch.setattr(mine, "_get_public_ip", lambda: "203.0.113.7")
-    monkeypatch.setattr(reg, "fetch_shared_config", lambda: _Snapshot())
+    monkeypatch.setattr(reg, "fetch_shared_config", _Snapshot)
     monkeypatch.setattr(reg, "FIND_NODE_RETRY_S", 0.0)
     portal = _Portal()
     portal.on("POST", "/executors", _Resp(200, {"success": True, "data": {"message": "queued"}}))
@@ -612,7 +611,7 @@ def test_mine_register_unknown_gpu_is_a_named_fix_and_nothing_is_posted(monkeypa
     monkeypatch.setattr(mine, "_start_preflight_pull", lambda: _Pull())
     monkeypatch.setattr(mine, "_run", lambda cmd, **k: ("NVIDIA A10G, 23028\n", ""))
     monkeypatch.setattr(mine, "_get_public_ip", lambda: "203.0.113.7")
-    monkeypatch.setattr(reg, "fetch_shared_config", lambda: _Snapshot())
+    monkeypatch.setattr(reg, "fetch_shared_config", _Snapshot)
     portal = _Portal()
     monkeypatch.setattr(reg, "build_http", lambda url, token: _http(portal))
     result = CliRunner().invoke(mine.mine_command, ["--register", _token(exp=int(time.time()) + 3600), "--dir", str(target)])
