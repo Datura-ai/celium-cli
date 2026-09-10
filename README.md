@@ -140,8 +140,8 @@ JSON keeps the API's raw value as `ssh_cmd`.
 
 - Supported binary targets: `darwin-amd64`, `darwin-arm64`, `linux-amd64`, `linux-arm64`
 - Maintainers can build locally with `bash scripts/build.sh [macos|linux|all]` (Linux builds go through `Dockerfile.build`)
-- A release is a GitHub release published on a `vX.Y.Z` tag (`.github/workflows/release.yml`): the version is the tag (hatch-vcs; nothing in the tree is bumped), the workflow builds the four binaries with `.sha256` checksums, uploads them (plus `install.sh` and a combined `checksums.txt`) to the release and then clears the pre-release flag; a separate job publishes the sdist/wheel to PyPI as soon as the Python build passes, independent of the binaries. Create the release with `--prerelease` so `latest` does not point at it before the assets are uploaded.
-- Changes are recorded as fragments in `changelog.d/` (one file per ticket, see `changelog.d/README.md`) and folded into `CHANGELOG.md` by `scripts/changelog.py` at release time.
+- A release is a GitHub release published on a `vX.Y.Z` tag (`.github/workflows/release.yml`): the version is the tag (hatch-vcs; nothing in the tree is bumped), the workflow builds the four binaries with `.sha256` checksums, uploads them (plus `install.sh`, a combined `checksums.txt` and the sdist/wheel) to the release and then clears the pre-release flag; a separate job publishes the sdist/wheel to PyPI as soon as the Python build passes, independent of the binaries. Create the release with `--prerelease` so `latest` does not point at it before the assets are uploaded.
+- Changes are recorded as fragments in `changelog.d/` (one file per PR, named after its ticket; see `changelog.d/README.md`) and folded into `CHANGELOG.md` by `scripts/changelog.py` at release time.
 
 ## CLI Reference
 
