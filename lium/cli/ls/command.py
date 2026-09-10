@@ -3,6 +3,7 @@
 import json
 from typing import Optional, List
 import click
+from rich.markup import escape
 
 from lium.sdk import Lium, ExecutorInfo
 from lium.cli import ui
@@ -157,7 +158,7 @@ def ls_command(
             return
         known = lium.unknown_gpu_type(gpu_type) if gpu_type else None
         if known is not None:
-            ui.error(f"No GPU type matches '{gpu_type}'")
+            ui.error(f"No GPU type matches '{escape(gpu_type)}'")
             ui.info(f"Types on the marketplace: {', '.join(known)}")
             ui.info(f"Tip: {ui.styled('lium ls --gpu RTX4090', 'success')} {ui.styled('# or just 4090', 'dim')}")
             return
@@ -173,8 +174,10 @@ def ls_command(
                 "--nvlink excludes nodes with no topology report yet" if nvlink else None,
                 "--min-download judges the Download (Mbps) column" if min_download_mbps is not None else None,
             ) if r]
-            tail = (f"Drop the filter and check on the pod: {ui.styled('nvidia-smi topo -m', 'success')}" if nvlink
-                    else "Drop the filter or lower the floor")
+            if nvlink:
+                tail = f"Drop the filter and check on the pod: {ui.styled('nvidia-smi topo -m', 'success')}"
+            else:
+                tail = "Drop the filter or lower the floor"
             ui.info(f"{'; '.join(rules)}. {tail}")
             return
         if gpu_type:
