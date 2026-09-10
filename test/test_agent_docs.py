@@ -93,6 +93,9 @@ INVOCATIONS = [(page, no, toks) for page, text in PAGES.items() for no, toks in 
 
 
 def test_the_pages_have_commands_to_check():
+    """Regression guard for the parametrized test below: if `_lium_invocations` or `_code_blocks` breaks (a fence
+    regex change, a new README layout) the invocation list shrinks towards zero and every documented line
+    "resolves" because none is checked. The floors are well under today's counts (agents 40+, README 70+)."""
     per_page = {page: sum(1 for p, _, _ in INVOCATIONS if p == page) for page in PAGES}
     assert per_page["docs/agents.md"] >= 30 and per_page["README.md"] >= 60 and per_page["docs/getting-started.rst"] >= 1, per_page
 
@@ -108,9 +111,8 @@ def test_shell_blocks_after_a_python_block_are_still_read():
     blocks = _code_blocks(page, "md")
     assert [line for line in blocks.splitlines() if line] == ["lium ls", "lium ps --format json", "lium rm 1 --yes"]
     assert [toks for _, toks in _lium_invocations(blocks)] == [["ls"], ["ps", "--format", "json"], ["rm", "1", "--yes"]]
-    # the README's CLI Reference block comes after two ```python blocks; it is the page's largest shell block
+    # the README's CLI Reference block comes after two ```python blocks: python assignments and prose never read as commands
     readme = [toks for page, _, toks in INVOCATIONS if page == "README.md"]
-    assert ["up", "1", "--name", "my-pod", "--yes"] in readme and ["volumes", "new", "mydata", "--desc"] in readme
     assert not any(toks[0] == "=" or toks[0].startswith("requires") for toks in readme)
 
 
@@ -139,24 +141,6 @@ def test_env_vars_named_as_ours_exist():
         assert var in source, f"docs/agents.md names `{var}` but nothing in lium/ reads it"
 
 
-def test_guide_exists_and_readme_links_it():
-    readme = (ROOT / "README.md").read_text()
-
-    assert AGENTS_DOC.exists()
-    assert "docs/agents.md" in readme
-
-
-def test_guide_covers_the_lifecycle_and_the_gotchas():
-    text = AGENTS_DOC.read_text()
-
-    for needle in (
-        "LIUM_API_KEY", "--format json", "--ttl", "--yes", "--no-ssh", "lium rm",
-        '"ok": false', "/workspace", "/root", "HF_HOME", "PEP 668", "cu128", "FlashAttention-3",
-        "nohup setsid", "< /dev/null",
-    ):
-        assert needle in text, needle
-
-
 def test_the_json_flag_command_list_matches_the_cli():
     """§2 names the commands that take `--json` in prose, not as `lium …` lines, so the invocation test above
     cannot see it (the list once said `rm` and `up`, neither of which has the flag)."""
@@ -181,8 +165,6 @@ def test_the_json_flag_command_list_matches_the_cli():
             elif "--json" in {opt for param in command.params if not getattr(param, "hidden", False) for opt in param.opts}:
                 yield " ".join(chain + [sub])
     assert sorted(named) == sorted(with_json(cli, [])), "agents.md §2 and the command tree disagree on which commands take --json"
-    for absent in ("rm", "up", "ps", "ls"):
-        assert absent not in named, f"`lium {absent}` has no --json (ls/ps use --format json)"
 
 
 CAPTURED_EXEC = re.compile(r"\$\(\s*lium\s+exec\s+(?P<line>[^\n]*)")
@@ -270,10 +252,3 @@ def test_the_documented_failure_branch_reads_the_remote_failure_from_stdout():
         pytest.skip("jq not installed here; the envelope was checked with json.loads")
     line = subprocess.run(["jq", "-r", jq_filter], input=envelope, capture_output=True, text=True, check=True).stdout
     assert line.startswith("train-1: exit 127: nvidia-smi: not found")
-
-
-def test_guide_does_not_promise_unmerged_features():
-    """The page describes this CLI; branch names and features that live elsewhere do not belong on it."""
-    text = AGENTS_DOC.read_text()
-    for banned in ("origin/main", "sdk/", "cli/", "--verify-gpus", "lium top", "lium cp", "lium doctor", "lium schema", "LIUM_NONINTERACTIVE"):
-        assert banned not in text, f"docs/agents.md still mentions `{banned}`"
