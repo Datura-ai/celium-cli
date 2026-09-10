@@ -693,8 +693,8 @@ def _mine_status(args: list[str], hotkey: Optional[str] = None) -> int:
     "--price",
     type=float,
     default=None,
-    help="USD per GPU per hour for the registered node (default: the portal's base price for the GPU model). "
-    "Only with --register.",
+    help="USD per GPU per hour for the registered node (default: the model's base price from lium.io's public "
+    "shared-config; LIUM_SHARED_CONFIG_URL overrides the source). Only with --register.",
 )
 @click.option(
     "--gpu-type",
@@ -724,7 +724,7 @@ def mine_command(ctx, hotkey, dir_, branch, auto, verbose, help_, register_token
 
     With --register TOKEN (the command the portal's Add Node page shows) two steps follow: the node
     is added to your account with the GPU model and count nvidia-smi reports, this host's public
-    IPv4 and the executor's port, at the portal's base price for that model; then the node's
+    IPv4 and the executor's port, at the model's base price from lium.io's public shared-config; then the node's
     status is polled every 15 s until it is listed (exit 0), the portal names something to fix
     (OFFLINE or VALIDATION_FAILED, exit 1), or --wait minutes pass (exit 2). The node page URL is
     printed in every case.

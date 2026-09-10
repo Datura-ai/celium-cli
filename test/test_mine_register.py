@@ -209,14 +209,16 @@ def test_register_node_gives_up_on_the_lookup_without_failing_the_add(monkeypatc
     assert len(portal.calls) == 1 + reg.FIND_NODE_ATTEMPTS
 
 
-def test_register_node_names_a_duplicate_held_by_another_account() -> None:
+def test_register_node_names_a_duplicate_held_by_another_account(monkeypatch) -> None:
     """The portal's duplicate check is global; when the node is not in this account's list the message says so."""
+    monkeypatch.setattr(reg, "FIND_NODE_RETRY_S", 0.0)
     portal = _Portal()
     portal.on("POST", "/executors", _Resp(400, {"detail": "Node already exists with the same ip and port."}))
     portal.on("GET", "/executors", _Resp(200, {"data": []}))
     with pytest.raises(reg.RegisterError, match="not in this account's node list"):
         reg.register_node(_http(portal), miner_hotkey=HOTKEY, gpu_type="NVIDIA L4", gpu_count=1,
                           ip_address="203.0.113.7", port=8080, price_per_gpu=0.11)
+    assert len(portal.calls) == 1 + reg.FIND_NODE_ATTEMPTS   # the duplicate path retries the lookup too
 
 
 def test_register_node_treats_the_duplicate_400_as_already_registered() -> None:
@@ -329,7 +331,13 @@ def test_wait_until_listed_keeps_offline_since_across_a_failed_read_and_gives_a_
     stays.on("GET", "/executors/node-1", _status("VALIDATION_PENDING", "Waiting"), _status("VALIDATION_PENDING", "Waiting"),
              _status("VALIDATION_PENDING", "Waiting"), _status("OFFLINE", "Node not responding to ping."))
     final = _wait_no_sleep(_http(stays), "node-1", timeout_s=60, interval_s=15)
-    assert final.status == "OFFLINE" and len(stays.calls) == 8   # confirmed at 45 + 60 s, 15 s past the deadline
+    assert final.status == "OFFLINE" and len(stays.calls) == 8   # confirmed at 45 + 60 = 105 s, 45 s past the 60 s deadline
+    # OFFLINE once, then only failed reads until the stretched deadline: the last settled reading, not a fix
+    dark = _Portal()
+    dark.on("GET", "/executors/node-1", _status("VALIDATION_PENDING", "Waiting"), _status("VALIDATION_PENDING", "Waiting"),
+            _status("VALIDATION_PENDING", "Waiting"), _status("OFFLINE", "Node not responding to ping."), _Resp(502, "bad gateway"))
+    final = _wait_no_sleep(_http(dark), "node-1", timeout_s=60, interval_s=15)
+    assert final.status == "VALIDATION_PENDING" and reg.result_summary(final, node_url="u", waited_s=120)[1] == 2
 
 
 def test_wait_until_listed_prints_the_portal_remedy_on_a_pending_node() -> None:
@@ -366,7 +374,21 @@ def test_wait_until_listed_returns_the_named_fix_and_survives_a_read_error() -> 
     assert final.needs_fix
     assert final.fix == "Sysbox required Sysbox required for unrented executor Install the sysbox runtime."
     message, code = reg.result_summary(final, node_url="https://provider.example/nodes/node-1", waited_s=900)
-    assert code == 1 and message.startswith("FIX (VALIDATION_FAILED): Sysbox required")
+    assert code == 1 and message.startswith("FIX (VALIDATION_FAILED): Validation failed Sysbox required")
+
+
+def test_result_summary_names_the_failure_and_the_remedy_for_the_portal_shape() -> None:
+    """The portal's normal VALIDATION_FAILED: title == message == the status message, plus a remediation
+    (the staging verdict of the AWS run)."""
+    portal = _Portal()
+    portal.on("GET", "/executors/node-1", _status("VALIDATION_FAILED", "Unknown NVIDIA driver version", {
+        "title": "Unknown NVIDIA driver version", "message": "Unknown NVIDIA driver version", "source": "Validator",
+        "reason_code": "NVML_DRIVER_UNKNOWN",
+        "remediation": "Update to a supported NVIDIA driver version. Your current driver version is not recognized."}))
+    status = reg.read_status(_http(portal), "node-1")
+    message, code = reg.result_summary(status, node_url="u", waited_s=600)
+    assert code == 1
+    assert message.startswith("FIX (VALIDATION_FAILED): Unknown NVIDIA driver version Update to a supported NVIDIA driver version.")
 
 
 def test_read_status_prints_the_portal_error_text_once_when_title_equals_message() -> None:
@@ -559,8 +581,16 @@ def test_mine_register_reports_the_add_and_exits_zero_when_the_list_lags(monkeyp
 
 
 def test_get_public_ip_falls_through_a_service_that_is_down(monkeypatch) -> None:
+    """The first service is down (curl exit 7). `_run(check=True)` would raise there; the lookup asks with check=False."""
     answers = iter([("", "curl: (7) Failed to connect"), ("203.0.113.7\n", "")])
-    monkeypatch.setattr(mine, "_run", lambda cmd, **k: next(answers))
+
+    def fake_run(cmd, **kwargs):
+        out, err = next(answers)
+        if err and kwargs.get("check", True):
+            raise RuntimeError(f"Command failed (7): {cmd}")
+        return out, err
+
+    monkeypatch.setattr(mine, "_run", fake_run)
     assert mine._get_public_ip() == "203.0.113.7"
 
 

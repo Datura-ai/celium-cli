@@ -369,7 +369,9 @@ def wait_until_listed(
     """
     start = clock()
     last: NodeStatus | None = None
-    offline_since: float | None = None
+    last_settled: NodeStatus | None = None   # the last reading that was not OFFLINE
+    offline_since: float | None = None       # clock at the first OFFLINE reading of the current run of them
+    offline_confirmed = False                # an OFFLINE reading OFFLINE_CONFIRM_S or more after that first one
     while True:
         try:
             current = read_status(http, node_id)
@@ -383,16 +385,20 @@ def wait_until_listed(
                 last = current
             if current.status == "OFFLINE":
                 offline_since = now if offline_since is None else offline_since
+                offline_confirmed = now - offline_since >= OFFLINE_CONFIRM_S
             else:
-                offline_since = None
-            offline_confirmed = offline_since is not None and now - offline_since >= OFFLINE_CONFIRM_S
+                offline_since, offline_confirmed = None, False
+                last_settled = current
             if current.listed or (current.needs_fix and (current.status != "OFFLINE" or offline_confirmed)):
                 return current
         elapsed = clock() - start
         # an OFFLINE first read inside the last minute of the wait gets its minute: the deadline stretches by
         # OFFLINE_CONFIRM_S at most, so a single stale reading is never reported as the fix
-        unconfirmed_offline = offline_since is not None and elapsed - (offline_since - start) < OFFLINE_CONFIRM_S
-        if elapsed >= timeout_s and not (unconfirmed_offline and elapsed < timeout_s + OFFLINE_CONFIRM_S):
+        pending_offline = offline_since is not None and not offline_confirmed
+        if elapsed >= timeout_s and not (pending_offline and elapsed < timeout_s + OFFLINE_CONFIRM_S):
+            if pending_offline:
+                # one OFFLINE reading and then only failed reads until the stretched deadline: not a fix
+                return last_settled or NodeStatus(status="UNKNOWN", message="", fix="")
             return last or NodeStatus(status="UNKNOWN", message="", fix="")
         sleep(interval_s)
 
@@ -444,7 +450,9 @@ def result_summary(status: NodeStatus, *, node_url: str, waited_s: float) -> tup
     if status.listed:
         return (f"Node listed ({status.status}) after {mins} min. {node_url}", 0)
     if status.needs_fix:
-        fix = status.fix or status.message or "see the node page"
+        # what failed, then the remedy: the status message names the failure, the fix text carries only what is new
+        parts = [p for p in (status.message, status.fix) if p]
+        fix = " ".join(dict.fromkeys(parts)) or "see the node page"
         return (f"FIX ({status.status}): {fix}\n{node_url}", 1)
     if status.status == "UNKNOWN":
         return (f"Could not read the node's status from the portal for {mins} min; the node stays registered: {node_url}", 2)
