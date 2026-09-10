@@ -139,8 +139,9 @@ JSON keeps the API's raw value as `ssh_cmd`.
 ## Binary Releases
 
 - Supported binary targets: `darwin-amd64`, `darwin-arm64`, `linux-amd64`, `linux-arm64`
-- Maintainers can build locally with `bash scripts/build.sh [macos|linux|all]`
-- Release artifacts publish through GitHub Releases with matching checksums
+- Maintainers can build locally with `bash scripts/build.sh [macos|linux|all]` (Linux builds go through `Dockerfile.build`)
+- A release is a GitHub release published on a `vX.Y.Z` tag (`.github/workflows/release.yml`): the version is the tag (hatch-vcs; nothing in the tree is bumped), the workflow builds the four binaries with `.sha256` checksums, uploads them to the release, then clears the pre-release flag and publishes the package to PyPI. Create the release with `--prerelease` so `latest` does not point at it before the assets are uploaded.
+- Changes are recorded as fragments in `changelog.d/` (one file per ticket, see `changelog.d/README.md`) and folded into `CHANGELOG.md` by `scripts/changelog.py` at release time.
 
 ## CLI Reference
 
@@ -167,7 +168,7 @@ The `lium` CLI exposes the full pod lifecycle. Run `lium --help` to see everythi
 - `lium reboot <POD>` - Reboot a pod
 - `lium audit [--pod POD] [--since 24h] [--key ID]` - Who did what to the account's pods, and when: every rent, reboot, edit and delete with the session or API key that requested it (add `--json` for machine-readable output)
 - `lium audit --account [--action pod.] [--source cli] [--since 7d] [--cursor <next_cursor>]` - The account audit log: every request that changed something (pods, keys, logins, balance, settings, team members) with the client and IP it came from; your own IPs only, 90 days (`--json` prints the page with `next_cursor`)
-- `lium update <POD>` - Install Jupyter on a pod
+- `lium update <POD> --jupyter <PORT>` - Install Jupyter Notebook on a pod, served on that internal port (`--jupyter` is the only update; without it the command prints `No updates specified`)
 - `lium templates [SEARCH] [--arch hopper|blackwell] [--format json]` - List Docker templates with the CUDA build and the GPU generations it runs on
 - `lium fund` - Fund account with TAO from Bittensor wallet
 - `lium topup create -a <USD> -c <COIN> -n <NETWORK>` - Top up with a stablecoin (`lium topup currencies` lists them)
@@ -248,7 +249,7 @@ Full reference with every flag and runnable examples: <https://docs.lium.io/deve
 
 ### Other Commands
 
-- `lium theme [THEME]` - Get or set UI theme (light/dark/auto)
+- `lium theme dark|light` - Set the CLI colour theme (the argument is required; there is no `auto`; the value is stored as `[ui] theme` — `lium config get ui.theme` reads it back)
 - `lium mine` - Set up a compute subnet node/miner
 - `lium mine --register <TOKEN>` - Same, then add the node to your portal account from what the host reports and wait until it is listed (token from the portal's Add Node page; the account, and what the node reports under, come from the token — no `-k`)
 - `sudo lium gpu-splitting setup [--device /dev/...] [--yes]` - Prepare Docker storage for LIUM GPU splitting
@@ -348,8 +349,8 @@ lium cp 1:/workspace/ckpt/ 2:/workspace/ckpt/ --exclude '*.tmp'
 lium rm my-pod-1 my-pod-2
 lium rm all  # Remove all pods
 
-# Install Jupyter on existing pod
-lium update my-pod
+# Install Jupyter on existing pod (internal port 8888)
+lium update my-pod --jupyter 8888
 
 # Manage volumes
 lium volumes list
@@ -378,9 +379,8 @@ lium config set ssh.key_path /path/to/key
 lium config edit
 
 # Theme management
-lium theme          # Show current theme
 lium theme dark     # Set to dark theme
-lium theme auto     # Auto-detect based on system
+lium theme light    # Set to light theme
 
 # Fund account with TAO
 lium fund                           # Interactive mode
@@ -485,7 +485,8 @@ warning on stderr and keeps reporting off; the command itself still runs.
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.10 – 3.14 (`requires-python = ">=3.10, <3.15"`)
+- The chain commands (`lium provider …`, `lium fund`) need the `provider` extra — `pip install 'lium.io[provider]'` — whose chain libraries build only on Python < 3.14; on 3.14 the install stays quiet and the CLI explains the gap when a provider command runs
 
 ## Development
 
@@ -497,6 +498,20 @@ cd lium
 # Install in development mode
 pip install -e .
 ```
+
+The repository is a `uv` project (`uv.lock`); CI installs with `uv sync --frozen --extra dev --extra provider`
+and runs the unit tests on Python 3.10 and 3.12:
+
+```bash
+uv sync --frozen --extra dev --extra provider
+uv run pytest test/ -q
+```
+
+`.github/workflows/ci.yml` (`CI - Build Verification`) runs on every PR: the unit tests, packaging checks,
+an sdist/wheel build, the binary-target matrix check (`test/test_release_binary_targets.py`) and the Linux
+amd64 binary build; the Linux arm64 and macOS builds and the live e2e (`./e2e/run.sh`, see `e2e/README.md`)
+run when a packaging input (`lium/`, `e2e/`, `pyproject.toml`, `uv.lock`, `ci.yml`) changes, the e2e also
+once a day on a schedule. `ci-ok` and `e2e-live` are the required status checks on `main`.
 
 
 ## License
