@@ -72,12 +72,6 @@ RENT_BY_SPEC = "rent_by_spec"
 _KIB_PER_GB = 1024 * 1024
 _MIB_PER_GB = 1024
 
-# The backend feature `Lium.rent` looks for on GET /version before using POST /executors/rent-by-spec.
-RENT_BY_SPEC = "rent_by_spec"
-# Node specs report RAM and disk in KiB and GPU memory in MiB.
-_KIB_PER_GB = 1024 * 1024
-_MIB_PER_GB = 1024
-
 load_dotenv()
 
 # A POSIX shell identifier: what ``export`` accepts on the pod.
