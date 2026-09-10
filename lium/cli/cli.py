@@ -41,6 +41,7 @@ from .update.command import update_command
 from .port_forward import port_forward_command
 from .plugins import load_plugins
 from .self_update import maybe_perform_startup_update
+from . import telemetry
 
 
 def get_version():
@@ -63,6 +64,9 @@ def cli(ctx):
     # Make ThemedConsole available to all commands via context
     ctx.ensure_object(dict)
     ctx.obj["console"] = ThemedConsole()
+
+    # opt-in crash reporting (LIUM_TELEMETRY=1 / telemetry.enabled) — a no-op for everyone else
+    telemetry.init(f"lium {ctx.invoked_subcommand}" if ctx.invoked_subcommand else None, get_version())
 
     if ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())
