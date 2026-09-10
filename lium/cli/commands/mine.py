@@ -669,9 +669,43 @@ def _mine_status(args: list[str], hotkey: Optional[str] = None) -> int:
 @click.option("--verbose", "-v", is_flag=True, help="Show the plan banner")
 # not click's eager --help: `lium mine status --help` must reach the status command below, not this one's help
 @click.option("--help", "help_", is_flag=True, help="Show this message and exit.")
+@click.option(
+    "--register",
+    "register_token",
+    metavar="TOKEN",
+    envvar="LIUM_REGISTER_TOKEN",
+    help="Register token from the portal's Add Node page: after the node is up, add it to your account and "
+    "wait until it is listed. Implies --auto; the account comes from the token, so -k is not needed.",
+)
+@click.option(
+    "--portal-url",
+    envvar="LIUM_PORTAL_URL",
+    default=None,
+    help="Provider portal API (default: the production portal). Only with --register.",
+)
+@click.option(
+    "--price",
+    type=float,
+    default=None,
+    help="USD per GPU per hour for the registered node (default: the portal's default for the GPU model).",
+)
+@click.option(
+    "--gpu-type",
+    default=None,
+    help="Register under this portal GPU name instead of the one nvidia-smi reports (only when the portal "
+    "does not know the reported name).",
+)
+@click.option(
+    "--wait",
+    "wait_minutes",
+    type=click.IntRange(0, 24 * 60),
+    default=45,
+    show_default=True,
+    help="Minutes to wait for the node to be listed after registering; 0 returns right after the add.",
+)
 @click.pass_context
 @handle_errors
-def mine_command(ctx, hotkey, dir_, branch, auto, verbose, help_):
+def mine_command(ctx, hotkey, dir_, branch, auto, verbose, help_, register_token, portal_url, price, gpu_type, wait_minutes):
     """Set up this host as a Lium provider node: clone, configure, start and validate the executor.
 
     Before `docker compose up`, the service and SSH ports are checked on this host: a port
@@ -679,6 +713,12 @@ def mine_command(ctx, hotkey, dir_, branch, auto, verbose, help_):
     timeout. On a host whose executor service is already running the check is skipped (the
     ports are ours). The preflight image is pulled while the node starts; its checks are shown
     as they run. Exit 1 on any failed step, with the step and the reason.
+
+    With --register TOKEN (the command the portal's Add Node page shows) two steps follow: the node
+    is added to your account with the GPU model and count nvidia-smi reports, this host's public
+    IPv4 and the executor's port, at the portal's default price for that model; then the node's
+    status is polled every 15 s until it is listed (exit 0), the portal names something to fix
+    (exit 1), or --wait minutes pass (exit 2). The node page URL is printed in every case.
     """
     if ctx.args and ctx.args[0] == "status":
         # `lium mine` is the provider's first command; `lium mine status <node>` is where they look
@@ -689,14 +729,35 @@ def mine_command(ctx, hotkey, dir_, branch, auto, verbose, help_):
     if help_:
         click.echo(ctx.get_help())
         raise SystemExit(0)   # not ctx.exit(): handle_errors would report click's Exit as an unexpected error
+    from . import mine_register as reg
 
     if verbose:
         _show_setup_summary()   # keep the banner only when asked
 
+    token: Optional[reg.RegisterToken] = None
+    if register_token:
+        # fail on a bad or expired token before the ten-minute install, not after it
+        try:
+            token = reg.parse_register_token(register_token)
+        except reg.RegisterError as e:
+            console.error(f"❌ {e}")
+            raise SystemExit(1)
+        if hotkey and hotkey != token.miner_hotkey:
+            console.error("❌ --hotkey names a different account than the register token; drop -k, the token decides.")
+            raise SystemExit(1)
+        hotkey = token.miner_hotkey
+        auto = True
+        left = token.seconds_left()
+        if left is not None and left < 15 * 60:
+            console.warning(
+                f"The register token expires in {left // 60} min; the install alone takes 5–10 min. "
+                "If registration fails with an expired token, copy a fresh command from the portal."
+            )
+
     answers = _gather_inputs(hotkey, auto)
     target_dir = Path(dir_).absolute()
 
-    TOTAL_STEPS = 6
+    TOTAL_STEPS = 8 if token else 6
 
     try:
         with timed_step_status(1, TOTAL_STEPS, "Ensuring repository"):
@@ -762,6 +823,17 @@ def mine_command(ctx, hotkey, dir_, branch, auto, verbose, help_):
         console.error(f"❌ {escape(str(e))}")
         raise SystemExit(1)   # a failed step is a failed command: mine.sh and scripts read the exit code
 
+    if token:
+        raise SystemExit(_register_and_wait(
+            token,
+            executor_dir=executor_dir,
+            portal_url=portal_url,
+            price=price,
+            gpu_type_override=gpu_type,
+            wait_minutes=wait_minutes,
+            total_steps=TOTAL_STEPS,
+        ))
+
     # Get executor details for summary
     gpu_info = _get_gpu_info()
     public_ip = _get_public_ip()
@@ -803,6 +875,78 @@ def mine_command(ctx, hotkey, dir_, branch, auto, verbose, help_):
     console.print("[bold cyan]…or from this terminal:[/bold cyan]")
     console.print(f"[yellow]{_provider_add_command(gpu_info, public_ip, external_port)}[/yellow]")
     console.dim(_registration_note())
+
+
+def _register_and_wait(
+    token,
+    *,
+    executor_dir: Path,
+    portal_url: Optional[str],
+    price: Optional[float],
+    gpu_type_override: Optional[str],
+    wait_minutes: int,
+    total_steps: int,
+) -> int:
+    """Steps 7–8 of `lium mine --register`: add the node to the account, then watch its status. Returns the exit code."""
+    from rich.markup import escape
+
+    from . import mine_register as reg
+
+    http = reg.build_http(portal_url, token.token)
+    node_url = f"{reg.portal_web_url(portal_url)}/nodes"
+    try:
+        with timed_step_status(7, total_steps, "Registering node in the portal"):
+            inventory = reg.read_gpu_inventory(_run)
+            gpu_type = gpu_type_override or inventory.gpu_type
+            port = reg.executor_port(executor_dir)
+            ip = reg.public_ipv4_or_fail(_get_public_ip())
+            price_per_gpu = reg.resolve_price(gpu_type, price)
+            record = reg.register_node(
+                http,
+                miner_hotkey=token.miner_hotkey,
+                gpu_type=gpu_type,
+                gpu_count=inventory.gpu_count,
+                ip_address=ip,
+                port=port,
+                price_per_gpu=price_per_gpu,
+            )
+    except (reg.RegisterError, reg.ProviderError) as e:
+        console.error(f"❌ {escape(str(e))}")
+        return 1
+
+    node_url = f"{node_url}/{record.node_id}"
+    verb = "already in the portal" if record.already_registered else "added"
+    console.success(
+        f"\n✨ Node {verb}: {inventory.gpu_count}×{gpu_type} ({inventory.vram_gb} GB) at {ip}:{port}, "
+        f"${price_per_gpu:g}/GPU/h"
+    )
+    console.print(f"[yellow]{node_url}[/yellow]")
+    fix = reg.opt_in_fix(token, portal_url)
+    if fix:
+        console.warning(fix)
+    if wait_minutes == 0:
+        return 0
+
+    console.print(f"\n[8/{total_steps}] Waiting for the validator (up to {wait_minutes} min; Ctrl-C leaves the node registered)")
+    started = time.monotonic()
+    try:
+        final = reg.wait_until_listed(
+            http,
+            record.node_id,
+            timeout_s=wait_minutes * 60,
+            on_change=lambda s, t: console.print(escape(reg.status_line(s, t))),
+        )
+    except KeyboardInterrupt:
+        console.print(f"\nStopped watching; the node stays registered: {node_url}")
+        return 2
+    message, code = reg.result_summary(final, node_url=node_url, waited_s=time.monotonic() - started)
+    if code == 0:
+        console.success(message)
+    elif code == 1:
+        console.error(escape(message))
+    else:
+        console.warning(escape(message))
+    return code
 
 
 def _provider_add_command(gpu_info: dict, public_ip: str, external_port: str | int) -> str:

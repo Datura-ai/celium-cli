@@ -248,6 +248,7 @@ Full reference with every flag and runnable examples: <https://docs.lium.io/deve
 
 - `lium theme [THEME]` - Get or set UI theme (light/dark/auto)
 - `lium mine` - Set up a compute subnet node/miner
+- `lium mine --register <TOKEN>` - Same, then add the node to your portal account from what the host reports and wait until it is listed (token from the portal's Add Node page)
 - `sudo lium gpu-splitting setup [--device /dev/...] [--yes]` - Prepare Docker storage for LIUM GPU splitting
 - `lium gpu-splitting check [--device /dev/...]` - Inspect the host and print the GPU-splitting plan
 - `lium gpu-splitting verify` - Verify Docker storage matches LIUM GPU-splitting requirements
@@ -273,6 +274,11 @@ lium up 1 --template_id <TEMPLATE_ID> --yes
 
 # Set up node bootstrap flow
 lium mine --auto --hotkey <HOTKEY>
+
+# One command from a bare host to a listed node: the portal's Add Node page prints this line with a
+# one-hour token; GPU model/count, port and address are read from the host, the price is the portal default
+curl -fsSL https://lium.io/mine.sh | bash -s -- --register <TOKEN>
+lium mine --register <TOKEN> --wait 0          # add the node, do not wait for the validator
 
 # Provider-portal automation (same surface as the portal frontend)
 lium config set provider.coldkey miner-prod        # one-time: persist wallet identity

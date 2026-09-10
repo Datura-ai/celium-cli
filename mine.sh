@@ -1,6 +1,7 @@
 #!/bin/bash
 # Lium Mine Installer & Runner
 # curl -fsSL https://raw.githubusercontent.com/Datura-ai/lium-cli/main/mine.sh | bash -s -- -k <HOTKEY>
+#   or, from the portal's Add Node page: ... | bash -s -- --register <TOKEN>   (adds the node to your account and waits until it is listed)
 
 # If running from pipe, save to temp file and re-execute
 # (Preserves interactive capabilities if needed)
