@@ -27,14 +27,16 @@ from lium.provider._shared_config import default_price_for_gpu, fetch_shared_con
 from lium.provider.errors import ProviderError
 from lium.provider.portal_http import DEFAULT_PORTAL_URL, PortalHTTP
 
-REGISTER_SCOPE = "node:register"
-"""The ``scope`` claim the portal writes into a register token. A full session token has no scope claim."""
-
 LISTED_STATUSES = frozenset({"AVAILABLE", "RENTED"})
 """Computed statuses in which the node is in the market."""
 
-FIX_STATUSES = frozenset({"VALIDATION_FAILED", "OFFLINE", "NOT_DETECTED"})
-"""Computed statuses that name something the provider has to fix; waiting longer changes nothing."""
+FIX_STATUSES = frozenset({"VALIDATION_FAILED", "OFFLINE"})
+"""Computed statuses that carry a ``last_error`` naming what the provider has to fix; waiting changes nothing.
+
+``NOT_DETECTED`` is not here on purpose: the portal shows it for any node the validator has not reached in
+30 min (``recently_created`` in the portal's ``ExecutorResponse``), which a first validation at the p90 of
+44 min hits with no error attached — the poll keeps going and the deadline decides.
+"""
 
 _SS58 = re.compile(r"[1-9A-HJ-NP-Za-km-z]{40,60}")
 _IPV4 = re.compile(r"\d{1,3}(?:\.\d{1,3}){3}")
@@ -53,7 +55,6 @@ class RegisterToken:
     token: str
     miner_hotkey: str
     exp: int | None
-    scope: str | None
     opt_in_status: bool | None
 
     def seconds_left(self, now: int | None = None) -> int | None:
@@ -66,7 +67,8 @@ def parse_register_token(token: str, *, now: int | None = None) -> RegisterToken
     """Read the account and the expiry out of a portal token without the portal's secret.
 
     The signature is the portal's to check (it does, on ``POST /executors``); here the claims only decide which
-    account the executor is configured for and whether it is worth starting a ten-minute install at all.
+    account the executor is configured for and whether it is worth starting a ten-minute install at all. The
+    ``scope`` claim lium-platform#291 writes is not read: the CLI takes any bearer ``POST /executors`` takes.
     """
     token = (token or "").strip()
     try:
@@ -93,13 +95,11 @@ def parse_register_token(token: str, *, now: int | None = None) -> RegisterToken
             f"{time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(exp))}. Open the portal's Add Node page again "
             "and copy the new command."
         )
-    scope = claims.get("scope") or subject.get("scope")
     opt_in = subject.get("opt_in_status")
     return RegisterToken(
         token=token,
         miner_hotkey=hotkey,
         exp=exp,
-        scope=scope if isinstance(scope, str) else None,
         opt_in_status=opt_in if isinstance(opt_in, bool) else None,
     )
 
@@ -156,10 +156,11 @@ def executor_port(executor_dir: Path) -> int:
 def resolve_price(gpu_type: str, explicit: float | None) -> float:
     """``--price`` when given, else the portal's public default for this GPU model.
 
-    The default is what the portal's Add Node form pre-fills (``GET /v1/shared-config`` ``machine_prices``);
-    the portal also refuses any price outside its allowed range around that default, so this is the value
-    that is accepted first time. When the model is not in the table the portal will refuse the node too, so
-    the message names the closest known names and the flag that overrides the model.
+    The default is the model's base price from ``GET /v1/shared-config`` ``machine_prices`` — the value the
+    portal's allowed-range check is centred on, so it is accepted first time (the Add Node form pre-fills the
+    30-day median when it has one; that median becomes the default here when ``GET /public/provider-economics``
+    lands). When the model is not in the table the portal will refuse the node too, so the message names the
+    closest known names and the flag that overrides the model.
     """
     if explicit is not None:
         return explicit
@@ -245,6 +246,12 @@ def register_node(
             raise RegisterError(f"The portal refused the node: {detail}") from e
 
     node_id = find_node_id(http, miner_hotkey=miner_hotkey, ip_address=ip_address, port=port)
+    if node_id is None and already:
+        # the portal's duplicate check is global (find_by_ip_and_port has no account filter)
+        raise RegisterError(
+            f"A node at {ip_address}:{port} is already registered under another account. Remove it there "
+            "first, or contact support if that account is not yours."
+        )
     if node_id is None:
         raise RegisterError(
             "The portal accepted the node but it is not in the account's node list yet. Open "
@@ -354,7 +361,7 @@ def opt_in_fix(token: RegisterToken, portal_api_url: str | None) -> str | None:
     if token.opt_in_status is False:
         return (
             "Your account is not connected to the Lium provider server yet, so no validator will check "
-            f"this node. Turn it on at {portal_web_url(portal_api_url)}/settings (Central Provider), or run "
+            f"this node. Turn it on under Settings at {portal_web_url(portal_api_url)}/settings, or run "
             "your own provider server."
         )
     return None
@@ -407,7 +414,6 @@ __all__: list[str] = [
     "LISTED_STATUSES",
     "NodeRecord",
     "NodeStatus",
-    "REGISTER_SCOPE",
     "RegisterError",
     "RegisterToken",
     "build_http",

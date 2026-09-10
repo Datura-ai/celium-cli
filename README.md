@@ -276,7 +276,7 @@ lium up 1 --template_id <TEMPLATE_ID> --yes
 lium mine --auto --hotkey <HOTKEY>
 
 # One command from a bare host to a listed node: the portal's Add Node page prints this line with a
-# one-hour token; GPU model/count, port and address are read from the host, the price is the portal default
+# one-hour token; GPU model/count, port and address are read from the host, the price is the portal base price for the model
 curl -fsSL https://lium.io/mine.sh | bash -s -- --register <TOKEN>
 lium mine --register <TOKEN> --wait 0          # add the node, do not wait for the validator
 

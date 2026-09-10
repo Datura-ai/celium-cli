@@ -24,11 +24,11 @@ NOW = 1_800_000_000
 
 
 def _token(exp: int | None = NOW + 3600, hotkey: str | None = HOTKEY, opt_in: bool | None = True, **extra) -> str:
-    # the portal's fastapi_jwt layout: the miner's to_json() under "subject", exp at the top
-    subject = {"id": "acct-1", "opt_in_status": opt_in}
+    # the portal's fastapi_jwt layout (lium-platform#291): the miner's to_json() plus "scope" under "subject", exp on top
+    subject = {"id": "acct-1", "opt_in_status": opt_in, "scope": "node:register"}
     if hotkey is not None:
         subject["miner_hotkey"] = hotkey
-    claims = {"subject": subject, "type": "access", "scope": reg.REGISTER_SCOPE, **extra}
+    claims = {"subject": subject, "type": "access", **extra}
     if exp is not None:
         claims["exp"] = exp
     return pyjwt.encode(claims, "not-the-portal-secret-but-long-enough-32b", algorithm="HS256")
@@ -37,9 +37,9 @@ def _token(exp: int | None = NOW + 3600, hotkey: str | None = HOTKEY, opt_in: bo
 # --- token -----------------------------------------------------------------------------------------------------------
 
 
-def test_parse_register_token_reads_account_expiry_scope_and_opt_in() -> None:
+def test_parse_register_token_reads_account_expiry_and_opt_in() -> None:
     t = reg.parse_register_token(_token(), now=NOW)
-    assert (t.miner_hotkey, t.exp, t.scope, t.opt_in_status) == (HOTKEY, NOW + 3600, "node:register", True)
+    assert (t.miner_hotkey, t.exp, t.opt_in_status) == (HOTKEY, NOW + 3600, True)
     assert t.seconds_left(now=NOW) == 3600
 
 
@@ -71,8 +71,10 @@ def test_parse_nvidia_smi_reports_one_model_its_count_and_vram() -> None:
     assert reg.parse_nvidia_smi(out) == reg.GpuInventory(gpu_type="NVIDIA L4", gpu_count=4, vram_gb=22)
 
 
-def test_parse_nvidia_smi_keeps_the_name_verbatim_including_commas_in_memory_free_output() -> None:
+def test_parse_nvidia_smi_keeps_the_name_verbatim_even_with_a_comma_in_it() -> None:
     assert reg.parse_nvidia_smi("NVIDIA GeForce RTX 4090, 24564").gpu_type == "NVIDIA GeForce RTX 4090"
+    # the memory column is the last comma-separated field; a comma inside the name stays in the name
+    assert reg.parse_nvidia_smi("NVIDIA H100 80GB HBM3, Rev A, 81559").gpu_type == "NVIDIA H100 80GB HBM3, Rev A"
 
 
 def test_parse_nvidia_smi_refuses_a_mixed_host_and_an_empty_one() -> None:
@@ -91,7 +93,7 @@ def test_executor_port_comes_from_the_rendered_env(tmp_path: Path) -> None:
 
 
 def test_register_path_renders_ssh_public_port_equal_to_ssh_port(tmp_path: Path) -> None:
-    """DAH-3075 negative control for the --register defaults: the template's 2200 never outlives SSH_PORT."""
+    """Regression pin (DAH-3075, #215) for the --auto defaults that --register implies: SSH_PUBLIC_PORT = SSH_PORT."""
     (tmp_path / ".env.template").write_text("MINER_HOTKEY_SS58_ADDRESS=\nSSH_PORT=2200\nSSH_PUBLIC_PORT=2200\nEXTERNAL_PORT=8080\n")
     answers = mine._gather_inputs(HOTKEY, auto=True)
     mine._setup_executor_env(tmp_path, hotkey=answers["hotkey"])
@@ -184,6 +186,16 @@ def test_register_node_posts_with_the_token_and_finds_the_id_without_it() -> Non
     assert get["params"] == {"miner_hotkey": HOTKEY, "page": 1, "limit": 100}
 
 
+def test_register_node_names_a_duplicate_held_by_another_account() -> None:
+    """The portal's duplicate check is global; when the node is not in this account's list the message says so."""
+    portal = _Portal()
+    portal.on("POST", "/executors", _Resp(400, {"detail": "Node already exists with the same ip and port."}))
+    portal.on("GET", "/executors", _Resp(200, {"data": []}))
+    with pytest.raises(reg.RegisterError, match="already registered under another account"):
+        reg.register_node(_http(portal), miner_hotkey=HOTKEY, gpu_type="NVIDIA L4", gpu_count=1,
+                          ip_address="203.0.113.7", port=8080, price_per_gpu=0.11)
+
+
 def test_register_node_treats_the_duplicate_400_as_already_registered() -> None:
     portal = _Portal()
     portal.on("POST", "/executors", _Resp(400, {"detail": "Node already exists with the same ip and port."}))
@@ -243,6 +255,17 @@ def test_wait_until_listed_prints_changes_only_and_stops_at_available() -> None:
     # three reads (0 s, 15 s, 30 s); the unchanged second reading prints nothing
     assert seen == ["[00:00] VALIDATION_PENDING — Waiting for first validation", "[00:30] AVAILABLE"]
     assert all("Authorization" not in c["headers"] for c in portal.calls)
+
+
+def test_wait_until_listed_keeps_polling_through_not_detected() -> None:
+    """NOT_DETECTED carries no error and appears 30 min after the add on any node the validator has not reached."""
+    portal = _Portal()
+    portal.on("GET", "/executors/node-1",
+              _status("NOT_DETECTED", "The validator has not checked this node recently."),
+              _status("AVAILABLE"))
+    final = reg.wait_until_listed(_http(portal), "node-1", timeout_s=3600, sleep=lambda _: None)
+    assert final.listed and final.status == "AVAILABLE"
+    assert not reg.NodeStatus("NOT_DETECTED", "", "").needs_fix
 
 
 def test_wait_until_listed_returns_the_named_fix_and_survives_a_read_error() -> None:

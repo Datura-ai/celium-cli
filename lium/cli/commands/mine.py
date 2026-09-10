@@ -5,7 +5,7 @@ import re
 import shutil
 import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import TYPE_CHECKING, Optional, Tuple
 
 import click
 from rich import box
@@ -16,6 +16,9 @@ from rich.table import Table
 from ..utils import console, handle_errors, timed_step_status
 
 _SS58_HOTKEY = r"[1-9A-HJ-NP-Za-km-z]{40,60}"  # the shape `lium mine -k` validates and `mine status` refuses
+
+if TYPE_CHECKING:
+    from . import mine_register
 
 
 # --------------------------
@@ -107,7 +110,7 @@ def _exists(cmd: str) -> bool:
     return shutil.which(cmd) is not None
 
 
-def _show_setup_summary():
+def _show_setup_summary(register: bool = False):
     table = Table(title="Node Setup Plan", show_header=False, box=box.SIMPLE_HEAVY)
     table.add_column("Step", style="cyan", no_wrap=True)
     table.add_column("What happens")
@@ -117,6 +120,9 @@ def _show_setup_summary():
     table.add_row("4", "Configure node .env (ports, hotkey)")
     table.add_row("5", "Start node with docker compose")
     table.add_row("6", "Validate node configuration")
+    if register:
+        table.add_row("7", "Register the node in the portal (--register)")
+        table.add_row("8", "Wait until the portal lists it")
     console.print(table)
     console.print()
 
@@ -687,13 +693,14 @@ def _mine_status(args: list[str], hotkey: Optional[str] = None) -> int:
     "--price",
     type=float,
     default=None,
-    help="USD per GPU per hour for the registered node (default: the portal's default for the GPU model).",
+    help="USD per GPU per hour for the registered node (default: the portal's base price for the GPU model). "
+    "Only with --register.",
 )
 @click.option(
     "--gpu-type",
     default=None,
-    help="Register under this portal GPU name instead of the one nvidia-smi reports (only when the portal "
-    "does not know the reported name).",
+    help="Register under this portal GPU name instead of the one nvidia-smi reports (for when the portal "
+    "does not know the reported name). Only with --register.",
 )
 @click.option(
     "--wait",
@@ -701,7 +708,8 @@ def _mine_status(args: list[str], hotkey: Optional[str] = None) -> int:
     type=click.IntRange(0, 24 * 60),
     default=45,
     show_default=True,
-    help="Minutes to wait for the node to be listed after registering; 0 returns right after the add.",
+    help="Minutes to wait for the node to be listed after registering; 0 returns right after the add. "
+    "Only with --register.",
 )
 @click.pass_context
 @handle_errors
@@ -716,9 +724,10 @@ def mine_command(ctx, hotkey, dir_, branch, auto, verbose, help_, register_token
 
     With --register TOKEN (the command the portal's Add Node page shows) two steps follow: the node
     is added to your account with the GPU model and count nvidia-smi reports, this host's public
-    IPv4 and the executor's port, at the portal's default price for that model; then the node's
+    IPv4 and the executor's port, at the portal's base price for that model; then the node's
     status is polled every 15 s until it is listed (exit 0), the portal names something to fix
-    (exit 1), or --wait minutes pass (exit 2). The node page URL is printed in every case.
+    (OFFLINE or VALIDATION_FAILED, exit 1), or --wait minutes pass (exit 2). The node page URL is
+    printed in every case.
     """
     if ctx.args and ctx.args[0] == "status":
         # `lium mine` is the provider's first command; `lium mine status <node>` is where they look
@@ -732,7 +741,7 @@ def mine_command(ctx, hotkey, dir_, branch, auto, verbose, help_, register_token
     from . import mine_register as reg
 
     if verbose:
-        _show_setup_summary()   # keep the banner only when asked
+        _show_setup_summary(register=bool(register_token))   # keep the banner only when asked
 
     token: Optional[reg.RegisterToken] = None
     if register_token:
@@ -878,7 +887,7 @@ def mine_command(ctx, hotkey, dir_, branch, auto, verbose, help_, register_token
 
 
 def _register_and_wait(
-    token,
+    token: "mine_register.RegisterToken",
     *,
     executor_dir: Path,
     portal_url: Optional[str],
@@ -899,7 +908,11 @@ def _register_and_wait(
             inventory = reg.read_gpu_inventory(_run)
             gpu_type = gpu_type_override or inventory.gpu_type
             port = reg.executor_port(executor_dir)
-            ip = reg.public_ipv4_or_fail(_get_public_ip())
+            try:
+                public_ip = _get_public_ip()
+            except RuntimeError:   # every IP service refused the connection: same answer as "Unable to determine"
+                public_ip = ""
+            ip = reg.public_ipv4_or_fail(public_ip)
             price_per_gpu = reg.resolve_price(gpu_type, price)
             record = reg.register_node(
                 http,
@@ -915,11 +928,14 @@ def _register_and_wait(
         return 1
 
     node_url = f"{node_url}/{record.node_id}"
-    verb = "already in the portal" if record.already_registered else "added"
-    console.success(
-        f"\n✨ Node {verb}: {inventory.gpu_count}×{gpu_type} ({inventory.vram_gb} GB) at {ip}:{port}, "
-        f"${price_per_gpu:g}/GPU/h"
-    )
+    if record.already_registered:
+        # the portal's record, not this run's values, is what stands: name only the address
+        console.success(f"\n✨ Node already in the portal at {ip}:{port}")
+    else:
+        console.success(
+            f"\n✨ Node added: {inventory.gpu_count}×{gpu_type} ({inventory.vram_gb} GB) at {ip}:{port}, "
+            f"${price_per_gpu:g}/GPU/h"
+        )
     console.print(f"[yellow]{node_url}[/yellow]")
     fix = reg.opt_in_fix(token, portal_url)
     if fix:
