@@ -16,7 +16,7 @@ export LIUM_API_KEY="..."          # from the Lium dashboard; takes precedence o
 lium balance --json                # cheapest possible "am I authenticated" check
 ```
 
-SSH: the CLI and SDK use the first of `~/.ssh/id_ed25519`, `~/.ssh/id_rsa`, `~/.ssh/id_ecdsa` that exists; `lium up` registers its public key on the account on first use. Generate one first on a fresh machine:
+SSH: the CLI and SDK use `LIUM_SSH_KEY_PATH` if set, else `[ssh] key_path` in `~/.lium/config.ini`, else the first of `~/.ssh/id_ed25519`, `~/.ssh/id_rsa`, `~/.ssh/id_ecdsa` that exists (`lium whoami` prints the one in use); `lium up` registers its public key on the account on first use. Generate one first on a fresh machine:
 
 ```bash
 [ -f ~/.ssh/id_ed25519 ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519
@@ -26,7 +26,7 @@ SSH: the CLI and SDK use the first of `~/.ssh/id_ed25519`, `~/.ssh/id_rsa`, `~/.
 
 Success: the JSON result is on **stdout**, exit code 0.
 
-Failure on a renter command that takes `--json` (`exec`, `describe`, `balance`, `audit`; `fund`, `signup`, `topup currencies` and `topup create` too): stdout is empty, **stderr** holds one JSON object, the exit code is non-zero:
+Failure on a renter command that takes `--json` (`exec`, `describe`, `balance`, `whoami`, `audit`; `fund`, `signup`, `topup currencies` and `topup create` too): stdout is empty, **stderr** holds one JSON object, the exit code is non-zero:
 
 ```json
 {"ok": false, "error": {"code": "pod_not_found", "message": "No pods match targets: train-1", "hint": "Run 'lium ps' to list pods; a name, huid, id or 1-based index is accepted", "exit_code": 5}}
@@ -79,7 +79,7 @@ fi
 lium ls --gpu H100 --count 1 --format json | jq -r '.[0].huid'
 ```
 
-`ls` output is sorted best-first (the same order as the table); each entry carries `huid`, `gpu_type`, `gpu_count`, `price_per_hour`, `vram_gb`, `disk_gb`, `max_cuda_version`, `country`. Index numbers (`1`, `2`) refer to the *last* `lium ls` run in this shell's config directory; a fresh agent should use the `huid`.
+`ls` output is sorted cheapest $/GPU·h first, unpriced nodes last (the same order as the table; `--sort` picks another key), so `.[0]` is the cheapest matching node and `is_pareto: true` marks the nodes the table stars; each entry carries `huid`, `gpu_type`, `gpu_count`, `price_per_hour`, `vram_gb`, `disk_gb`, `max_cuda_version`, `country`. Index numbers (`1`, `2`) refer to the *last* `lium ls` run in this shell's config directory; a fresh agent should use the `huid`.
 
 ### Rent it
 
