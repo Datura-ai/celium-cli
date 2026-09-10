@@ -39,7 +39,8 @@ def test_collect_merges_same_named_sections_and_skips_the_readme(tmp_path, capsy
 
 
 def test_every_fragment_in_this_repo_has_a_section_heading(capsys):
-    """The 18 fragments merged before this README existed: three had no heading and were silently filed under Changed."""
+    """Of the fragments merged before this README existed, nine had no heading and were silently filed under Changed.
+    This branch gives them one; a new fragment without a heading fails here on its own PR's merge ref."""
     frag_dir = SCRIPT.parent.parent / "changelog.d"
     changelog.collect(frag_dir)
     assert capsys.readouterr().err == ""
@@ -107,10 +108,22 @@ def test_fold_warns_when_an_unreleased_block_is_left_out_of_the_release(tmp_path
     assert out.index("- pending") < out.index("## [0.0.38]") < out.index("## [0.0.37]")
 
 
+def test_dry_run_gives_the_same_unreleased_warning_as_the_fold(tmp_path):
+    text = "# Changelog\n\n## [Unreleased]\n\n### Added\n- pending\n\n## [0.0.37] - 2026-09-08\n\n- old\n"
+    root = _repo(tmp_path, changelog_text=text, fragments={"DAH-1.md": "### Fixed\n- one\n"})
+    r = subprocess.run([sys.executable, str(SCRIPT), "--version", "0.0.38", "--date", "2026-09-09", "--dry-run", "--root", str(root)],
+                       capture_output=True, text=True, check=True)
+    assert "`## [Unreleased]` block; its bullets are NOT part of [0.0.38]" in r.stderr
+    assert r.stdout.startswith("## [0.0.38] - 2026-09-09\n\n### Fixed\n- one\n")
+    assert (root / "CHANGELOG.md").read_text(encoding="utf-8") == text
+
+
 def test_fold_refuses_a_version_that_is_already_in_the_changelog(tmp_path):
     root = _repo(tmp_path, fragments={"DAH-1.md": "### Fixed\n- one\n"})
-    r = subprocess.run([sys.executable, str(SCRIPT), "--version", "0.0.37", "--root", str(root)], capture_output=True, text=True)
-    assert r.returncode != 0 and "already has a [0.0.37] section" in r.stderr
+    for extra in ([], ["--dry-run"]):  # the preview refuses the same version the fold refuses
+        r = subprocess.run([sys.executable, str(SCRIPT), "--version", "0.0.37", "--root", str(root), *extra], capture_output=True, text=True)
+        assert r.returncode != 0 and "already has a [0.0.37] section" in r.stderr
+        assert r.stdout == ""
     assert (root / "CHANGELOG.md").read_text(encoding="utf-8") == RELEASED
     assert (root / "changelog.d" / "DAH-1.md").exists()
 

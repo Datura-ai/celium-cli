@@ -18,8 +18,9 @@ RELEASE_HEADING = re.compile(r"^## \[(?!unreleased\])", re.M | re.I)
 UNRELEASED_HEADING = re.compile(r"^## \[unreleased\]", re.M | re.I)
 
 
-def collect(frag_dir: pathlib.Path):
-    sections = {s: [] for s in SECTIONS}
+def collect(frag_dir: pathlib.Path) -> tuple[list[pathlib.Path], dict[str, list[str]]]:
+    """The fragment files in name order, and the bullets of every non-empty section keyed by section name."""
+    sections: dict[str, list[str]] = {s: [] for s in SECTIONS}
     files = sorted(p for p in frag_dir.glob("*.md") if p.name != "README.md")
     for f in files:
         current = "Changed"
@@ -42,7 +43,7 @@ def collect(frag_dir: pathlib.Path):
     return files, {k: v for k, v in sections.items() if v}
 
 
-def render(version: str, date: str, sections: dict) -> str:
+def render(version: str, date: str, sections: dict[str, list[str]]) -> str:
     out = [f"## [{version}] - {date}", ""]
     for name in SECTIONS:
         if name in sections:
@@ -74,16 +75,17 @@ def main(argv=None):
     if not sections:
         sys.exit("changelog.d/ has no fragments")
     section = render(a.version, a.date, sections)
-    if a.dry_run:
-        print(section)
-        return
     path = a.root / "CHANGELOG.md"
     text = path.read_text(encoding="utf-8")
+    # Both checks run before --dry-run returns, so a preview shows the same refusal and warning as the real fold.
     if re.search(rf"^## \[{re.escape(a.version)}\]", text, re.M):
         sys.exit(f"CHANGELOG.md already has a [{a.version}] section")
     if UNRELEASED_HEADING.search(text):
         print("CHANGELOG.md has an `## [Unreleased]` block; its bullets are NOT part of "
               f"[{a.version}] — move them into the release by hand or into fragments", file=sys.stderr)
+    if a.dry_run:
+        print(section)
+        return
     path.write_text(insert_release(text, section), encoding="utf-8")
     for f in files:
         f.unlink()
