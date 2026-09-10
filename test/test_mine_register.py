@@ -548,7 +548,8 @@ def test_mine_register_exit_one_on_a_named_fix_and_zero_with_wait_zero(monkeypat
     assert result.exit_code == 0 and "Waiting for the validator" not in result.output
 
 
-def test_mine_register_reports_the_add_and_exits_zero_when_the_list_lags(monkeypatch, tmp_path: Path) -> None:
+def test_mine_register_reports_the_add_and_exits_two_when_the_list_lags(monkeypatch, tmp_path: Path) -> None:
+    """Registered but not listed is exit 2 (docs/exit-codes.md), even when the list lagged before any wait."""
     target = tmp_path / "compute-subnet"
     executor_dir = target / "neurons" / "executor"
 
@@ -573,7 +574,7 @@ def test_mine_register_reports_the_add_and_exits_zero_when_the_list_lags(monkeyp
     portal.on("GET", "/executors", _Resp(200, {"data": []}))
     monkeypatch.setattr(reg, "build_http", lambda url, token: _http(portal))
     result = CliRunner().invoke(mine.mine_command, ["--register", _token(exp=int(time.time()) + 3600), "--dir", str(target)])
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 2, result.output
     flat = " ".join(result.output.split())   # the console soft-wraps at 80 columns
     assert "Node added: 1×NVIDIA L4 (22 GB) at 203.0.113.7:8080, $0.11/GPU/h" in flat
     assert "not in the node list yet" in flat and "https://provider.lium.io/nodes" in flat

@@ -936,12 +936,13 @@ def _register_and_wait(
         return 1
 
     if record.node_id is None:
-        # the add went through; the list did not show it within ~30 s — nothing to poll, nothing failed
+        # the add went through; the list did not show it within ~30 s — nothing to poll, nothing failed, but the node
+        # is registered and not listed, which docs/exit-codes.md says is exit 2
         console.success(escape(
             f"\n✨ Node added: {inventory.gpu_count}×{gpu_type} ({inventory.vram_gb} GB) at {ip}:{port}, "
             f"${price_per_gpu:g}/GPU/h — it is not in the node list yet; the page shows it when it is: {node_url}"
         ))
-        return 0
+        return 2
 
     node_url = f"{node_url}/{record.node_id}"
     if record.already_registered:
