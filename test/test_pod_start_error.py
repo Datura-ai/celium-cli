@@ -231,6 +231,9 @@ def _run_up(monkeypatch, wait_action, args=()):
         def get_deployment_estimate(self, *a, **k):
             return {}
 
+        def schedule_termination(self, pod, *, termination_time):
+            return {"removal_scheduled_at": termination_time}
+
     class _Resolve:
         def execute(self, ctx):
             return ActionResult(ok=True, data={"executor": executor})
@@ -284,9 +287,10 @@ def test_up_ready_timeout_is_forwarded_and_names_the_billing_pod(monkeypatch):
     assert "pod-1" in result.output and "lium rm train" in result.output
 
 
-def test_up_ready_timeout_with_until_says_termination_was_not_scheduled(monkeypatch):
-    # --until/--ttl are scheduled after the pod is ready; when the wait gives up first the
-    # caller must learn the pod has no end time, not assume it will stop on its own.
+def test_up_ready_timeout_with_ttl_names_the_removal_time(monkeypatch):
+    # DAH-3331: --ttl/--until are scheduled at the rent; when the wait gives up the caller learns
+    # the pod still has its end time (before, it had none and the message said so). Details in
+    # test_up_ttl_at_rent.py.
     class _Wait:
         def execute(self, ctx):
             return ActionResult(ok=False, data={}, error="still starting")
@@ -294,12 +298,12 @@ def test_up_ready_timeout_with_until_says_termination_was_not_scheduled(monkeypa
     result = _run_up(monkeypatch, _Wait, ["--ready-timeout", "90", "--ttl", "2h"])
 
     assert result.exit_code == EXIT_GENERAL_ERROR, result.output
-    assert "Auto-termination (--ttl/--until) was NOT scheduled" in " ".join(result.output.split())
+    assert "Auto-termination is scheduled for" in " ".join(result.output.split())
 
     result = _run_up(monkeypatch, _Wait, ["--ready-timeout", "90"])
 
     assert result.exit_code == EXIT_GENERAL_ERROR, result.output
-    assert "NOT scheduled" not in result.output
+    assert "Auto-termination" not in result.output
 
 
 def test_up_bounds_the_wait_by_the_default_budget(monkeypatch):
