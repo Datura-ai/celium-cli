@@ -166,6 +166,17 @@ def test_manifest_reports_gpu_from_executor_specs():
     assert manifest["gpu"]["count"] == 8
 
 
+def test_manifest_gpu_count_is_the_pods_own_for_a_split_rental():
+    """1 GPU rented of an 8×H100 host: `gpu.count` is the pod's billed count, the executor still says 8 (DAH-3073)."""
+    pod = _pod()
+    pod.gpu_count = 1
+
+    manifest = display.build_manifest(pod)
+
+    assert manifest["gpu"]["count"] == 1
+    assert pod.executor.gpu_count == 8
+
+
 def test_manifest_without_executor_still_describes_the_pod():
     """A pod whose executor the API omitted must not take the whole manifest down."""
     manifest = display.build_manifest(_pod(executor=None))

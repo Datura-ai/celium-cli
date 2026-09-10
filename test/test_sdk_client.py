@@ -328,3 +328,142 @@ def test_resolve_restore_id_searches_active_pods(monkeypatch):
 
     assert client.resolve_restore_id("9b6c8d90") == restore_id
     assert client.resolve_restore_id("9B6C8D90") == restore_id
+
+
+def test_ps_prices_a_split_rental_per_pod_gpu_and_leaves_the_host_count_alone(monkeypatch):
+    """1 GPU rented of a 3×RTX 3090 node: PodInfo.gpu_count is 1, the executor keeps the host's 3, $/GPU is $/h over 1."""
+    payload = [{
+        "id": "d7b3e3b2-0f7c-4f7e-9c3c-0b3f1a2e9a01", "pod_name": "sx-ctl", "status": "RUNNING",
+        "gpu_count": "1", "gpu_name": "NVIDIA GeForce RTX 3090", "price": 0.18,
+        "ssh_connect_cmd": "ssh root@pod.invalid -p 2222", "ports_mapping": {"22": 2222},
+        "created_at": "2026-09-07T01:51:40", "updated_at": "2026-09-07T01:52:00", "template": {"name": "Pytorch"},
+        "executor": {
+            "id": "e0a7c1e2-6c2e-4d3d-9d8b-0f1a2b3c4d5e", "machine_name": "NVIDIA GeForce RTX 3090",
+            "gpu_count": 3, "price_per_gpu": None, "executor_ip_address": "pod.invalid",
+            "specs": {"gpu": {"count": 3, "details": [{"name": "NVIDIA GeForce RTX 3090", "capacity": 24576}] * 3}},
+            "location": {"country": "Germany", "country_code": "DE"},
+        },
+    }]
+    monkeypatch.setattr(Lium, "_request", lambda self, *a, **kw: SimpleNamespace(json=lambda: payload))
+
+    pod = Lium(Config(api_key="test")).ps()[0]
+
+    assert pod.gpu_count == 1
+    assert pod.executor.gpu_count == 3
+    assert pod.executor.price_per_hour == 0.18
+    assert pod.executor.price_per_gpu == 0.18
+
+
+def test_ps_prices_per_host_gpu_when_the_pod_count_is_malformed(monkeypatch):
+    """A non-numeric pod.gpu_count must not break `lium ps`: PodInfo.gpu_count is None and $/GPU falls back to the host's count."""
+    payload = [{
+        "id": "d7b3e3b2-0f7c-4f7e-9c3c-0b3f1a2e9a02", "pod_name": "sx-bad", "status": "RUNNING",
+        "gpu_count": "three", "price": 0.54,
+        "executor": {
+            "id": "e0a7c1e2-6c2e-4d3d-9d8b-0f1a2b3c4d5f", "machine_name": "NVIDIA GeForce RTX 3090",
+            "gpu_count": 3, "price_per_gpu": None, "executor_ip_address": "pod.invalid",
+            "specs": {"gpu": {"count": 3, "details": [{"name": "NVIDIA GeForce RTX 3090", "capacity": 24576}] * 3}},
+            "location": {"country": "Germany", "country_code": "DE"},
+        },
+    }]
+    monkeypatch.setattr(Lium, "_request", lambda self, *a, **kw: SimpleNamespace(json=lambda: payload))
+
+    pod = Lium(Config(api_key="test")).ps()[0]
+
+    assert pod.gpu_count is None
+    assert pod.executor.gpu_count == 3
+    assert pod.executor.price_per_gpu == pytest.approx(0.18)
+
+
+class _FakeChannel:
+    """Two stdout chunks, one stderr chunk, then the exit status."""
+
+    def __init__(self):
+        self.out = [b"one\n", b"two\n"]
+        self.err = [b"warn\n"]
+        self.polls = 0
+
+    def recv_ready(self):
+        return bool(self.out)
+
+    def recv(self, n):
+        return self.out.pop(0)
+
+    def recv_stderr_ready(self):
+        return bool(self.err)
+
+    def recv_stderr(self, n):
+        return self.err.pop(0)
+
+    def exit_status_ready(self):
+        self.polls += 1
+        return self.polls > 1  # first poll: not finished yet
+
+    def recv_exit_status(self):
+        return 3
+
+
+def _stream_client(monkeypatch, channel):
+    from contextlib import contextmanager
+
+    calls = {}
+
+    class _Stdin:
+        def write(self, data):
+            calls["stdin"] = data
+
+        def close(self):
+            pass
+
+    class _Std:
+        def __init__(self, ch):
+            self.channel = ch
+
+    class _SSH:
+        def exec_command(self, command, get_pty=False):
+            calls["command"] = command
+            calls["get_pty"] = get_pty
+            return _Stdin(), _Std(channel), _Std(channel)
+
+    client = Lium(Config(api_key="test"))
+
+    @contextmanager
+    def fake_connection(pod, timeout=30):
+        yield _SSH()
+
+    monkeypatch.setattr(client, "ssh_connection", fake_connection)
+    monkeypatch.setattr("lium.sdk.client.time.sleep", lambda s: None)
+    return client, calls
+
+
+def test_stream_exec_without_pty_keeps_streams_apart_and_returns_exit_status(monkeypatch):
+    client, calls = _stream_client(monkeypatch, _FakeChannel())
+    pod = SimpleNamespace(id="pod-1", name="p", ssh_cmd="ssh root@10.0.0.1 -p 22")
+
+    gen = client.stream_exec(pod, command="python -u run.py", env={"A": "x y"}, pty=False)
+    chunks = []
+    while True:
+        try:
+            chunks.append(next(gen))
+        except StopIteration as stop:
+            exit_code = stop.value
+            break
+
+    assert chunks == [  # one stdout and one stderr read per loop turn
+        {"type": "stdout", "data": "one\n"},
+        {"type": "stderr", "data": "warn\n"},
+        {"type": "stdout", "data": "two\n"},
+    ]
+    assert exit_code == 3
+    assert calls["get_pty"] is False
+    assert calls["command"] == "export A='x y' && python -u run.py"  # main's shlex-quoted exports (DAH-2894)
+
+
+def test_stream_exec_default_pty_is_unchanged(monkeypatch):
+    client, calls = _stream_client(monkeypatch, _FakeChannel())
+    pod = SimpleNamespace(id="pod-1", name="p", ssh_cmd="ssh root@10.0.0.1 -p 22")
+
+    list(client.stream_exec(pod, command="ls", env={"A": "1"}))
+
+    assert calls["get_pty"] is True
+    assert calls["command"] == "export A=1 && ls"

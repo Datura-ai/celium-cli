@@ -25,6 +25,7 @@ from lium.sdk import (
     LiumServerError,
     PodInfo,
 )
+from . import telemetry
 from .themed_console import ThemedConsole
 from dataclasses import dataclass
 from rich.markup import escape
@@ -61,6 +62,21 @@ def mid_ellipsize(s: str, width: int = 28) -> str:
     left = keep // 2
     right = keep - left
     return f"{s[:left]}…{s[-right:]}"
+
+
+def pod_gpu_count(pod: PodInfo) -> Optional[int]:
+    """GPUs to show for a pod: ``PodInfo.gpu_count`` when the API sent one, else the host's.
+
+    ``PodInfo.gpu_count`` is the pod row's own billed count from ``/pods`` (DAH-2877);
+    ``pod.executor`` describes the whole host. ``ps``, ``describe`` and their JSON
+    views read this so a GPU-split rental (1 GPU of a 3×RTX 3090 node) reads
+    ``RTX3090``, not ``3×RTX3090``. ``getattr`` because the CLI tests' pod doubles
+    predate the field.
+    """
+    billed = getattr(pod, "gpu_count", None)
+    if billed:
+        return billed
+    return pod.executor.gpu_count if pod.executor else None
 
 
 def parse_timestamp(timestamp: str) -> Optional[datetime]:
@@ -299,7 +315,8 @@ OUTPUT_ENV = "LIUM_OUTPUT"    # LIUM_OUTPUT=json: every failure is a JSON envelo
 # (or a person) guessing; a code that has no entry here falls back to the
 # exit-code family below, so no error leaves without one.
 _HINTS_BY_CODE: Dict[str, str] = {
-    "no_api_key": "Set LIUM_API_KEY, or run 'lium init' (headless: 'lium init --no-browser')",
+    "no_api_key": "Set LIUM_API_KEY, or run 'lium init' (headless: 'lium init --no-browser'); "
+                  "no account yet? 'lium signup --email you@example.com' creates one and stores its key",
     "invalid_api_key": "Check the key: 'lium config get api.api_key' shows which one is used; "
                        "a new one comes from https://lium.io/api-keys",
     "permission_denied": "Check the account with 'lium balance'; an insufficient balance is "
@@ -457,6 +474,16 @@ def _classify_sdk_error(error: LiumError) -> tuple[str, int]:
     return "lium_error", EXIT_API_ERROR
 
 
+def sdk_error_failure(error: LiumError, data: dict | None = None) -> CliFailure:
+    """The failure ``handle_errors`` raises for an SDK error, with ``data`` attached.
+
+    For a command that caught the error to finish its report first (``whoami``) and must still fail
+    with the same code, exit status and hint as every other command — plus the report as ``data``.
+    """
+    code, exit_code = _classify_sdk_error(error)
+    return CliFailure(code, str(error), exit_code, data=data)
+
+
 def handle_errors(func):
     """Decorator to handle CLI errors gracefully.
 
@@ -505,7 +532,13 @@ def handle_errors(func):
             code, exit_code = _classify_sdk_error(e)
             fail(code, str(e), exit_code, prefix="Error: ")
         except Exception as e:
-            fail("unexpected_error", str(e), EXIT_GENERAL_ERROR, prefix="Unexpected error: ")
+            # a bug, not a usage or API error: the only branch crash reporting sees (DAH-2057)
+            reported = telemetry.report(e)
+            hint = default_hint("unexpected_error", EXIT_GENERAL_ERROR)
+            if not reported and not json_output:
+                # the nudge is for a person; the JSON envelope keeps the generic next step
+                hint = f"{hint}\n{telemetry.OPT_IN_HINT}"
+            fail("unexpected_error", str(e), EXIT_GENERAL_ERROR, prefix="Unexpected error: ", hint=hint)
     return wrapper
 
 
@@ -1129,7 +1162,8 @@ def ensure_config():
                 f"{noninteractive_reason()}. Set LIUM_API_KEY, or run "
                 "'lium init --no-browser' and then 'lium init --session <ID>'",
                 EXIT_CONFIGURATION_ERROR,
-                hint="Set LIUM_API_KEY, or run 'lium init --no-browser' and then 'lium init --session <ID>'",
+                hint="Set LIUM_API_KEY, or run 'lium init --no-browser' and then 'lium init --session <ID>'; "
+                     "no account yet? 'lium signup --email you@example.com' creates one and stores its key",
             )
         # Setup API key
         action = SetupApiKeyAction()
