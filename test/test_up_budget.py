@@ -205,7 +205,7 @@ def test_ps_spent_column_is_wide_enough_for_a_three_digit_cap():
 # --- lium up --budget -----------------------------------------------------------------------
 
 
-def _run_up(monkeypatch, args, *, price=PRICE, pod=None, removed=None, executor=None, resolve_data=None):
+def _run_up(monkeypatch, args, *, price=PRICE, pod=None, removed=None, executor=None, resolve_data=None, pod_name="train"):
     executor = executor or SimpleNamespace(
         id="exec-1", huid="brave-fox-3a", gpu_count=1, gpu_type="H100",
         price_per_hour=price, available_port_count=10, download_speed=1000,
@@ -232,7 +232,7 @@ def _run_up(monkeypatch, args, *, price=PRICE, pod=None, removed=None, executor=
     class _Rent:
         def execute(self, ctx):
             scheduled["rented"] = True
-            return ActionResult(ok=True, data={"pod_info": {}, "pod_id": "pod-1", "pod_name": "train"})
+            return ActionResult(ok=True, data={"pod_info": {}, "pod_id": "pod-1", "pod_name": pod_name})
 
     class _Wait:
         def execute(self, ctx):
@@ -268,6 +268,14 @@ def test_up_budget_schedules_removal_when_the_budget_runs_out(monkeypatch):
     assert scheduled["at"] == created + timedelta(hours=5)
     assert "Budget $12.50 at $2.50/h ≈ 5.0h" in result.output
     assert "Spend cap $12.50" in result.output
+
+
+def test_up_budget_messages_show_a_bracketed_pod_name_literally(monkeypatch):
+    """`[v2]` in a pod name is Rich markup unless escaped: the label would swallow it (or raise on `[/x]`)."""
+    pod, _ = _fresh_pod()
+    result, _ = _run_up(monkeypatch, ["--budget", "12.50"], pod=pod, pod_name="train[v2]")
+    assert result.exit_code == 0, result.output
+    assert "(name: train[v2], id: pod-1)" in result.output
 
 
 def test_up_budget_and_ttl_keep_the_earlier_deadline(monkeypatch):

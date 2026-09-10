@@ -642,7 +642,7 @@ def up_command(
         )
 
     pod = result.data["pod"]
-    pod_label = f"Pod {ui.styled(pod.huid, 'pod_id')} (name: {pod_name}, id: {pod_id})"
+    pod_label = f"Pod {ui.styled(pod.huid, 'pod_id')} (name: {escape(pod_name)}, id: {escape(str(pod_id))})"
 
     if budget_usd is not None:
         # The cap counts from the pod's created_at, the one timestamp the API gives (the platform
@@ -667,7 +667,7 @@ def up_command(
         elif termination_time is None or deadline < termination_time:
             termination_time = deadline
             termination_scheduled = False  # the cap is earlier than what the rent scheduled; schedule it below
-            ui.dim(f"Spend cap ${budget_usd:.2f}: removal scheduled for {deadline.strftime('%Y-%m-%d %H:%M UTC')}")
+            ui.dim(f"Spend cap ${budget_usd:.2f}: removal scheduled for {deadline:%Y-%m-%d %H:%M UTC}")
 
     if termination_time and not termination_scheduled:
         # The schedule call failed right after the rent, or --budget set an earlier deadline than
