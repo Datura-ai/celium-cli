@@ -3053,20 +3053,25 @@ class Lium:
         """
         return self._request("DELETE", f"/volumes/{volume_id}").json()
 
-    def schedule_termination(self, pod: PodInfo, *, termination_time: str) -> Dict[str, Any]:
+    def schedule_termination(self, pod: Union[str, PodInfo, Dict], *, termination_time: str) -> Dict[str, Any]:
         """Schedule a pod for automatic termination at a future date and time.
 
+        The pod does not have to be running: the dict :meth:`up` returns, or its ``id``,
+        is enough, so the schedule can be set before :meth:`wait_ready` — a pod that never
+        becomes ready is billed all the same and is removed at ``termination_time``.
+
         Args:
-            pod: Pod to schedule
+            pod: Pod identifier, PodInfo (or any object with an ``id`` attribute), or dict with an ``id`` field.
             termination_time: ISO 8601 formatted datetime string (e.g., "2025-10-17T15:30:00Z")
 
         Returns:
             Response from the schedule termination API
         """
+        pod_id = pod["id"] if isinstance(pod, dict) else getattr(pod, "id", pod)
         payload = {"removal_scheduled_at": termination_time}
         # Idempotent payload: the same removal time twice is one schedule, so a 5xx or a lost response
         # is retried — one blip after `lium up --ttl` must not leave the pod without its auto-stop.
-        return self._request("POST", f"/pods/{quote(str(pod.id), safe='')}/schedule-removal", json=payload, retry=True).json()
+        return self._request("POST", f"/pods/{quote(str(pod_id), safe='')}/schedule-removal", json=payload, retry=True).json()
 
     def cancel_scheduled_termination(self, pod: PodInfo) -> Dict[str, Any]:
         """Cancel a scheduled termination for a pod.

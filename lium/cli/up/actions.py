@@ -486,10 +486,12 @@ class VerifyGpuCountAction:
 
 
 class ScheduleTerminationAction:
+    """Set the pod's removal time. ``ctx["pod"]`` is a PodInfo or the pod id: `up` runs this
+    right after the rent, before the pod is listed as ready."""
 
     def execute(self, ctx: dict) -> ActionResult:
         lium: Lium = ctx["lium"]
-        pod: PodInfo = ctx["pod"]
+        pod: PodInfo | str = ctx["pod"]
         termination_time = ctx["termination_time"]
 
         termination_time_str = termination_time.isoformat()
