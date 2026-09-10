@@ -679,7 +679,6 @@ def _mine_status(args: list[str], hotkey: Optional[str] = None) -> int:
     "--register",
     "register_token",
     metavar="TOKEN",
-    envvar="LIUM_REGISTER_TOKEN",
     help="Register token from the portal's Add Node page: after the node is up, add it to your account and "
     "wait until it is listed. Implies --auto; the account comes from the token, so -k is not needed.",
 )
@@ -744,6 +743,11 @@ def mine_command(ctx, hotkey, dir_, branch, auto, verbose, help_, register_token
         _show_setup_summary(register=bool(register_token))   # keep the banner only when asked
 
     token: Optional[reg.RegisterToken] = None
+    if not register_token:
+        given = [name for name, value in (("--portal-url", portal_url), ("--price", price), ("--gpu-type", gpu_type))
+                 if value is not None] + (["--wait"] if wait_minutes != 45 else [])
+        if given:
+            raise click.UsageError(f"{', '.join(given)}: only with --register TOKEN.")
     if register_token:
         # fail on a bad or expired token before the ten-minute install, not after it
         try:
@@ -923,9 +927,17 @@ def _register_and_wait(
                 port=port,
                 price_per_gpu=price_per_gpu,
             )
-    except (reg.RegisterError, reg.ProviderError) as e:
+    except Exception as e:   # RegisterError, a portal error, nvidia-smi exiting non-zero, an unreadable .env: same shape as steps 1–6
         console.error(f"❌ {escape(str(e))}")
         return 1
+
+    if record.node_id is None:
+        # the add went through; the list did not show it within ~30 s — nothing to poll, nothing failed
+        console.success(
+            f"\n✨ Node added: {inventory.gpu_count}×{gpu_type} ({inventory.vram_gb} GB) at {ip}:{port}, "
+            f"${price_per_gpu:g}/GPU/h — it is not in the node list yet; the page shows it when it is: {node_url}"
+        )
+        return 0
 
     node_url = f"{node_url}/{record.node_id}"
     if record.already_registered:
@@ -943,7 +955,7 @@ def _register_and_wait(
     if wait_minutes == 0:
         return 0
 
-    console.print(f"\n[8/{total_steps}] Waiting for the validator (up to {wait_minutes} min; Ctrl-C leaves the node registered)")
+    console.print(f"\n● [8/{total_steps}] Waiting for the validator (up to {wait_minutes} min; Ctrl-C leaves the node registered)")
     started = time.monotonic()
     try:
         final = reg.wait_until_listed(

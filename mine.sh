@@ -146,6 +146,20 @@ main() {
         exit 1
     fi
 
+    # --register needs a lium that knows the flag: an older one would treat the token as a stray argument
+    # (`lium mine` passes unknown options on to the preflight image). Upgrade an installed lium once, then refuse.
+    if [[ " ${LIUM_ARGS[*]} " == *" --register "* ]] && ! "$LIUM_BIN" mine --help 2>/dev/null | grep -q -- '--register'; then
+        if command_exists uv; then
+            run_with_timer "Upgrading lium-cli for --register" uv tool upgrade lium.io
+            hash -r
+            LIUM_BIN=$(find_lium) || LIUM_BIN="$LIUM_BIN"
+        fi
+        if ! "$LIUM_BIN" mine --help 2>/dev/null | grep -q -- '--register'; then
+            log_err "This lium ($("$LIUM_BIN" --version 2>/dev/null)) has no 'mine --register'. Upgrade it (uv tool upgrade lium.io) and re-run."
+            exit 1
+        fi
+    fi
+
     # Execute lium mine
     if [[ ${#LIUM_ARGS[@]} -gt 0 ]]; then
         exec "$LIUM_BIN" mine "${LIUM_ARGS[@]}"

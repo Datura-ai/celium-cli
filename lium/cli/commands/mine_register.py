@@ -6,9 +6,9 @@ as the bearer for exactly one call, ``POST /executors``. Everything else here is
 the per-node status the portal shows are public reads.
 
 Nothing about the node is typed by hand: GPU model and count come from ``nvidia-smi`` on this host, the port from
-the executor's own ``.env``, the address from the host's public IPv4, the price from the portal's public default
-for that GPU model (the same source the Add Node form pre-fills from). ``reports/INVALID_EXECUTOR_ROOTCAUSE.md``:
-hand-typed values are one of the ways a node ends up unrentable.
+the executor's own ``.env``, the address from the host's public IPv4, the price is the model's base price from the
+public shared-config (the Add Node form pre-fills the 30-day median when it has one).
+``reports/INVALID_EXECUTOR_ROOTCAUSE.md``: hand-typed values are one of the ways a node ends up unrentable.
 """
 
 from __future__ import annotations
@@ -35,8 +35,13 @@ FIX_STATUSES = frozenset({"VALIDATION_FAILED", "OFFLINE"})
 
 ``NOT_DETECTED`` is not here on purpose: the portal shows it for any node the validator has not reached in
 30 min (``recently_created`` in the portal's ``ExecutorResponse``), which a first validation at the p90 of
-44 min hits with no error attached — the poll keeps going and the deadline decides.
+44 min hits with no error attached — the poll keeps going and the deadline decides. ``OFFLINE`` comes from a
+reachability flag the backend refreshes once a minute, so a node re-registered right after a reinstall can
+still read OFFLINE on the first tick: it counts only once it has been read for ``OFFLINE_CONFIRM_S``.
 """
+
+OFFLINE_CONFIRM_S = 60.0
+"""How long OFFLINE has to persist before it is reported as the fix (one refresh of the backend's ping flag)."""
 
 _SS58 = re.compile(r"[1-9A-HJ-NP-Za-km-z]{40,60}")
 _IPV4 = re.compile(r"\d{1,3}(?:\.\d{1,3}){3}")
@@ -156,10 +161,10 @@ def executor_port(executor_dir: Path) -> int:
 def resolve_price(gpu_type: str, explicit: float | None) -> float:
     """``--price`` when given, else the portal's public default for this GPU model.
 
-    The default is the model's base price from ``GET /v1/shared-config`` ``machine_prices`` — the value the
-    portal's allowed-range check is centred on, so it is accepted first time (the Add Node form pre-fills the
-    30-day median when it has one; that median becomes the default here when ``GET /public/provider-economics``
-    lands). When the model is not in the table the portal will refuse the node too, so the message names the
+    The default is the model's base price from ``GET /v1/shared-config`` ``machine_prices``; the portal's
+    accepted range is a multiple of its own machine-table price, normally the same value (the Add Node form
+    pre-fills the 30-day median when it has one; that median becomes the default here when
+    ``GET /public/provider-economics`` lands). When the model is not in the table the portal will refuse the node too, so the message names the
     closest known names and the flag that overrides the model.
     """
     if explicit is not None:
@@ -201,7 +206,8 @@ def _detail(e: ProviderError) -> str:
 
 @dataclass(frozen=True)
 class NodeRecord:
-    node_id: str
+    node_id: str | None
+    """None when the add succeeded but the list did not show the node within ~30 s: registered, not watchable here."""
     already_registered: bool
 
 
@@ -245,19 +251,37 @@ def register_node(
         else:
             raise RegisterError(f"The portal refused the node: {detail}") from e
 
-    node_id = find_node_id(http, miner_hotkey=miner_hotkey, ip_address=ip_address, port=port)
-    if node_id is None and already:
-        # the portal's duplicate check is global (find_by_ip_and_port has no account filter)
-        raise RegisterError(
-            f"A node at {ip_address}:{port} is already registered under another account. Remove it there "
-            "first, or contact support if that account is not yours."
-        )
-    if node_id is None:
-        raise RegisterError(
-            "The portal accepted the node but it is not in the account's node list yet. Open "
-            f"{portal_web_url(http.base_url)}/nodes to check; nothing else was changed on this host."
-        )
-    return NodeRecord(node_id=node_id, already_registered=already)
+    if already:
+        node_id = find_node_id(http, miner_hotkey=miner_hotkey, ip_address=ip_address, port=port)
+        if node_id is None:
+            # the portal's duplicate check is global (find_by_ip_and_port has no account filter)
+            raise RegisterError(
+                f"A node at {ip_address}:{port} is already registered under another account. Remove it there "
+                "first, or contact support if that account is not yours."
+            )
+        return NodeRecord(node_id=node_id, already_registered=True)
+    node_id = find_node_id_after_add(http, miner_hotkey=miner_hotkey, ip_address=ip_address, port=port)
+    return NodeRecord(node_id=node_id, already_registered=False)
+
+
+FIND_NODE_ATTEMPTS = 6
+FIND_NODE_RETRY_S = 5.0
+
+
+def find_node_id_after_add(
+    http: PortalHTTP, *, miner_hotkey: str, ip_address: str, port: int, sleep: Callable[[float], None] = time.sleep
+) -> str | None:
+    """``find_node_id`` with retries: the list can lag the write, and a portal hiccup must not fail an add that succeeded."""
+    for attempt in range(FIND_NODE_ATTEMPTS):
+        try:
+            node_id = find_node_id(http, miner_hotkey=miner_hotkey, ip_address=ip_address, port=port)
+        except ProviderError:
+            node_id = None
+        if node_id is not None:
+            return node_id
+        if attempt < FIND_NODE_ATTEMPTS - 1:
+            sleep(FIND_NODE_RETRY_S)
+    return None
 
 
 def _known_gpu_types() -> list[str]:
@@ -316,8 +340,12 @@ def read_status(http: PortalHTTP, node_id: str) -> NodeStatus:
     fix = ""
     last_error = computed.get("last_error")
     if isinstance(last_error, dict):
-        parts = [str(last_error.get(k) or "") for k in ("title", "message", "remediation")]
-        fix = " ".join(p for p in parts if p)
+        parts: list[str] = []
+        for key in ("title", "message", "remediation"):
+            value = str(last_error.get(key) or "").strip()
+            if value and value not in parts:   # the portal sets title == message for validator errors
+                parts.append(value)
+        fix = " ".join(parts)
     return NodeStatus(status=status, message=message, fix=fix)
 
 
@@ -333,23 +361,31 @@ def wait_until_listed(
 ) -> NodeStatus:
     """Poll the node's status until it is listed, names a fix, or ``timeout_s`` passes.
 
-    ``on_change(status, elapsed_s)`` is called for the first reading and every change after it, never for a
-    repeat, so a 20-minute wait prints a handful of lines. A read that fails (portal hiccup) is retried on the
-    next tick; the last good reading is what a timeout returns.
+    ``on_change(status, elapsed_s)`` is called for the first reading and every change after it (status, message
+    or the portal's fix text), never for a repeat, so a 20-minute wait prints a handful of lines. A read that
+    fails (portal hiccup) is retried on the next tick; the last good reading is what a timeout returns. OFFLINE
+    ends the wait only once it has been read for ``OFFLINE_CONFIRM_S`` (see ``FIX_STATUSES``).
     """
     start = clock()
     last: NodeStatus | None = None
+    offline_since: float | None = None
     while True:
         try:
             current = read_status(http, node_id)
         except ProviderError:
             current = None
         if current is not None:
-            if last is None or current.status != last.status or current.message != last.message:
+            now = clock()
+            if last is None or current != last:
                 if on_change:
-                    on_change(current, clock() - start)
+                    on_change(current, now - start)
                 last = current
-            if current.listed or current.needs_fix:
+            if current.status == "OFFLINE":
+                offline_since = now if offline_since is None else offline_since
+            else:
+                offline_since = None
+            offline_confirmed = offline_since is not None and now - offline_since >= OFFLINE_CONFIRM_S
+            if current.listed or (current.needs_fix and (current.status != "OFFLINE" or offline_confirmed)):
                 return current
         if clock() - start >= timeout_s:
             return last or NodeStatus(status="UNKNOWN", message="", fix="")
@@ -386,10 +422,14 @@ def read_gpu_inventory(run: Callable[[str], tuple[str, str]]) -> GpuInventory:
 
 
 def status_line(status: NodeStatus, elapsed_s: float) -> str:
+    """One poll line: elapsed, status, the portal's message, and its fix text when it has one (a
+    VALIDATION_PENDING node whose account is not connected carries the remedy here, not in the status)."""
     mins, secs = divmod(int(elapsed_s), 60)
     text = f"[{mins:02d}:{secs:02d}] {status.status}"
     if status.message:
         text += f" — {status.message}"
+    if status.fix and status.fix != status.message:
+        text += f" · {status.fix}"
     return text
 
 
@@ -401,24 +441,33 @@ def result_summary(status: NodeStatus, *, node_url: str, waited_s: float) -> tup
     if status.needs_fix:
         fix = status.fix or status.message or "see the node page"
         return (f"FIX ({status.status}): {fix}\n{node_url}", 1)
-    return (
-        f"Still {status.status} after {mins} min; the validator keeps checking and the node page updates "
-        f"on its own: {node_url}",
-        2,
-    )
+    if status.status == "UNKNOWN":
+        return (f"Could not read the node's status from the portal for {mins} min; the node stays registered: {node_url}", 2)
+    if status.status in ("VALIDATION_PENDING", "NOT_DETECTED"):
+        tail = f" Last note from the portal: {status.fix}" if status.fix else ""
+        return (
+            f"Still {status.status} after {mins} min; the validator keeps checking and the node page updates "
+            f"on its own: {node_url}{tail}",
+            2,
+        )
+    return (f"Node is {status.status} after {mins} min: {node_url}", 2)
 
 
 __all__: list[str] = [
+    "FIND_NODE_ATTEMPTS",
+    "FIND_NODE_RETRY_S",
     "FIX_STATUSES",
     "GpuInventory",
     "LISTED_STATUSES",
     "NodeRecord",
     "NodeStatus",
+    "OFFLINE_CONFIRM_S",
     "RegisterError",
     "RegisterToken",
     "build_http",
     "executor_port",
     "find_node_id",
+    "find_node_id_after_add",
     "opt_in_fix",
     "parse_nvidia_smi",
     "parse_register_token",

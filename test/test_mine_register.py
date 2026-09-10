@@ -186,6 +186,29 @@ def test_register_node_posts_with_the_token_and_finds_the_id_without_it() -> Non
     assert get["params"] == {"miner_hotkey": HOTKEY, "page": 1, "limit": 100}
 
 
+def test_register_node_retries_the_lookup_after_a_successful_add(monkeypatch) -> None:
+    """A lagging or hiccupping list must not fail an add that went through."""
+    monkeypatch.setattr(reg, "FIND_NODE_RETRY_S", 0.0)
+    portal = _Portal()
+    portal.on("POST", "/executors", _Resp(200, {"success": True, "data": {"message": "queued"}}))
+    portal.on("GET", "/executors", _Resp(502, "bad gateway"), _Resp(200, {"data": []}), _listing())
+    record = reg.register_node(_http(portal), miner_hotkey=HOTKEY, gpu_type="NVIDIA L4", gpu_count=1,
+                               ip_address="203.0.113.7", port=8080, price_per_gpu=0.11)
+    assert record == reg.NodeRecord(node_id="node-1", already_registered=False)
+    assert [c["method"] for c in portal.calls] == ["POST", "GET", "GET", "GET"]
+
+
+def test_register_node_gives_up_on_the_lookup_without_failing_the_add(monkeypatch) -> None:
+    monkeypatch.setattr(reg, "FIND_NODE_RETRY_S", 0.0)
+    portal = _Portal()
+    portal.on("POST", "/executors", _Resp(200, {"success": True, "data": {"message": "queued"}}))
+    portal.on("GET", "/executors", _Resp(200, {"data": []}))
+    record = reg.register_node(_http(portal), miner_hotkey=HOTKEY, gpu_type="NVIDIA L4", gpu_count=1,
+                               ip_address="203.0.113.7", port=8080, price_per_gpu=0.11)
+    assert record == reg.NodeRecord(node_id=None, already_registered=False)
+    assert len(portal.calls) == 1 + reg.FIND_NODE_ATTEMPTS
+
+
 def test_register_node_names_a_duplicate_held_by_another_account() -> None:
     """The portal's duplicate check is global; when the node is not in this account's list the message says so."""
     portal = _Portal()
@@ -268,6 +291,48 @@ def test_wait_until_listed_keeps_polling_through_not_detected() -> None:
     assert not reg.NodeStatus("NOT_DETECTED", "", "").needs_fix
 
 
+def test_wait_until_listed_ignores_a_first_offline_reading_but_confirms_a_lasting_one() -> None:
+    """The backend's reachability flag is refreshed once a minute; a node re-added after a reinstall reads
+    OFFLINE on the first tick. One reading is not a fix; a minute of it is."""
+    portal = _Portal()
+    portal.on("GET", "/executors/node-1", _status("OFFLINE", "Node not responding to ping."),
+              _status("VALIDATION_PENDING", "Waiting"), _status("AVAILABLE"))
+    final = _wait_no_sleep(_http(portal), "node-1", timeout_s=3600, interval_s=15)
+    assert final.listed
+    lasting = _Portal()
+    lasting.on("GET", "/executors/node-1", _status("OFFLINE", "Node not responding to ping.", {
+        "title": "Offline", "message": "Node not responding to ping.", "source": "Pinger"}))
+    seen: list[str] = []
+    final = _wait_no_sleep(_http(lasting), "node-1", timeout_s=3600, interval_s=15,
+                           on_change=lambda s, t: seen.append(reg.status_line(s, t)))
+    assert final.needs_fix and final.status == "OFFLINE"
+    assert len(lasting.calls) == 5   # 0, 15, 30, 45, 60 s: confirmed at OFFLINE_CONFIRM_S
+    assert seen == ["[00:00] OFFLINE — Node not responding to ping. · Offline Node not responding to ping."]
+
+
+def test_wait_until_listed_prints_the_portal_remedy_on_a_pending_node() -> None:
+    """A VALIDATION_PENDING node whose account is not connected carries the remedy in last_error, not in the status."""
+    portal = _Portal()
+    portal.on("GET", "/executors/node-1",
+              _status("VALIDATION_PENDING", "Miner not answering", {
+                  "title": "Miner not answering", "message": "Miner not answering", "source": "Validator",
+                  "remediation": "Turn the switch ON in Settings."}),
+              _status("AVAILABLE"))
+    seen: list[str] = []
+    _wait_no_sleep(_http(portal), "node-1", timeout_s=3600, on_change=lambda s, t: seen.append(reg.status_line(s, t)))
+    # title == message is printed once; the remediation follows
+    assert seen[0] == "[00:00] VALIDATION_PENDING — Miner not answering · Miner not answering Turn the switch ON in Settings."
+    pending = reg.NodeStatus("VALIDATION_PENDING", "Miner not answering", "Miner not answering Turn the switch ON in Settings.")
+    message, code = reg.result_summary(pending, node_url="u", waited_s=2700)
+    assert code == 2 and message.endswith("Last note from the portal: Miner not answering Turn the switch ON in Settings.")
+
+
+def test_result_summary_names_an_unreadable_status_and_a_non_validation_status() -> None:
+    assert reg.result_summary(reg.NodeStatus("UNKNOWN", "", ""), node_url="u", waited_s=600)[0].startswith(
+        "Could not read the node's status from the portal for 10 min")
+    assert reg.result_summary(reg.NodeStatus("RECLAIMING", "", ""), node_url="u", waited_s=60) == ("Node is RECLAIMING after 1 min: u", 2)
+
+
 def test_wait_until_listed_returns_the_named_fix_and_survives_a_read_error() -> None:
     portal = _Portal()
     portal.on("GET", "/executors/node-1",
@@ -280,6 +345,14 @@ def test_wait_until_listed_returns_the_named_fix_and_survives_a_read_error() -> 
     assert final.fix == "Sysbox required Sysbox required for unrented executor Install the sysbox runtime."
     message, code = reg.result_summary(final, node_url="https://provider.example/nodes/node-1", waited_s=900)
     assert code == 1 and message.startswith("FIX (VALIDATION_FAILED): Sysbox required")
+
+
+def test_read_status_prints_the_portal_error_text_once_when_title_equals_message() -> None:
+    portal = _Portal()
+    portal.on("GET", "/executors/node-1", _status("VALIDATION_FAILED", "GPU count mismatch", {
+        "title": "GPU count mismatch", "message": "GPU count mismatch", "source": "Validator",
+        "remediation": "Fix the GPU count in the portal."}))
+    assert reg.read_status(_http(portal), "node-1").fix == "GPU count mismatch Fix the GPU count in the portal."
 
 
 def test_wait_until_listed_times_out_with_the_last_reading() -> None:
@@ -319,6 +392,11 @@ def test_mine_register_refuses_an_expired_token_before_touching_the_host(monkeyp
     result = CliRunner().invoke(mine.mine_command, ["--register", _token(exp=int(time.time()) - 5)])
     assert result.exit_code == 1
     assert "expired at" in result.output and calls == []
+
+
+def test_mine_register_only_options_are_refused_without_a_token() -> None:
+    result = CliRunner().invoke(mine.mine_command, ["--price", "0.5", "--wait", "3"])
+    assert result.exit_code == 2 and "--price, --wait: only with --register TOKEN." in result.output
 
 
 def test_mine_register_refuses_a_conflicting_hotkey(monkeypatch) -> None:
@@ -376,7 +454,10 @@ def test_mine_register_runs_the_install_then_registers_and_waits(monkeypatch, tm
 
 
 def _wait_no_sleep(http, node_id, **kw):
-    kw.setdefault("sleep", lambda _: None)
+    """The real wait loop on a fake clock: every sleep advances it by the interval, so OFFLINE_CONFIRM_S elapses in no time."""
+    now = {"t": 0.0}
+    kw.setdefault("sleep", lambda secs: now.__setitem__("t", now["t"] + secs))
+    kw.setdefault("clock", lambda: now["t"])
     return _orig_wait(http, node_id, **kw)
 
 
