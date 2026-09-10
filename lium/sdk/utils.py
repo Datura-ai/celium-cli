@@ -29,17 +29,87 @@ def generate_huid(id_str: str) -> str:
     return f"{adj}-{noun}-{digest[-2:]}"
 
 
+# Short names users type that are not literally the extracted type.
+GPU_TYPE_ALIASES = {
+    "PRO6000": "RTXPRO6000",
+    "RTX6000PRO": "RTXPRO6000",
+    "6000PRO": "RTXPRO6000",
+    "PRO6000D": "RTXPRO6000D",
+}
+
+
 def extract_gpu_type(machine_name: str) -> str:
-    """Extract GPU type from machine name."""
+    """Extract GPU type from machine name.
+
+    Examples:
+        "NVIDIA H100 80GB HBM3"                            -> "H100"
+        "NVIDIA GeForce RTX 4090"                          -> "RTX4090"
+        "NVIDIA RTX 6000 Ada Generation"                   -> "RTX6000"
+        "NVIDIA RTX PRO 6000 Blackwell Server Edition"     -> "RTXPRO6000"
+        "NVIDIA RTX PRO 6000 Blackwell Workstation Edition"-> "RTXPRO6000"
+        "NVIDIA RTX PRO 6000D Blackwell Workstation Edition"-> "RTXPRO6000D"
+        "NVIDIA A100-SXM4-80GB"                            -> "A100"
+    """
     patterns = [
+        # "RTX PRO 6000 Blackwell ..." must be tried before the plain RTX pattern, otherwise the
+        # word "PRO" breaks the match and the type falls through to the last word ("Edition").
+        # The suffix stays: "RTX PRO 6000D" (Blackwell, 84 GB) is a separate SKU from the 96 GB "RTX PRO 6000".
+        (r"RTX\s*PRO\s*(\d{4}D?)", lambda m: f"RTXPRO{m.group(1)}"),
         (r"RTX\s*(\d{4})", lambda m: f"RTX{m.group(1)}"),
         (r"([HBL])(\d{2,3}S?)", lambda m: f"{m.group(1)}{m.group(2)}"),
         (r"A(\d{2,4})", lambda m: f"A{m.group(1)}"),
     ]
     for pattern, fmt in patterns:
         if match := re.search(pattern, machine_name, re.I):
-            return fmt(match)
-    return machine_name.split()[-1] if machine_name else "Unknown"
+            return fmt(match).upper()
+    words = machine_name.split() if machine_name else []
+    return words[-1] if words else "Unknown"
+
+
+def normalize_gpu_short(gpu_short: str) -> str:
+    """Canonical form of a user-typed GPU short name for comparisons.
+
+    Upper-cases, drops spaces/hyphens/underscores and applies :data:`GPU_TYPE_ALIASES`,
+    so ``"rtx pro 6000"``, ``"RTX-PRO-6000"``, ``"pro6000"`` all become ``"RTXPRO6000"``.
+    """
+    key = re.sub(r"[\s_\-]+", "", gpu_short or "").upper()
+    return GPU_TYPE_ALIASES.get(key, key)
+
+
+def gpu_short_matches(gpu_short: str, gpu_type: str) -> bool:
+    """Whether a user-typed short name names the GPU type extracted from a machine name.
+
+    Exact after normalisation (``"rtx 4090"`` → ``RTX4090``), or a bare model number
+    naming the type's number: ``"4090"`` matches ``RTX4090``, ``"6000"`` matches
+    ``RTX6000``, ``RTXPRO6000`` and ``A6000`` alike (the caller gets every match).
+    The number has to match whole: ``"100"`` matches ``H100`` and ``A100`` (both are
+    "the 100s"), while ``"90"`` matches nothing.
+    """
+    wanted = normalize_gpu_short(gpu_short)
+    # both sides normalised (DAH-2903): a fall-through name keeps its casing ("Ti", "Xp") and `--gpu ti` must still match
+    have = normalize_gpu_short(gpu_type)
+    if not wanted or not have:
+        return False
+    if wanted == have:
+        return True
+    if wanted.isdigit():
+        return _trailing_model_number(have) == wanted
+    return False
+
+
+def _trailing_model_number(gpu_type: str) -> str:
+    """The digit run that ends a normalised type, after an optional letter suffix: ``RTX4090`` → ``4090``,
+    ``RTXPRO6000D`` → ``6000``, ``H100SXM`` → ``100``, ``UNKNOWN`` → ``""``.
+
+    Two slices, no regex: ``gpu_type`` falls through from an API-supplied machine name of any length, and a
+    backtracking pattern on it was polynomial (PR_PROCESS §5, linear regex on wire-derived text).
+    """
+    stem = gpu_type.rstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+    end = len(stem)
+    start = end
+    while start and stem[start - 1].isdigit():
+        start -= 1
+    return stem[start:end]
 
 
 def expand_gpu_shorthand(gpu_short: str) -> str:
@@ -94,4 +164,4 @@ def with_retry(max_attempts: int = 3, delay: float = 1.0, exceptions: tuple = TR
     return decorator
 
 
-__all__ = ["generate_huid", "extract_gpu_type", "expand_gpu_shorthand", "with_retry"]
+__all__ = ["generate_huid", "extract_gpu_type", "expand_gpu_shorthand", "normalize_gpu_short", "gpu_short_matches", "GPU_TYPE_ALIASES", "with_retry"]

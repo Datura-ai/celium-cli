@@ -19,6 +19,7 @@ from .logs import logs_command
 from .reboot import reboot_command
 from .scp.command import scp_command
 from .rsync import rsync_command
+from .whoami import whoami_command
 from .theme import theme_command
 
 # from .commands.compose import compose_command  # Disabled for beta.1
@@ -40,6 +41,7 @@ from .update.command import update_command
 from .port_forward import port_forward_command
 from .plugins import load_plugins
 from .self_update import maybe_perform_startup_update
+from . import telemetry
 
 
 def get_version():
@@ -63,6 +65,9 @@ def cli(ctx):
     ctx.ensure_object(dict)
     ctx.obj["console"] = ThemedConsole()
 
+    # opt-in crash reporting (LIUM_TELEMETRY=1 / telemetry.enabled) — a no-op for everyone else
+    telemetry.init(f"lium {ctx.invoked_subcommand}" if ctx.invoked_subcommand else None, get_version())
+
     if ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())
 
@@ -82,6 +87,7 @@ cli.add_command(logs_command)
 cli.add_command(reboot_command)
 cli.add_command(scp_command)
 cli.add_command(rsync_command)
+cli.add_command(whoami_command)
 cli.add_command(theme_command)
 cli.add_command(config_command)
 # cli.add_command(image_command)  # Disabled for beta.1

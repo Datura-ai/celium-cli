@@ -35,6 +35,7 @@ from .exceptions import (
     LiumError,
     LiumHostKeyError,
     LiumNotFoundError,
+    LiumInsufficientBalanceError,
     LiumPermissionError,
     LiumRateLimitError,
     LiumServerError,
@@ -63,7 +64,13 @@ from .models import (
     VolumeInfo,
 )
 from .ssh_key_cache import fingerprint, load_cache, save_cache
-from .utils import extract_gpu_type, generate_huid, with_retry
+from .utils import extract_gpu_type, generate_huid, gpu_short_matches, with_retry
+
+# The backend feature `Lium.rent` looks for on GET /version before using POST /executors/rent-by-spec.
+RENT_BY_SPEC = "rent_by_spec"
+# Node specs report RAM and disk in KiB and GPU memory in MiB.
+_KIB_PER_GB = 1024 * 1024
+_MIB_PER_GB = 1024
 
 # The backend feature `Lium.rent` looks for on GET /version before using POST /executors/rent-by-spec.
 RENT_BY_SPEC = "rent_by_spec"
@@ -294,6 +301,61 @@ def _satisfies_spec(executor: ExecutorInfo, spec: Dict[str, Any]) -> bool:
     return True
 
 
+_USD = r"\$([0-9][0-9,]*(?:\.[0-9]+)?)"
+# The platform's balance refusals: "Insufficient balance" from the auth dependency and
+# "Insufficient balance. This node costs $X/hour, so renting it requires at least $Y
+# (N minutes of runtime). Your balance is $Z." from the rent path.
+_REQUIRED_RE = re.compile(r"requires at least " + _USD, re.I)
+_AVAILABLE_RE = re.compile(r"balance is " + _USD, re.I)
+
+
+def _response_error_code(response: requests.Response) -> Optional[str]:
+    """The stable ``error.code`` of the platform's error body, when it sends one.
+
+    lium-platform#210 (DAH-3056) answers every 4xx/5xx with
+    ``{"error": {"code", "message", "hint", "request_id"}, ...}``; older servers
+    send ``error`` as a string or not at all, and then this is ``None``.
+    """
+    try:
+        payload = response.json()
+    except ValueError:  # not a JSON body: older servers answer plain text, and then there is no code
+        return None
+    error = payload.get("error") if isinstance(payload, dict) else None
+    code = error.get("code") if isinstance(error, dict) else None
+    return code if isinstance(code, str) and code else None
+
+
+def permission_error(
+    detail: str, code: Optional[str] = None, key: Optional[str] = None
+) -> LiumPermissionError:
+    """The exception for a 403: :class:`LiumInsufficientBalanceError` when the server
+    refused for lack of funds (with ``required``/``available`` when it said them),
+    else a plain :class:`LiumPermissionError`.
+
+    ``code`` is the platform's structured ``error.code`` when the response carried
+    one (:func:`_response_error_code`); it decides. Without it the message text
+    decides, which is what every server before lium-platform#210 sends. ``key``
+    (the API key's fingerprint and source) is appended so the message says which
+    key the server refused.
+    """
+    message = f"Permission denied: {detail}" + (f" ({key})" if key else "")
+    if code is not None:
+        insufficient = code == "insufficient_balance"
+    else:
+        insufficient = "insufficient balance" in (detail or "").lower()
+    if not insufficient:
+        return LiumPermissionError(message)
+
+    def usd(match: Optional[re.Match]) -> Optional[float]:
+        return float(match.group(1).replace(",", "")) if match else None
+
+    return LiumInsufficientBalanceError(
+        message,
+        required=usd(_REQUIRED_RE.search(detail)),
+        available=usd(_AVAILABLE_RE.search(detail)),
+    )
+
+
 def _response_error_message(response: requests.Response) -> str:
     try:
         payload = response.json()
@@ -384,6 +446,7 @@ class Lium:
             "X-Lium-Client-Version": _get_client_version(),
         }
         self._features: Optional[set] = None
+        self._ssh_sessions: Dict[str, paramiko.SSHClient] = {}  # pod id -> connection held by ssh_session()
 
     def features(self) -> set:
         """Optional API capabilities the backend advertises on ``GET /version``.
@@ -453,7 +516,7 @@ class Lium:
         timeout = kwargs.pop("timeout", 30)
         resp = requests.request(method, url, headers=request_headers, timeout=timeout, **kwargs)
         try:
-            self._raise_for_status(resp)
+            self._raise_for_status(resp, key=self.config.api_key_description)
         except Exception:
             # A streamed response (logs) that is never read keeps its socket
             # until garbage collection; the caller only gets the exception.
@@ -464,19 +527,23 @@ class Lium:
         return resp
 
     @staticmethod
-    def _raise_for_status(resp: requests.Response) -> None:
+    def _raise_for_status(resp: requests.Response, key: str = "") -> None:
         """Map a non-2xx response to the SDK exception for its status.
 
         The single place this mapping lives; every HTTP path (``_request`` and
         the streaming ``logs``) goes through it so a 403 reads the same
-        everywhere.
+        everywhere. ``key`` is the caller's ``api_key_description``; it is named
+        in the 401/403 message so the user knows which key to fix.
         """
         if resp.ok:
             return
+        # Auth failures name the key that was sent: two commands can resolve
+        # different keys (environment versus config file), and "invalid API key"
+        # alone does not say which one to fix.
         if resp.status_code == 401:
-            raise LiumAuthError("Invalid API key")
+            raise LiumAuthError(f"Invalid API key ({key})" if key else "Invalid API key")
         if resp.status_code == 403:
-            raise LiumPermissionError(f"Permission denied: {_response_error_message(resp)}")
+            raise permission_error(_response_error_message(resp), _response_error_code(resp), key=key)
         if resp.status_code == 404:
             raise LiumNotFoundError(f"Resource not found: {_response_error_message(resp)}")
         if resp.status_code == 429:
@@ -575,21 +642,33 @@ class Lium:
             return None
 
         # Extract GPU info from specs or machine_name
-        specs = executor_dict.get("specs", {})
-        gpu_info = specs.get("gpu", {})
-        gpu_count = gpu_info.get("count", 1)
+        specs = executor_dict.get("specs") or {}
+        gpu_info = specs.get("gpu") or {}
+        gpu_details = gpu_info.get("details") or []
+        # The top-level gpu_count is the Executor.gpu_count column the rent path
+        # multiplies price_per_gpu by, so it comes first; then the count in the
+        # scraped specs, then the listed GPUs. Only assume a single GPU when the
+        # API gives us nothing at all, so a missing count cannot silently turn an
+        # 8-GPU node into a "1×" line with a 1-GPU price. Counts arrive as
+        # strings in some payloads (see _pod_gpu_count), so each is parsed.
+        gpu_count = (
+            _int_or_none(executor_dict, "gpu_count")
+            or _int_or_none(gpu_info, "count")
+            or len(gpu_details)
+            or 1
+        )
 
         # Extract GPU type from machine_name or specs
-        machine_name = executor_dict.get("machine_name", "")
+        machine_name = executor_dict.get("machine_name") or ""
         gpu_type = extract_gpu_type(machine_name)
 
-        # If we couldn't extract from machine_name, try specs
-        if gpu_type == machine_name.split()[-1] and gpu_info.get("details"):
-            gpu_details = gpu_info.get("details", [])
-            if gpu_details:
-                gpu_name = gpu_details[0].get("name", "")
-                if gpu_name:
-                    gpu_type = extract_gpu_type(gpu_name)
+        # If we couldn't extract from machine_name (empty, blank, or no known pattern), try specs
+        words = machine_name.split()
+        unresolved = not words or gpu_type == words[-1]
+        if unresolved and gpu_details:
+            gpu_name = (gpu_details[0] or {}).get("name", "")
+            if gpu_name:
+                gpu_type = extract_gpu_type(gpu_name)
 
         price_per_gpu = executor_dict.get("price_per_gpu") or 0
         price_per_hour = price_per_gpu * gpu_count
@@ -1431,6 +1510,7 @@ class Lium:
         lon: Optional[float] = None,
         max_distance_miles: Optional[int] = None,
         min_cuda_version: Optional[float] = None,
+        min_cpus: Optional[int] = None,
     ) -> List[ExecutorInfo]:
         """List available nodes.
 
@@ -1443,6 +1523,8 @@ class Lium:
             min_cuda_version: Optional minimum CUDA version to require (e.g. ``12.4``). Nodes whose
                 ``max_cuda_version`` is ``None`` or below this threshold are excluded. NVIDIA drivers are
                 backward compatible, so a node with a higher driver CUDA version satisfies the requirement.
+            min_cpus: Optional minimum CPU thread count (``specs.cpu.count``). Nodes that report fewer
+                CPUs, or none, are excluded.
 
         Returns:
             A list of :class:`ExecutorInfo` objects that satisfy the filters.
@@ -1477,6 +1559,9 @@ class Lium:
                 if e.max_cuda_version is not None and e.max_cuda_version >= min_cuda_version
             ]
 
+        if min_cpus is not None:
+            executors = [e for e in executors if e.cpu_count is not None and e.cpu_count >= min_cpus]
+
         return executors
 
     def ps(self) -> List[PodInfo]:
@@ -1492,11 +1577,15 @@ class Lium:
             executor = self._dict_to_executor_info(d.get("executor") or {}) if d.get("executor") else None
             # The /pods endpoint returns the authoritative total $/h as pod.price; the
             # nested executor.price_per_gpu is not populated in this payload. Anchor
-            # executor.price_per_hour on pod.price and derive per-GPU from it.
+            # executor.price_per_hour on pod.price and derive per-GPU from it. The
+            # executor describes the WHOLE host and stays so; for a GPU-split rental
+            # (1 GPU of a 3×3090 node) the pod row's own gpu_count is the billed count,
+            # so per-GPU is pod.price over that count when the API sent one.
             pod_price = d.get("price")
+            pod_gpu_count = _pod_gpu_count(d)
             if executor is not None and pod_price is not None:
                 executor.price_per_hour = float(pod_price)
-                executor.price_per_gpu = float(pod_price) / max(1, executor.gpu_count)
+                executor.price_per_gpu = float(pod_price) / max(1, pod_gpu_count or executor.gpu_count)
             pods.append(PodInfo(
                 id=d.get("id", ""),
                 name=d.get("pod_name", ""),
@@ -1516,7 +1605,7 @@ class Lium:
                 estimated_ready_seconds=d.get("estimated_ready_seconds"),
                 eta_basis=d.get("eta_basis"),
                 phase=d.get("phase"),
-                gpu_count=_pod_gpu_count(d),
+                gpu_count=pod_gpu_count,
             ))
 
         return pods
@@ -1702,13 +1791,14 @@ class Lium:
         """
         try:
             available_machines = self._request("GET", "/machines").json()
-            gpu_short_normalized = gpu_short.upper()
             matching_machines = []
 
             for machine in available_machines:
                 machine_name = machine.get("name", "")
-                # Check if the short name matches the extracted GPU type
-                if extract_gpu_type(machine_name).upper() == gpu_short_normalized:
+                # Both sides go through normalize_gpu_short inside gpu_short_matches: pattern hits
+                # are already upper-case, but a name with no pattern hit keeps its casing ("Ti", "Xp"),
+                # and `--gpu ti` must still find it; a bare "4090" names RTX4090 — the form users type most.
+                if gpu_short_matches(gpu_short, extract_gpu_type(machine_name)):
                     matching_machines.append(machine_name)
 
             # Return comma-separated list of all matches
@@ -1727,6 +1817,44 @@ class Lium:
         available_machines = self._request("GET", "/machines").json()
         gpu_types = {machine.get("name") or "" for machine in available_machines}
         return gpu_types
+
+    def gpu_short_types(self) -> List[str]:
+        """The short GPU types the marketplace knows (``H100``, ``RTX4090``, ...), sorted.
+
+        These are the values ``--gpu`` / ``ls(gpu_type=)`` accept; a bare model number
+        (``4090``) and spacing/case variants (``rtx 4090``) resolve to them too. Names
+        the extractor could not type (it falls back to the last word: ``Ti``, ``SUPER``,
+        ``V``) are left out — they are not something ``--gpu`` can usefully take.
+        """
+        types = {extract_gpu_type(name) for name in self.gpu_types() if name}
+        return sorted(t for t in types if re.fullmatch(r"[A-Z]*\d{2,4}[A-Z]*", t))
+
+    def unknown_gpu_type(self, gpu_short: str) -> Optional[List[str]]:
+        """``None`` when ``gpu_short`` names a known GPU type; otherwise the list of known types.
+
+        Lets a caller tell "every 4090 is rented" from "nothing is called 4090" — the
+        second case is what a typo or an unsupported spelling produces, and the two need
+        different messages. Never raises: on an API failure the answer is ``None``
+        (assume known), so a listing failure is reported as such and not as a typo.
+        """
+        try:
+            names = [name for name in self.gpu_types() if name]
+        except (LiumError, requests.RequestException, ValueError):
+            # the listing failed (API error, transport, or a non-JSON body): assume known — the
+            # caller reports the listing failure it already has, not a typo
+            return None
+        if not names:
+            # an empty marketplace has no types to show back — "Types on the marketplace:" with
+            # nothing after it would read as a typo; the caller's rented-out/no-match message fits
+            return None
+        # "known" is decided the way _resolve_machine_name matches — an exact catalog name first
+        # (`ls()` falls back to passing the full machine name, and tab completion offers exactly
+        # those), then every extracted type, fall-through spellings included (`ti`, `xp`) — so a
+        # spelling the listing resolves is never called a typo; the list shown back is the typed
+        # one gpu_short_types keeps (the fall-through words are not something --gpu can usefully take).
+        if gpu_short in names or any(gpu_short_matches(gpu_short, extract_gpu_type(name)) for name in names):
+            return None
+        return sorted({t for t in (extract_gpu_type(n) for n in names) if re.fullmatch(r"[A-Z]*\d{2,4}[A-Z]*", t)})
 
     def get_template(self, template_id: str) -> Optional[Template]:
         """Fetch a template by ID/HUID/name.
@@ -1777,6 +1905,11 @@ class Lium:
         Yields:
             An active ``paramiko.SSHClient``.
         """
+        held = self._ssh_sessions.get(pod.id)
+        if held is not None:
+            yield held
+            return
+
         if not pod.ssh_cmd:
             raise ValueError(f"No SSH for pod {pod.name}")
 
@@ -1864,6 +1997,24 @@ class Lium:
     # Read the exports from stdin and evaluate them in the remote shell. Nothing
     # here names a value, so the pod's argv never carries one.
     _ENV_FROM_STDIN = 'eval "$(cat)"'
+
+    @contextmanager
+    def ssh_session(self, pod: PodInfo, timeout: int = 30):
+        """Keep one SSH connection to ``pod`` open for the whole block.
+
+        Every :meth:`exec`, :meth:`stream_exec`, :meth:`upload` and :meth:`download`
+        inside it runs over this connection instead of paying a fresh TCP + SSH
+        handshake each (several seconds per call to a distant node).
+
+        Yields:
+            The active ``paramiko.SSHClient``.
+        """
+        with self.ssh_connection(pod, timeout) as client:
+            self._ssh_sessions[pod.id] = client
+            try:
+                yield client
+            finally:
+                self._ssh_sessions.pop(pod.id, None)
 
     def _prep_command(self, command: str, env: Optional[Dict[str, str]] = None) -> str:
         """Prefix ``command`` with the exports spelled out inline.
@@ -2217,36 +2368,50 @@ class Lium:
         *,
         command: str,
         env: Optional[Dict[str, str]] = None,
-    ) -> Generator[Dict[str, str], None, None]:
+        pty: bool = True,
+    ) -> Generator[Dict[str, str], None, int]:
         """Execute a shell command and stream incremental output.
 
         Args:
             pod: Pod to target.
             command: Shell command to run remotely.
             env: Optional environment variables exported before the command runs.
+            pty: Request a pseudo-terminal (default). A pty merges stderr into stdout
+                and turns ``\n`` into ``\r\n``; pass ``False`` to keep the two
+                streams apart, as :func:`lium.machine` does to relay a function's output.
 
         Yields:
             Streaming output chunks as ``{"type": "stdout"|"stderr", "data": str}``.
+
+        Returns:
+            The command's exit status (the generator's ``StopIteration.value``).
         """
         command = self._prep_command(command, env)
 
         with self.ssh_connection(pod) as client:
-            stdin, stdout, stderr = client.exec_command(command, get_pty=True)
+            stdin, stdout, stderr = client.exec_command(command, get_pty=pty)
             stdin.close()
 
             channel = stdout.channel
-            channel.settimeout(0.1)
-
-            while not channel.closed or channel.recv_ready() or channel.recv_stderr_ready():
+            while True:
+                got = False
                 if channel.recv_ready():
                     data = channel.recv(4096).decode("utf-8", errors="replace")
                     if data:
+                        got = True
                         yield {"type": "stdout", "data": data}
 
                 if channel.recv_stderr_ready():
                     data = channel.recv_stderr(4096).decode("utf-8", errors="replace")
                     if data:
+                        got = True
                         yield {"type": "stderr", "data": data}
+
+                if got:
+                    continue
+                if channel.exit_status_ready() and not channel.recv_ready() and not channel.recv_stderr_ready():
+                    return channel.recv_exit_status()
+                time.sleep(0.05)  # nothing pending: do not spin at 100% CPU until the command ends
 
     def exec_all(
         self,
@@ -2767,13 +2932,21 @@ class Lium:
             time.sleep(10)
         return None
 
+    def me(self) -> Dict[str, Any]:
+        """The account the API key belongs to, as ``GET /users/me`` returns it.
+
+        Useful keys: ``id``, ``email`` (when the server sends it), ``balance``.
+        """
+        data = self._request("GET", "/users/me").json()
+        return data if isinstance(data, dict) else {}
+
     def get_my_user_id(self) -> str:
         """Get the current user's ID.
 
         Returns:
             The ID returned by ``/users/me``.
         """
-        return self._request("GET", "/users/me").json()["id"]
+        return self.me()["id"]
 
     def update_template(
         self,
@@ -3368,20 +3541,25 @@ class Lium:
         """
         return self._request("DELETE", f"/volumes/{volume_id}").json()
 
-    def schedule_termination(self, pod: PodInfo, *, termination_time: str) -> Dict[str, Any]:
+    def schedule_termination(self, pod: Union[str, PodInfo, Dict], *, termination_time: str) -> Dict[str, Any]:
         """Schedule a pod for automatic termination at a future date and time.
 
+        The pod does not have to be running: the dict :meth:`up` returns, or its ``id``,
+        is enough, so the schedule can be set before :meth:`wait_ready` — a pod that never
+        becomes ready is billed all the same and is removed at ``termination_time``.
+
         Args:
-            pod: Pod to schedule
+            pod: Pod identifier, PodInfo (or any object with an ``id`` attribute), or dict with an ``id`` field.
             termination_time: ISO 8601 formatted datetime string (e.g., "2025-10-17T15:30:00Z")
 
         Returns:
             Response from the schedule termination API
         """
+        pod_id = pod["id"] if isinstance(pod, dict) else getattr(pod, "id", pod)
         payload = {"removal_scheduled_at": termination_time}
         # Idempotent payload: the same removal time twice is one schedule, so a 5xx or a lost response
         # is retried — one blip after `lium up --ttl` must not leave the pod without its auto-stop.
-        return self._request("POST", f"/pods/{quote(str(pod.id), safe='')}/schedule-removal", json=payload, retry=True).json()
+        return self._request("POST", f"/pods/{quote(str(pod_id), safe='')}/schedule-removal", json=payload, retry=True).json()
 
     def cancel_scheduled_termination(self, pod: PodInfo) -> Dict[str, Any]:
         """Cancel a scheduled termination for a pod.

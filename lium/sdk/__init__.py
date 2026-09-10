@@ -7,11 +7,13 @@ from .exceptions import (
     LiumAuthError,
     LiumError,
     LiumHostKeyError,
+    LiumInsufficientBalanceError,
     LiumNotFoundError,
     LiumPermissionError,
     LiumRateLimitError,
     LiumServerError,
     PodStartError,
+    RemoteExecutionError,
 )
 from .jobs import Job
 from .models import (
@@ -26,6 +28,7 @@ from .models import (
     Template,
     VolumeInfo,
 )
+from .result_codec import ResultEncodingError
 
 __all__ = [
     "Lium",
@@ -50,6 +53,9 @@ __all__ = [
     "LiumPermissionError",
     "PodStartError",
     "LiumHostKeyError",
+    "LiumInsufficientBalanceError",
+    "RemoteExecutionError",
+    "ResultEncodingError",
     "machine",
     "pod_ssh_command",
 ]

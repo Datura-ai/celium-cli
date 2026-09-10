@@ -17,6 +17,7 @@ class GetExecutorsAction:
         lon = ctx.get("lon")
         max_distance = ctx.get("max_distance")
         min_cuda_version = ctx.get("min_cuda_version")
+        min_cpus = ctx.get("min_cpus")
 
         executors = lium.ls(
             gpu_type=gpu_type,
@@ -25,6 +26,7 @@ class GetExecutorsAction:
             lon=lon,
             max_distance_miles=max_distance,
             min_cuda_version=min_cuda_version,
+            min_cpus=min_cpus,
         )
         return ActionResult(
             ok=True,

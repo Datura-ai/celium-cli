@@ -9,11 +9,11 @@
 <h1 align="center">Lium</h1>
 
 <div align="center">
-  <a href="https://docs.lium.io/cli/quickstart">Quickstart</a>
+  <a href="https://docs.lium.io/developers/cli/quickstart">Quickstart</a>
   <span>&nbsp;&nbsp;•&nbsp;&nbsp;</span>
   <a href="https://lium.io/?utm_source=github">Website</a>
   <span>&nbsp;&nbsp;•&nbsp;&nbsp;</span>
-  <a href="https://docs.lium.io/category/cli">CLI Docs</a>
+  <a href="https://docs.lium.io/developers/cli/overview">CLI Docs</a>
   <span>&nbsp;&nbsp;•&nbsp;&nbsp;</span>
   <a href="https://docs.lium.io/developers/sdk">SDK Docs</a>
   <span>&nbsp;&nbsp;•&nbsp;&nbsp;</span>
@@ -44,8 +44,11 @@ versioned binary under `~/.lium/versions/<version>/lium`.
 ### CLI
 
 ```bash
-# First-time setup
+# First-time setup: create an account (mints and stores an API key) …
+lium signup --email you@example.com
+# … or link an existing account
 lium init
+lium balance
 
 # List available nodes (GPU machines)
 lium ls
@@ -65,7 +68,7 @@ lium scp 1 ./my_script.py
 # SSH into a pod
 lium ssh <pod-name>
 
-# Stop a pod
+# Stop a pod — billing is per second and runs until you do this
 lium rm <pod-name>
 ```
 
@@ -73,7 +76,7 @@ lium rm <pod-name>
 
 The SDK mirrors the CLI's capabilities for programmatic use. Two entry points: the `@lium.machine` decorator for quickly offloading isolated functions, and the `Lium()` client for long-lived orchestration code.
 
-High-level decorator — annotate a function and offload work to a GPU pod:
+High-level decorator — annotate a function and offload work to a GPU pod. `machine` is `"<count>x<gpu>"` or `"<gpu>"` (`"1xH200"`, `"A100"`, `"2xRTX4090"`; count defaults to 1; the GPU is named as `lium ls --gpu` takes it and matched whole, so `"A100"` never rents an RTX A1000) and the cheapest matching node is rented; `timeout=` (default 1 h) bounds the run and the pod's lifetime. Arguments travel as a pickle (your own bytes, loaded on your own pod); the result comes back as a JSON envelope plus an `.npz` sidecar for numpy arrays read with `allow_pickle=False`, so nothing the pod writes is unpickled on your machine. What round-trips: `None`/`bool`/`int`/`float`/`str`/`bytes`, `list`/`tuple`/`set`/`frozenset`/`dict` of those, `datetime`/`date`/`time`/`timedelta`, `Decimal`, `pathlib.Path`, `uuid.UUID`, `numpy.ndarray` (any dtype without Python objects) and numpy scalars — anything else is a `lium.ResultEncodingError` on the pod naming the type (return `.tolist()`, `dict(x)`, `x.value` instead). Only the function's own `def` is sent, so import inside it and pass everything else as arguments. A remote exception is re-raised with its type when that type is a builtin (`except ValueError` works; other types arrive as `lium.RemoteExecutionError` with the name), with `lium.RemoteExecutionError` (remote traceback, exit code, output) as its cause:
 
 ```python
 import lium
@@ -90,6 +93,18 @@ def infer(prompt: str) -> str:
 print(infer("Who discovered penicillin?"))
 ```
 
+`keep_warm=300` keeps the pod five minutes for the next call or the next run of the script; `infer.map(prompts)` runs every item on one pod; `infer.local(...)` runs the function here (`local=True` / `LIUM_MACHINE_LOCAL=1` does so for every call); `infer.close()` removes a warm pod. Progress goes to stderr (`quiet=True` to silence):
+
+```text
+[lium] infer: renting 1xA100 $1.20/h (swift-fox-c8, US), removal in 1.2h
+[lium] infer: pod ready in 48s
+[lium] infer: preparing environment (3 package(s): torch, transformers, accelerate)
+[lium] infer: environment ready in 21s
+[lium] infer: running
+[lium] infer: done in 96s (~$0.0320)
+[lium] infer: pod removed
+```
+
 Direct SDK usage follows the same pattern:
 
 ```python
@@ -99,9 +114,9 @@ lium = Lium()
 # the cheapest available 1×A100 with at least 32 CPUs, chosen and rented in one call
 rented = lium.rent(gpu_type="A100", min_cpus=32, name="demo")
 print(f"{rented.executor.huid} at ${rented.price_per_hour:.2f}/h")
-pod = lium.wait_ready(rented.pod, timeout=600)                 # a ready PodInfo; None only if still starting after 600 s
-print(lium.exec(pod, command="nvidia-smi", timeout=60)["stdout"])
-lium.down(pod)
+ready = lium.wait_ready(rented.pod, timeout=600)   # None only if still starting after 600 s
+print(lium.exec(ready, command="nvidia-smi", timeout=60)["stdout"])
+lium.down(ready)
 ```
 
 `wait_ready()` raises `PodStartError` — with `.pod`, `.status`, `.history` and `.cause` (what the backend recorded, e.g. `Container creation failed due to ... (failure_step: ssh_connect)`) — when the pod reaches `FAILED`/`CREATION_FAILED`/`STOPPED`/`BROKEN` or disappears from the pod list, so a dead pod is not mistaken for a slow one. Pass `on_poll=lambda pod, status, elapsed: ...` to be told about every poll. `lium up` is bounded by `--timeout SECONDS` (default 900) for the whole rent, prints `waiting for <pod>… <STATUS> (<n> s)` while it waits, and exits 1 naming the pod when the budget runs out; `--ready-timeout` caps only the wait.
@@ -151,8 +166,9 @@ JSON keeps the API's raw value as `ssh_cmd`.
 
 ## Documentation
 
-- **CLI docs:** https://docs.lium.io/category/cli
+- **CLI docs:** https://docs.lium.io/developers/cli/overview
 - **SDK docs:** https://docs.lium.io/developers/sdk
+- **Exit codes and the JSON error envelope:** [docs/exit-codes.md](docs/exit-codes.md) — what a script or agent gets back when a command fails (`--format json`, `LIUM_OUTPUT=json`).
 
 ## Binary Releases
 
@@ -166,21 +182,30 @@ The `lium` CLI exposes the full pod lifecycle. Run `lium --help` to see everythi
 
 ### Core Commands
 
-- `lium init` - Initialize configuration (API key, SSH keys)
-- `lium ls [GPU_TYPE]` - List available nodes
+- `lium signup` - Create an account from the terminal and store its API key
+- `lium init` - Initialize configuration for an existing account (API key, SSH keys)
+- `lium balance` - Show the account balance (add `--format json` for machine-readable output)
+- `lium whoami` - Show which API key is in use, where it came from, and the account it belongs to
+- `lium ls [--gpu TYPE] [--count N] [--country CODE] [--min-vram GB] [--max-price USD] [--tier spot|secure] [--format json]` - List available nodes
 - `lium up [NODE_ID]` - Create a pod (use node ID or filters like `--gpu`, `--count`, `--country`)
 - `lium ps` - List active pods; the `#` column is the row number `rm`/`ssh`/`exec`/`scp` accept in the same shell, for 10 minutes, and only while the pod shown on that row is still listed. Use the huid in scripts.
-- `lium describe <POD>` - Full manifest of one pod: ports, GPU, template, billing (add `--json` for machine-readable output)
+- `lium describe <POD>` - Full manifest of one pod: ports, GPU, template, billing, last lifecycle event (why it is REBOOT_FAILED/BROKEN) and the node's disk health (add `--json` for machine-readable output). A deleted pod can still be described by its id: you get the events the backend kept for it and the reason it went away.
 - `lium ssh <POD>` - SSH into a pod
-- `lium exec <POD> <COMMAND>` - Execute command on pod (add `-d/--detach` to start it in the background and return immediately)
+- `lium exec <POD> <COMMAND>` - Execute command on pod (`--json` for stdout/stderr/exit_code; `-d/--detach` starts it in the background and returns immediately)
+- `lium logs <POD>` - Stream a pod's container logs
+- `lium port-forward <POD> <PORT>` - Forward a local port to a pod port
 - `lium scp <POD> <LOCAL_FILE> [REMOTE_PATH]` - Copy files to pods (add `-d` to download from pods)
 - `lium rsync <POD> <LOCAL_DIR> [REMOTE_PATH]` - Sync directories to pods
 - `lium rm <POD>` - Remove/stop a pod (`--name-only` to refuse `lium ps` row numbers in scripts)
 - `lium reboot <POD>` - Reboot a pod
 - `lium audit [--pod POD] [--since 24h] [--key ID]` - Who did what to the account's pods, and when: every rent, reboot, edit and delete with the session or API key that requested it (add `--json` for machine-readable output)
 - `lium update <POD>` - Install Jupyter on a pod
-- `lium templates [SEARCH]` - List available Docker templates
+- `lium templates [SEARCH]` - List available Docker templates (add `--format json` for ids and image details)
 - `lium fund` - Fund account with TAO from Bittensor wallet
+- `lium topup create -a <USD> -c <COIN> -n <NETWORK>` - Top up with a stablecoin (`lium topup currencies` lists them)
+- `lium ssh-keys list|sync` - SSH public keys registered on the account
+
+`ls`, `ps`, `templates`, `balance` and `describe` all accept `--format json` (and `--json`) and print a JSON error envelope on stderr when the command fails, so the same flag works across commands in scripts.
 
 ### Volume Commands
 
@@ -248,9 +273,11 @@ Full reference with every flag and runnable examples: <https://docs.lium.io/deve
 ### Command Examples
 
 ```bash
-# Filter nodes by GPU type
-lium ls H100
-lium ls A100
+# Filter nodes
+lium ls --gpu H100
+lium ls --gpu H100 --count 8 --country US,NL --max-price 2.50
+lium ls --min-vram 80 --min-cuda 12.8 --tier secure
+lium ls --format json          # machine-readable
 
 # Create pod with node index
 lium up 1 --name my-pod --yes
@@ -316,7 +343,7 @@ lium scp my-pod /root/output.log ./downloads -d  # Download into ./downloads dir
 
 # Reboot pods
 lium reboot my-pod                           # Reboot a single pod
-lium reboot 1,2 --yes                        # Reboot pods 1 and 2 without confirmation
+lium reboot 1,2                              # Reboot pods 1 and 2 (no confirmation prompt)
 lium reboot all                              # Reboot all active pods
 lium reboot my-pod --volume-id <VOLUME_ID>   # Reboot with a specific volume ID
 
@@ -335,7 +362,7 @@ lium update my-pod
 
 # Manage volumes
 lium volumes list
-lium volumes new mydata --description "My dataset"
+lium volumes new mydata -d "My dataset"
 lium volumes rm <VOLUME_HUID>
 
 # Manage backups
@@ -402,6 +429,8 @@ You can also use environment variables:
 export LIUM_API_KEY=your-api-key-here
 ```
 
+`LIUM_API_KEY` takes precedence over the config file. To see which key a shell is using, run `lium whoami` (or `lium balance` / `lium config get api.api_key`): they print the key's fingerprint and source (`env:LIUM_API_KEY` or `config:~/.lium/config.ini [api] api_key`), and authentication errors name the same key.
+
 SSH host keys of pods are pinned on first use under `~/.lium/known_hosts/<pod-id>`
 (`lium ssh`, `lium up`, and the SDK's `exec`, `stream_exec`, `rsync`). `reboot`, `edit`,
 `switch_template` and `rm` drop the pin themselves (the container, and its key, are replaced).
@@ -413,9 +442,42 @@ legitimately re-provisioned. Fingerprints are `SHA256:…`, as `ssh-keygen -lf` 
 reported with its fingerprint). `lium ssh` runs OpenSSH with an argument list built from the
 pod's user, address and port; the API's connection string is never handed to a shell.
 
+### Scripts and agents (non-interactive use)
+
+The CLI never waits on a prompt it cannot show. When stdin is not a terminal, or
+`LIUM_NONINTERACTIVE=1` is set, a command that would have asked a question either
+takes its documented default or fails immediately (exit code 2) with a hint naming
+the flag to pass:
+
+```bash
+export LIUM_API_KEY=...            # no browser login is attempted without a terminal
+lium up --gpu H100 -y --no-ssh     # -y: rent without the confirmation prompt
+lium rm my-pod -y                  # -y on every destructive command
+lium fund -w default -a 1.5 -y     # values that would be prompted for must be passed as options
+```
+
+### Crash reporting (opt-in, off by default)
+
+The CLI never sends telemetry unless you turn it on:
+
+```bash
+lium config set telemetry.enabled true    # or: export LIUM_TELEMETRY=1
+lium config set telemetry.enabled false   # off again
+```
+
+When on, an *unexpected* error (a bug, shown as `Unexpected error: …`) is reported once with the
+exception, its stack trace, the command name (`lium up`), the CLI version, the Python version,
+the OS and the API host the CLI is configured for (`lium.io`, or your `LIUM_BASE_URL`). API errors,
+usage errors, arguments, option values and local variables are never sent; the exception message is
+sent with the values you passed on the command line (a pod name, a path), home-directory paths
+(macOS, Linux and Windows), e-mails and API keys cut out of it. Reports go to Lium's Sentry project;
+`LIUM_SENTRY_DSN` points them somewhere else (a self-hosted GlitchTip, for example) and
+`LIUM_SENTRY_DSN=` (empty) keeps them off even when enabled. A value that is not a DSN prints one
+warning on stderr and keeps reporting off; the command itself still runs.
+
 ## Requirements
 
-- Python 3.9+
+- Python 3.10+
 
 ## Development
 

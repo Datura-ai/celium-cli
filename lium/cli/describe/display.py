@@ -4,8 +4,8 @@ from datetime import datetime, timezone
 from typing import Optional
 from rich.table import Table
 
-from lium.sdk import PodInfo, pod_ssh_command
-from lium.cli.utils import console
+from lium.sdk import ExecutorInfo, PodInfo, pod_ssh_command
+from lium.cli.utils import console, pod_gpu_count
 # Reused rather than reimplemented: the same timestamp handling and cost rounding
 # `lium ps` already applies, so describe and ps never disagree on spend.
 from lium.cli.ps.display import _parse_timestamp, _spent_usd
@@ -57,11 +57,109 @@ def _ports_section(ports: dict) -> dict:
     }
 
 
-def build_manifest(pod: PodInfo) -> dict:
-    """Everything an agent needs to work on this pod, as one JSON document."""
+def event_view(event: Optional[dict]) -> Optional[dict]:
+    """One pod event (GET /pods/{id}/events, or last_event on the detail) with the keys that say
+    what happened: when, which status it went to, why, and the failure text if any."""
+    if not event:
+        return None
+    return {
+        "at": event.get("created_at"),
+        "type": event.get("sub_event_type") or event.get("event_type"),
+        "from_status": event.get("from_status"),
+        "to_status": event.get("to_status"),
+        "reason": event.get("reason"),
+        "detail": event.get("detail") or event.get("error"),
+    }
+
+
+def format_event(view: Optional[dict]) -> str:
+    """`DELETED (scheduled_termination) — ttl · 2026-09-05T23:36:32`; `—` when there is none."""
+    if not view:
+        return "—"
+    head = view["to_status"] or view["type"] or "event"
+    if view["reason"]:
+        head = f"{head} ({view['reason']})"
+    if view["detail"]:
+        head = f"{head} — {view['detail']}"
+    return f"{head} · {view['at']}" if view["at"] else head
+
+
+def disk_health_view(executor: Optional[ExecutorInfo], detail: Optional[dict]) -> Optional[dict]:
+    """The node's disk verdict (backend, DAH-2929) and the readings behind it (validator probe,
+    DAH-2928). None when the node's validator has not probed it."""
+    specs = (executor.specs if executor else None) or {}
+    health = specs.get("disk_health")
+    verdict = ((detail or {}).get("executor") or {}).get("disk_health_ok")
+    if not isinstance(health, dict) and verdict is None:
+        return None
+    health = health if isinstance(health, dict) else {}
+    return {
+        "ok": verdict,
+        "read_only_mounts": health.get("read_only_mounts") or [],
+        "write_probe": health.get("write_probe"),
+        "kernel_io_errors": health.get("kernel_io_errors"),
+        "kernel_io_error_lines": health.get("kernel_io_error_lines") or [],
+        "block_io_errors": health.get("block_io_errors") or {},
+        "nvme_states": health.get("nvme_states") or {},
+        "smart": health.get("smart"),
+    }
+
+
+def format_disk_health(view: Optional[dict]) -> str:
+    """`ok`, `unknown (not probed)`, or the readings that are wrong, one phrase each."""
+    if view is None:
+        return "unknown (not probed)"
+    problems = []
+    if view["read_only_mounts"]:
+        problems.append(f"read-only: {', '.join(view['read_only_mounts'])}")
+    if view["write_probe"] == "failed":
+        problems.append("write probe failed")
+    if view["kernel_io_errors"]:
+        problems.append(f"{view['kernel_io_errors']} kernel I/O errors")
+    if view["block_io_errors"]:
+        problems.append("block errors: " + ", ".join(f"{d}={n}" for d, n in view["block_io_errors"].items()))
+    if view["nvme_states"]:
+        problems.append("nvme: " + ", ".join(f"{d} {s}" for d, s in view["nvme_states"].items()))
+    if isinstance(view["smart"], dict):
+        failed = [d for d, verdict in view["smart"].items() if verdict != "PASSED"]
+        if failed:
+            problems.append("SMART: " + ", ".join(failed))
+    if problems:
+        return "PROBLEM — " + "; ".join(problems)
+    return "ok" if view["ok"] is not False else "PROBLEM (see --json)"
+
+
+def latest_lifecycle_event(events: list[dict]) -> Optional[dict]:
+    """The newest `pod-lifecycle` event — the one whose to_status and reason say what happened to the pod — or,
+    when the log has none, the last event of any kind. A normal delete ends with `pod-delete.success`, which
+    carries neither, so the headline would lose the cause if it took the last row."""
+    for event in reversed(events):
+        if event.get("event_type") == "pod-lifecycle" or str(event.get("sub_event_type") or "").startswith("pod-lifecycle"):
+            return event
+    return events[-1] if events else None
+
+
+def build_gone_manifest(pod_id: str, events: list[dict]) -> dict:
+    """What is left of a pod that is no longer listed: its id and the events the backend kept."""
+    views = [event_view(event) for event in events]
+    return {
+        "pod": {"id": pod_id, "huid": None, "name": next((e.get("pod_name") for e in reversed(events) if e.get("pod_name")), None),
+                "status": "GONE", "created_at": None, "uptime_hours": None},
+        "last_event": event_view(latest_lifecycle_event(events)),
+        "events": views,
+    }
+
+
+def build_manifest(pod: PodInfo, detail: Optional[dict] = None) -> dict:
+    """Everything an agent needs to work on this pod, as one JSON document.
+
+    ``detail`` is GET /pods/{id} when the caller fetched it: it carries the pod's last lifecycle
+    event and the node's disk verdict, which the listing does not.
+    """
     executor = pod.executor
     template = pod.template or {}
     price_per_hour = executor.price_per_hour if executor else None
+    detail = detail or {}
 
     return {
         "pod": {
@@ -74,7 +172,7 @@ def build_manifest(pod: PodInfo) -> dict:
         },
         "gpu": {
             "type": executor.gpu_type,
-            "count": executor.gpu_count,
+            "count": pod_gpu_count(pod),
             "model": executor.gpu_model or None,
             "driver_version": executor.driver_version or None,
             "max_cuda_version": executor.max_cuda_version,
@@ -106,6 +204,9 @@ def build_manifest(pod: PodInfo) -> dict:
             "spent_usd": _spent_usd(pod.created_at, price_per_hour),
             "removal_scheduled_at": pod.removal_scheduled_at,
         },
+        # why the pod is REBOOT_FAILED / BROKEN / DELETING, from the backend's lifecycle record
+        "last_event": event_view(detail.get("last_event")),
+        "node_disk": disk_health_view(executor, detail),
     }
 
 
@@ -165,4 +266,21 @@ def build_manifest_table(manifest: dict) -> Table:
     if billing["removal_scheduled_at"]:
         table.add_row("Removal at", billing["removal_scheduled_at"])
 
+    if manifest.get("last_event"):
+        table.add_row("Last event", format_event(manifest["last_event"]))
+    if machine:
+        table.add_row("Node disk", format_disk_health(manifest.get("node_disk")))
+
+    return table
+
+
+def build_events_table(manifest: dict) -> Table:
+    """The event log of a pod that is no longer listed, oldest first."""
+    table = Table(show_header=True, header_style="dim", box=None, pad_edge=False, padding=(0, 1))
+    table.add_column("When", no_wrap=True)
+    table.add_column("Event", no_wrap=True)
+    table.add_column("What", overflow="fold")
+    for view in manifest["events"]:
+        what = format_event({**view, "at": None})
+        table.add_row(view["at"] or "—", view["type"] or "—", what)
     return table

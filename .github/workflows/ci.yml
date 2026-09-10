@@ -31,6 +31,8 @@ jobs:
         python-version: ["3.10", "3.12"]
     steps:
     - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0   # hatch-vcs: the version is git describe against the tags
 
     - uses: astral-sh/setup-uv@v5
       with:
@@ -89,6 +91,8 @@ jobs:
       contents: read
     steps:
     - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0   # hatch-vcs: the version is git describe against the tags
 
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -126,7 +130,7 @@ jobs:
         python-version: "3.12"
 
     - name: Install pytest
-      run: python -m pip install --upgrade pip pytest
+      run: python -m pip install --upgrade pip pytest pyyaml
 
     - name: Verify installer and workflow target coverage
       run: pytest test/test_release_binary_targets.py
@@ -146,13 +150,20 @@ jobs:
       contents: read
     steps:
     - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0   # hatch-vcs: the version is git describe against the tags
 
+    - uses: astral-sh/setup-uv@v6
+
+    # the build image has no git (Dockerfile.build): the version hatch-vcs derives from the tags here is handed in
     - name: Build Linux bundle in Docker
       run: |
+        version="$(uvx --from hatchling --with hatch-vcs hatchling version)"
+        echo "version $version"
         mkdir -p dist
         rm -rf dist/lium
         docker rm -f lium-extract >/dev/null 2>&1 || true
-        docker build --platform ${{ matrix.platform }} -f Dockerfile.build -t lium-build:${GITHUB_SHA}-${{ matrix.asset_name }} .
+        docker build --build-arg LIUM_VERSION="$version" --platform ${{ matrix.platform }} -f Dockerfile.build -t lium-build:${GITHUB_SHA}-${{ matrix.asset_name }} .
         docker create --name lium-extract lium-build:${GITHUB_SHA}-${{ matrix.asset_name }} true
         docker cp lium-extract:/app/dist/lium dist/lium
         docker rm -f lium-extract
@@ -198,6 +209,8 @@ jobs:
       contents: read
     steps:
     - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0   # hatch-vcs: the version is git describe against the tags
 
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -214,6 +227,13 @@ jobs:
           echo "Expected macOS runner architecture ${{ matrix.expected_machine }}, got $actual_machine" >&2
           exit 1
         fi
+        if [[ "$actual_machine" == "x86_64" ]]; then
+          # cryptography >= 49 ships no macOS Intel wheel, so uv builds it from source here. Link OpenSSL statically
+          # (openssl-sys reads OPENSSL_STATIC / OPENSSL_DIR) so the bundle carries no Homebrew libssl.3.dylib: with a dynamic
+          # link, PyInstaller kept python.org's older libssl.3.dylib under the same name and the binary died at import
+          # (`Symbol not found: _SSL_get0_group_name`, run 34155591936). arm64 installs the wheel, which is static already.
+          export OPENSSL_STATIC=1 OPENSSL_DIR="$(brew --prefix openssl@3)"
+        fi
         uv sync --frozen --extra dev --extra provider
         rm -rf dist/lium
         uv run pyinstaller lium.spec --clean
@@ -223,6 +243,17 @@ jobs:
       run: |
         ./dist/lium/lium --version
         ./dist/lium/lium --help >/dev/null
+        # cryptography must carry its OpenSSL inside _rust.abi3.so (static); a libssl/libcrypto dylib reference is the
+        # 0.0.37 Intel failure coming back.
+        so=dist/lium/_internal/cryptography/hazmat/bindings/_rust.abi3.so
+        test -f "$so"
+        deps="$(otool -L "$so")"
+        if grep -E 'libssl|libcrypto' <<<"$deps"; then
+          echo "cryptography links a shared OpenSSL; the bundle would ship a mismatched libssl.3.dylib" >&2
+          exit 1
+        fi
+        # the OpenSSL baked into cryptography (the wheel's on arm64, Homebrew openssl@3's on Intel), for the record
+        strings -a "$so" | grep -m1 -E '^OpenSSL [0-9]+\.[0-9]+\.[0-9]+' | tee -a "$GITHUB_STEP_SUMMARY"
 
     - name: Upload macOS artifact
       uses: actions/upload-artifact@v4
@@ -283,6 +314,8 @@ jobs:
       cancel-in-progress: false
     steps:
     - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0   # hatch-vcs: the version is git describe against the tags
     - uses: actions/setup-python@v5
       with:
         python-version: "3.12"

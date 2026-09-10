@@ -4,6 +4,8 @@ import subprocess
 import tarfile
 from pathlib import Path
 
+import yaml
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release.yml"
@@ -178,6 +180,20 @@ def test_release_workflow_publishes_only_the_onedir_bundle():
         # f"{base}.sha256" is not a substring of f"{base}.tar.gz.sha256", so this
         # genuinely asserts the bare checksum is no longer produced.
         assert f"{base}.sha256" not in workflow_text
+
+
+def test_release_workflow_builds_from_the_published_tag():
+    """A GitHub release is the version bump (DAH-3225): the workflow runs on the published release
+    and every checkout fetches the tags, as hatch-vcs derives the version from ``git describe``."""
+    workflow = yaml.safe_load(RELEASE_WORKFLOW.read_text(encoding="utf-8"))
+    triggers = workflow[True]  # PyYAML reads the bare ``on`` key as a boolean
+
+    assert triggers["release"] == {"types": ["published"]}
+    assert triggers["workflow_dispatch"] is None  # build-only fallback, no version input
+    for job_name, job in workflow["jobs"].items():
+        for step in job["steps"]:
+            if step.get("uses", "").startswith("actions/checkout@"):
+                assert step.get("with", {}).get("fetch-depth") == 0, job_name
 
 
 def test_install_script_fresh_install_uses_versioned_symlink_layout(tmp_path: Path):

@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "lium.io"
-version = "0.0.37"
+dynamic = ["version"]
 description = "A custom CLI tool for Lium. Lium CLI provides tools for interacting with the Lium ecosystem from the command line."
 readme = "README.md"
 requires-python = ">=3.10, <3.15"
@@ -35,6 +35,8 @@ dependencies = [
     "requests>=2.31.0",
     "loguru>=0.7.0",
     "python-dotenv>=1.1.1",
+    # opt-in crash reporting (lium/cli/telemetry.py); imported only after the user turns it on
+    "sentry-sdk>=2.0",
     # Provider subcommand dependencies (`lium provider ...` and ProviderClient SDK)
     "asyncssh>=2.14",
     "PyJWT~=2.8",
@@ -63,13 +65,13 @@ docs = ["sphinx>=7.3", "sphinx-rtd-theme>=1.3"]
 [project.scripts]
 lium = "lium.cli.cli:main"
 
-[tool.uv]
-# cryptography 49+ ships no macOS Intel (x86_64) wheel — 49.0.0–50.0.1 carry macosx_11_0_arm64 only, 48.0.1 has a
-# universal2 wheel — so the lium-darwin-amd64 binary build (ci.yml, macos-15-intel) breaks the moment the lock moves
-# past 48. Held here, not only as lock state, until the bundle ships its own OpenSSL (a follow-up of DAH-3186, the
-# Dependabot ticket this constraint belongs to; no release-tooling ticket exists yet);
-# .github/dependabot.yml ignores cryptography >= 49 for the same reason.
-constraint-dependencies = ["cryptography<49"]
+# The version is the git tag (vX.Y.Z): a GitHub release IS the version bump (DAH-3225).
+# hatch-vcs writes lium/_version.py at build time; __about__ re-exports it.
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "lium/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["lium"]
