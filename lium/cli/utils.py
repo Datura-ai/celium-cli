@@ -26,6 +26,7 @@ from lium.sdk import (
     LiumSessionError,
     PodInfo,
 )
+from . import telemetry
 from .themed_console import ThemedConsole
 from dataclasses import dataclass
 from rich.markup import escape
@@ -538,7 +539,13 @@ def handle_errors(func):
             code, exit_code = _classify_sdk_error(e)
             fail(code, str(e), exit_code, prefix="Error: ")
         except Exception as e:
-            fail("unexpected_error", str(e), EXIT_GENERAL_ERROR, prefix="Unexpected error: ")
+            # a bug, not a usage or API error: the only branch crash reporting sees (DAH-2057)
+            reported = telemetry.report(e)
+            hint = default_hint("unexpected_error", EXIT_GENERAL_ERROR)
+            if not reported and not json_output:
+                # the nudge is for a person; the JSON envelope keeps the generic next step
+                hint = f"{hint}\n{telemetry.OPT_IN_HINT}"
+            fail("unexpected_error", str(e), EXIT_GENERAL_ERROR, prefix="Unexpected error: ", hint=hint)
     return wrapper
 
 

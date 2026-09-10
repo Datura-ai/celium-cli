@@ -22,6 +22,12 @@ versioned binary under ``~/.lium/versions/<version>/lium``.
 Authentication requires an API key stored in ``~/.lium/config.ini`` or exported as
 ``LIUM_API_KEY``. The CLI (`lium init`) can bootstrap this for you.
 
+The CLI sends no telemetry unless you opt in with ``lium config set telemetry.enabled true``
+(or ``LIUM_TELEMETRY=1``); then an unexpected error is reported with the command name, the stack
+trace, the exception message with home paths, e-mails, API keys and the values you passed on the
+command line cut out, plus the CLI version, Python, OS and API host — never arguments, local
+variables or your account. See the README's "Crash reporting" section.
+
 Example
 -------
 

@@ -142,6 +142,20 @@ def test_pod_events_is_empty_against_a_backend_without_the_endpoint():
     assert client.pod_failure_cause("pod-1") is None
 
 
+def test_pod_events_quotes_the_pod_id_and_asks_once():
+    client = _Client([[]])
+    seen = {}
+
+    def _request(method, endpoint, **kwargs):
+        seen["request"] = (method, endpoint, kwargs.get("retry"))
+        return SimpleNamespace(json=lambda: [])
+
+    client._request = _request
+
+    assert client.pod_events("../admin?x=1") == []
+    assert seen["request"] == ("GET", "/pods/..%2Fadmin%3Fx%3D1/events", False)
+
+
 def test_pod_failure_cause_survives_an_api_error_on_the_failure_path():
     client = _Client([[]], events_error=LiumError("API error 500"))
 

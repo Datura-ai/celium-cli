@@ -43,6 +43,7 @@ from .workspaces import workspaces_command
 from .keys import keys_command
 from .plugins import load_plugins
 from .self_update import maybe_perform_startup_update
+from . import telemetry
 
 
 def get_version():
@@ -72,6 +73,9 @@ def cli(ctx, workspace):
     if workspace:
         # every command builds its own Lium(); Config.load reads the choice from here
         os.environ["LIUM_WORKSPACE"] = workspace
+
+    # opt-in crash reporting (LIUM_TELEMETRY=1 / telemetry.enabled) — a no-op for everyone else
+    telemetry.init(f"lium {ctx.invoked_subcommand}" if ctx.invoked_subcommand else None, get_version())
 
     if ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())
