@@ -18,7 +18,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 import jwt as pyjwt
 
@@ -207,7 +207,7 @@ def _detail(e: ProviderError) -> str:
 @dataclass(frozen=True)
 class NodeRecord:
     node_id: str | None
-    """None when the add succeeded but the list did not show the node within ~30 s: registered, not watchable here."""
+    """None when the add succeeded but the list did not show the node in 6 tries 5 s apart: registered, not watchable here."""
     already_registered: bool
 
 
@@ -252,12 +252,12 @@ def register_node(
             raise RegisterError(f"The portal refused the node: {detail}") from e
 
     if already:
-        node_id = find_node_id(http, miner_hotkey=miner_hotkey, ip_address=ip_address, port=port)
+        node_id = find_node_id_after_add(http, miner_hotkey=miner_hotkey, ip_address=ip_address, port=port)
         if node_id is None:
             # the portal's duplicate check is global (find_by_ip_and_port has no account filter)
             raise RegisterError(
-                f"A node at {ip_address}:{port} is already registered under another account. Remove it there "
-                "first, or contact support if that account is not yours."
+                f"A node at {ip_address}:{port} is already in the portal but not in this account's node list "
+                "(another account may hold it). Remove it there first, or contact support if that account is not yours."
             )
         return NodeRecord(node_id=node_id, already_registered=True)
     node_id = find_node_id_after_add(http, miner_hotkey=miner_hotkey, ip_address=ip_address, port=port)
@@ -343,7 +343,8 @@ def read_status(http: PortalHTTP, node_id: str) -> NodeStatus:
         parts: list[str] = []
         for key in ("title", "message", "remediation"):
             value = str(last_error.get(key) or "").strip()
-            if value and value not in parts:   # the portal sets title == message for validator errors
+            # the portal sets title == message for validator errors, and message == the status message for OFFLINE
+            if value and value not in parts and value != message:
                 parts.append(value)
         fix = " ".join(parts)
     return NodeStatus(status=status, message=message, fix=fix)
@@ -387,7 +388,11 @@ def wait_until_listed(
             offline_confirmed = offline_since is not None and now - offline_since >= OFFLINE_CONFIRM_S
             if current.listed or (current.needs_fix and (current.status != "OFFLINE" or offline_confirmed)):
                 return current
-        if clock() - start >= timeout_s:
+        elapsed = clock() - start
+        # an OFFLINE first read inside the last minute of the wait gets its minute: the deadline stretches by
+        # OFFLINE_CONFIRM_S at most, so a single stale reading is never reported as the fix
+        unconfirmed_offline = offline_since is not None and elapsed - (offline_since - start) < OFFLINE_CONFIRM_S
+        if elapsed >= timeout_s and not (unconfirmed_offline and elapsed < timeout_s + OFFLINE_CONFIRM_S):
             return last or NodeStatus(status="UNKNOWN", message="", fix="")
         sleep(interval_s)
 

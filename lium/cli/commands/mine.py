@@ -50,7 +50,8 @@ def _get_public_ip() -> str:
     ]
 
     for service in services:
-        out, _ = _run(f"curl -4 -s {service}")
+        # check=False: a service that is down (curl exit 6/7/28) is skipped, the next one is asked
+        out, _ = _run(f"curl -4 -s {service}", check=False)
         ip = out.strip()
         # Validate IPv4 format (strict check for valid octets)
         if re.match(r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$", ip):
@@ -744,8 +745,13 @@ def mine_command(ctx, hotkey, dir_, branch, auto, verbose, help_, register_token
 
     token: Optional[reg.RegisterToken] = None
     if not register_token:
-        given = [name for name, value in (("--portal-url", portal_url), ("--price", price), ("--gpu-type", gpu_type))
-                 if value is not None] + (["--wait"] if wait_minutes != 45 else [])
+        # typed on the command line only: LIUM_PORTAL_URL in the environment (the `lium provider` group's
+        # variable) must not turn a plain `lium mine` into a usage error
+        from click.core import ParameterSource
+
+        given = [flag for flag, param in (("--portal-url", "portal_url"), ("--price", "price"),
+                                          ("--gpu-type", "gpu_type"), ("--wait", "wait_minutes"))
+                 if ctx.get_parameter_source(param) == ParameterSource.COMMANDLINE]
         if given:
             raise click.UsageError(f"{', '.join(given)}: only with --register TOKEN.")
     if register_token:
@@ -912,11 +918,7 @@ def _register_and_wait(
             inventory = reg.read_gpu_inventory(_run)
             gpu_type = gpu_type_override or inventory.gpu_type
             port = reg.executor_port(executor_dir)
-            try:
-                public_ip = _get_public_ip()
-            except RuntimeError:   # every IP service refused the connection: same answer as "Unable to determine"
-                public_ip = ""
-            ip = reg.public_ipv4_or_fail(public_ip)
+            ip = reg.public_ipv4_or_fail(_get_public_ip())
             price_per_gpu = reg.resolve_price(gpu_type, price)
             record = reg.register_node(
                 http,

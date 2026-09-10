@@ -214,7 +214,7 @@ def test_register_node_names_a_duplicate_held_by_another_account() -> None:
     portal = _Portal()
     portal.on("POST", "/executors", _Resp(400, {"detail": "Node already exists with the same ip and port."}))
     portal.on("GET", "/executors", _Resp(200, {"data": []}))
-    with pytest.raises(reg.RegisterError, match="already registered under another account"):
+    with pytest.raises(reg.RegisterError, match="not in this account's node list"):
         reg.register_node(_http(portal), miner_hotkey=HOTKEY, gpu_type="NVIDIA L4", gpu_count=1,
                           ip_address="203.0.113.7", port=8080, price_per_gpu=0.11)
 
@@ -307,7 +307,29 @@ def test_wait_until_listed_ignores_a_first_offline_reading_but_confirms_a_lastin
                            on_change=lambda s, t: seen.append(reg.status_line(s, t)))
     assert final.needs_fix and final.status == "OFFLINE"
     assert len(lasting.calls) == 5   # 0, 15, 30, 45, 60 s: confirmed at OFFLINE_CONFIRM_S
-    assert seen == ["[00:00] OFFLINE — Node not responding to ping. · Offline Node not responding to ping."]
+    # the pinger's last_error repeats the status message; only the title is added
+    assert seen == ["[00:00] OFFLINE — Node not responding to ping. · Offline"]
+
+
+def test_wait_until_listed_keeps_offline_since_across_a_failed_read_and_gives_a_late_offline_its_minute() -> None:
+    portal = _Portal()
+    portal.on("GET", "/executors/node-1", _status("OFFLINE", "Node not responding to ping."),
+              _Resp(502, "bad gateway"), _status("OFFLINE", "Node not responding to ping."))
+    final = _wait_no_sleep(_http(portal), "node-1", timeout_s=3600, interval_s=15)
+    assert final.needs_fix and len(portal.calls) == 5   # 0, 15 (failed), 30, 45, 60 s
+    # OFFLINE read for the first time 15 s before the deadline: the wait stretches up to a minute and,
+    # when the reading turns back to pending, ends there with exit 2 — never a single-reading fix
+    late = _Portal()
+    late.on("GET", "/executors/node-1", _status("VALIDATION_PENDING", "Waiting"), _status("VALIDATION_PENDING", "Waiting"),
+            _status("VALIDATION_PENDING", "Waiting"), _status("OFFLINE", "Node not responding to ping."),
+            _status("VALIDATION_PENDING", "Waiting"))
+    final = _wait_no_sleep(_http(late), "node-1", timeout_s=60, interval_s=15)
+    assert final.status == "VALIDATION_PENDING" and reg.result_summary(final, node_url="u", waited_s=75)[1] == 2
+    stays = _Portal()
+    stays.on("GET", "/executors/node-1", _status("VALIDATION_PENDING", "Waiting"), _status("VALIDATION_PENDING", "Waiting"),
+             _status("VALIDATION_PENDING", "Waiting"), _status("OFFLINE", "Node not responding to ping."))
+    final = _wait_no_sleep(_http(stays), "node-1", timeout_s=60, interval_s=15)
+    assert final.status == "OFFLINE" and len(stays.calls) == 8   # confirmed at 45 + 60 s, 15 s past the deadline
 
 
 def test_wait_until_listed_prints_the_portal_remedy_on_a_pending_node() -> None:
@@ -320,11 +342,11 @@ def test_wait_until_listed_prints_the_portal_remedy_on_a_pending_node() -> None:
               _status("AVAILABLE"))
     seen: list[str] = []
     _wait_no_sleep(_http(portal), "node-1", timeout_s=3600, on_change=lambda s, t: seen.append(reg.status_line(s, t)))
-    # title == message is printed once; the remediation follows
-    assert seen[0] == "[00:00] VALIDATION_PENDING — Miner not answering · Miner not answering Turn the switch ON in Settings."
-    pending = reg.NodeStatus("VALIDATION_PENDING", "Miner not answering", "Miner not answering Turn the switch ON in Settings.")
+    # title == message == the status message: printed once, the remediation follows
+    assert seen[0] == "[00:00] VALIDATION_PENDING — Miner not answering · Turn the switch ON in Settings."
+    pending = reg.NodeStatus("VALIDATION_PENDING", "Miner not answering", "Turn the switch ON in Settings.")
     message, code = reg.result_summary(pending, node_url="u", waited_s=2700)
-    assert code == 2 and message.endswith("Last note from the portal: Miner not answering Turn the switch ON in Settings.")
+    assert code == 2 and message.endswith("Last note from the portal: Turn the switch ON in Settings.")
 
 
 def test_result_summary_names_an_unreadable_status_and_a_non_validation_status() -> None:
@@ -352,7 +374,8 @@ def test_read_status_prints_the_portal_error_text_once_when_title_equals_message
     portal.on("GET", "/executors/node-1", _status("VALIDATION_FAILED", "GPU count mismatch", {
         "title": "GPU count mismatch", "message": "GPU count mismatch", "source": "Validator",
         "remediation": "Fix the GPU count in the portal."}))
-    assert reg.read_status(_http(portal), "node-1").fix == "GPU count mismatch Fix the GPU count in the portal."
+    # the status message already says "GPU count mismatch"; the fix text carries only what is new
+    assert reg.read_status(_http(portal), "node-1").fix == "Fix the GPU count in the portal."
 
 
 def test_wait_until_listed_times_out_with_the_last_reading() -> None:
@@ -394,9 +417,14 @@ def test_mine_register_refuses_an_expired_token_before_touching_the_host(monkeyp
     assert "expired at" in result.output and calls == []
 
 
-def test_mine_register_only_options_are_refused_without_a_token() -> None:
+def test_mine_register_only_options_are_refused_without_a_token(monkeypatch) -> None:
     result = CliRunner().invoke(mine.mine_command, ["--price", "0.5", "--wait", "3"])
     assert result.exit_code == 2 and "--price, --wait: only with --register TOKEN." in result.output
+    # LIUM_PORTAL_URL in the environment (the `lium provider` group's variable) is not "given": plain `lium mine` runs
+    calls: list[str] = []
+    monkeypatch.setattr(mine, "_clone_or_update_repo", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("stop here")))
+    result = CliRunner().invoke(mine.mine_command, ["-k", HOTKEY, "--auto"], env={"LIUM_PORTAL_URL": "https://provider-api.example"})
+    assert "only with --register" not in result.output and "stop here" in result.output
 
 
 def test_mine_register_refuses_a_conflicting_hotkey(monkeypatch) -> None:
@@ -497,6 +525,43 @@ def test_mine_register_exit_one_on_a_named_fix_and_zero_with_wait_zero(monkeypat
     # --wait 0: registered, no waiting, exit 0
     result = CliRunner().invoke(mine.mine_command, args[:-2] + ["--wait", "0"])
     assert result.exit_code == 0 and "Waiting for the validator" not in result.output
+
+
+def test_mine_register_reports_the_add_and_exits_zero_when_the_list_lags(monkeypatch, tmp_path: Path) -> None:
+    target = tmp_path / "compute-subnet"
+    executor_dir = target / "neurons" / "executor"
+
+    def fake_clone(target_dir: Path, branch: str) -> None:
+        executor_dir.mkdir(parents=True, exist_ok=True)
+        (executor_dir / ".env.template").write_text("MINER_HOTKEY_SS58_ADDRESS=\nEXTERNAL_PORT=8080\nSSH_PORT=2200\n")
+
+    monkeypatch.setattr(mine, "_clone_or_update_repo", fake_clone)
+    for name in ("_install_executor_tools", "_check_prereqs", "_start_executor", "_validate_executor", "_check_ports_free"):
+        monkeypatch.setattr(mine, name, lambda *a, **k: None)
+
+    class _Pull:
+        def poll(self): return 0
+        def wait(self): return 0
+    monkeypatch.setattr(mine, "_start_preflight_pull", lambda: _Pull())
+    monkeypatch.setattr(mine, "_run", lambda cmd, **k: ("NVIDIA L4, 23034\n", ""))
+    monkeypatch.setattr(mine, "_get_public_ip", lambda: "203.0.113.7")
+    monkeypatch.setattr(reg, "fetch_shared_config", lambda: _Snapshot())
+    monkeypatch.setattr(reg, "FIND_NODE_RETRY_S", 0.0)
+    portal = _Portal()
+    portal.on("POST", "/executors", _Resp(200, {"success": True, "data": {"message": "queued"}}))
+    portal.on("GET", "/executors", _Resp(200, {"data": []}))
+    monkeypatch.setattr(reg, "build_http", lambda url, token: _http(portal))
+    result = CliRunner().invoke(mine.mine_command, ["--register", _token(exp=int(time.time()) + 3600), "--dir", str(target)])
+    assert result.exit_code == 0, result.output
+    flat = " ".join(result.output.split())   # the console soft-wraps at 80 columns
+    assert "Node added: 1×NVIDIA L4 (22 GB) at 203.0.113.7:8080, $0.11/GPU/h" in flat
+    assert "not in the node list yet" in flat and "https://provider.lium.io/nodes" in flat
+
+
+def test_get_public_ip_falls_through_a_service_that_is_down(monkeypatch) -> None:
+    answers = iter([("", "curl: (7) Failed to connect"), ("203.0.113.7\n", "")])
+    monkeypatch.setattr(mine, "_run", lambda cmd, **k: next(answers))
+    assert mine._get_public_ip() == "203.0.113.7"
 
 
 def test_mine_register_unknown_gpu_is_a_named_fix_and_nothing_is_posted(monkeypatch, tmp_path: Path) -> None:
