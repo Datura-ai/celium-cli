@@ -59,6 +59,12 @@ class RegisterError(Exception):
 class RegisterToken:
     token: str
     miner_hotkey: str
+    """The account the token was issued for: what ``GET /executors?miner_hotkey=`` lists the node under. For an
+    account created with e-mail or Google (lium-platform#294, ``custody='lium'``) this is an opaque account id."""
+    node_hotkey: str
+    """What the executor reports under — ``MINER_HOTKEY_SS58_ADDRESS`` in its ``.env``: the token's ``node_hotkey``
+    claim (the portal's key for an account without one of its own), else ``miner_hotkey`` for a portal that predates
+    the claim."""
     exp: int | None
     opt_in_status: bool | None
 
@@ -86,10 +92,20 @@ def parse_register_token(token: str, *, now: int | None = None) -> RegisterToken
     subject = claims.get("subject")
     if not isinstance(subject, dict):
         subject = claims
-    hotkey = subject.get("miner_hotkey")
-    if not isinstance(hotkey, str) or not _SS58.fullmatch(hotkey):
+    account = subject.get("miner_hotkey")
+    if not isinstance(account, str) or not account:
         raise RegisterError(
             "The register token names no account. Get a new one from the portal's Add Node page."
+        )
+    node_hotkey = subject.get("node_hotkey")
+    if not isinstance(node_hotkey, str) or not node_hotkey:
+        node_hotkey = account
+    # the executor refuses to start on anything but an SS58 value here; for an account with its own key the two
+    # are the same string, for a custodied account only node_hotkey is one — the account id is not checked
+    if not _SS58.fullmatch(node_hotkey):
+        raise RegisterError(
+            "The register token carries no usable node identity for this host's .env. Get a new one from the "
+            "portal's Add Node page."
         )
     exp = claims.get("exp")
     exp = int(exp) if isinstance(exp, (int, float)) else None
@@ -103,7 +119,8 @@ def parse_register_token(token: str, *, now: int | None = None) -> RegisterToken
     opt_in = subject.get("opt_in_status")
     return RegisterToken(
         token=token,
-        miner_hotkey=hotkey,
+        miner_hotkey=account,
+        node_hotkey=node_hotkey,
         exp=exp,
         opt_in_status=opt_in if isinstance(opt_in, bool) else None,
     )

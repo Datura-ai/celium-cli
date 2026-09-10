@@ -722,7 +722,9 @@ def mine_command(ctx, hotkey, dir_, branch, auto, verbose, help_, register_token
     ports are ours). The preflight image is pulled while the node starts; its checks are shown
     as they run. Exit 1 on any failed step, with the step and the reason.
 
-    With --register TOKEN (the command the portal's Add Node page shows) two steps follow: the node
+    With --register TOKEN (the command the portal's Add Node page shows) the account and the value the
+    node reports under come from the token (an account created with e-mail or Google has no key of its own;
+    the portal's is written to the executor's .env) and two steps follow: the node
     is added to your account with the GPU model and count nvidia-smi reports, this host's public
     IPv4 and the executor's port, at the model's base price from lium.io's public shared-config; then the node's
     status is polled every 15 s until it is listed (exit 0), the portal names something to fix
@@ -763,10 +765,14 @@ def mine_command(ctx, hotkey, dir_, branch, auto, verbose, help_, register_token
 
             console.error(f"❌ {escape(str(e))}")
             raise SystemExit(1)
-        if hotkey and hotkey != token.miner_hotkey:
-            console.error("❌ --hotkey names a different account than the register token; drop -k, the token decides.")
+        if hotkey and hotkey != token.node_hotkey:
+            console.error(
+                "❌ --hotkey differs from what the register token says this node reports under; drop -k, the token decides."
+            )
             raise SystemExit(1)
-        hotkey = token.miner_hotkey
+        # what the executor reports under: the account's own key, or the portal's for an account without one
+        # (lium-platform#294) — the SS58 check in _setup_executor_env applies to this value, not to the account id
+        hotkey = token.node_hotkey
         auto = True
         left = token.seconds_left()
         if left is not None and left < 15 * 60:

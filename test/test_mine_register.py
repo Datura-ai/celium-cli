@@ -19,14 +19,22 @@ from lium.cli.commands import mine_register as reg
 from lium.provider.portal_http import PortalHTTP
 
 HOTKEY = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY"
+POOL_HOTKEY = "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty"
+"""What a custodied account's nodes report under (lium-platform#294 ``LIUM_POOL_HOTKEYS[0]``)."""
+ACCOUNT_ID = "acct_7f3c2a"
+"""A custodied account's ``miner_hotkey``: an opaque id, not an SS58 value."""
 NOW = 1_800_000_000
 
 
-def _token(exp: int | None = NOW + 3600, hotkey: str | None = HOTKEY, opt_in: bool | None = True, **extra) -> str:
-    # the portal's fastapi_jwt layout (lium-platform#291): the miner's to_json() plus "scope" under "subject", exp on top
+def _token(exp: int | None = NOW + 3600, hotkey: str | None = HOTKEY, opt_in: bool | None = True,
+           node_hotkey: str | None = None, **extra) -> str:
+    # the portal's fastapi_jwt layout (lium-platform#291): the miner's to_json() plus "scope" under "subject", exp on top;
+    # lium-platform#294 adds "node_hotkey" = the miner's listing_hotkey (its own key, or the pool's when custodied)
     subject = {"id": "acct-1", "opt_in_status": opt_in, "scope": "node:register"}
     if hotkey is not None:
         subject["miner_hotkey"] = hotkey
+    if node_hotkey is not None:
+        subject["node_hotkey"] = node_hotkey
     claims = {"subject": subject, "type": "access", **extra}
     if exp is not None:
         claims["exp"] = exp
@@ -53,6 +61,9 @@ def test_parse_register_token_refuses_garbage_and_a_token_without_an_account() -
     with pytest.raises(reg.RegisterError, match="names no account"):
         reg.parse_register_token(_token(hotkey=None), now=NOW)
     with pytest.raises(reg.RegisterError, match="names no account"):
+        reg.parse_register_token(_token(hotkey=""), now=NOW)
+    # an own-key token whose account value is not SS58: nothing usable for the executor's .env
+    with pytest.raises(reg.RegisterError, match="no usable node identity"):
         reg.parse_register_token(_token(hotkey="0xnot-ss58"), now=NOW)
 
 
@@ -60,6 +71,24 @@ def test_parse_register_token_accepts_flat_claims_and_no_expiry() -> None:
     flat = pyjwt.encode({"miner_hotkey": HOTKEY}, "k" * 32, algorithm="HS256")
     t = reg.parse_register_token(flat, now=NOW)
     assert t.miner_hotkey == HOTKEY and t.exp is None and t.seconds_left() is None and t.opt_in_status is None
+
+
+def test_parse_register_token_node_identity_is_the_account_key_unless_the_token_names_another() -> None:
+    """lium-platform#294: ``node_hotkey`` is what the executor reports under. An own-key token (with or without
+    the claim) keeps the account's key; a custodied token pairs an opaque account id with the pool's key."""
+    own_without_claim = reg.parse_register_token(_token(), now=NOW)
+    own_with_claim = reg.parse_register_token(_token(node_hotkey=HOTKEY), now=NOW)
+    assert (own_without_claim.miner_hotkey, own_without_claim.node_hotkey) == (HOTKEY, HOTKEY)
+    assert (own_with_claim.miner_hotkey, own_with_claim.node_hotkey) == (HOTKEY, HOTKEY)
+    custodied = reg.parse_register_token(_token(hotkey=ACCOUNT_ID, node_hotkey=POOL_HOTKEY), now=NOW)
+    assert (custodied.miner_hotkey, custodied.node_hotkey) == (ACCOUNT_ID, POOL_HOTKEY)
+
+
+def test_parse_register_token_refuses_a_custodied_token_without_a_usable_node_identity() -> None:
+    """Negative control: an opaque account id with no ``node_hotkey`` (or a non-SS58 one) cannot fill the .env."""
+    for claim in (None, "", "0xnot-ss58"):
+        with pytest.raises(reg.RegisterError, match="no usable node identity"):
+            reg.parse_register_token(_token(hotkey=ACCOUNT_ID, node_hotkey=claim), now=NOW)
 
 
 # --- host facts ------------------------------------------------------------------------------------------------------
@@ -430,6 +459,38 @@ def test_opt_in_fix_only_when_the_token_says_the_account_is_not_connected() -> N
 # --- the command -----------------------------------------------------------------------------------------------------
 
 
+_TEMPLATE = "MINER_HOTKEY_SS58_ADDRESS=\nINTERNAL_PORT=8080\nEXTERNAL_PORT=8080\nSSH_PORT=2200\nSSH_PUBLIC_PORT=2200\n"
+
+
+def _stub_host(monkeypatch, tmp_path: Path, *, nvidia_smi: str = "NVIDIA L4, 23034\n") -> tuple[Path, Path]:
+    """Steps 1–6 with every host action stubbed: the clone drops an executor ``.env.template``, install/prereqs/start/
+    validate/port checks are no-ops, ``nvidia-smi`` answers ``nvidia_smi``, the public IP is TEST-NET. Returns
+    ``(target, executor_dir)``; the portal is the caller's."""
+    target = tmp_path / "compute-subnet"
+    executor_dir = target / "neurons" / "executor"
+
+    def fake_clone(target_dir: Path, branch: str) -> None:
+        executor_dir.mkdir(parents=True, exist_ok=True)
+        (executor_dir / ".env.template").write_text(_TEMPLATE)
+
+    monkeypatch.setattr(mine, "_clone_or_update_repo", fake_clone)
+    for name in ("_install_executor_tools", "_check_prereqs", "_start_executor", "_validate_executor", "_check_ports_free"):
+        monkeypatch.setattr(mine, name, lambda *a, **k: None)
+
+    class _Pull:
+        def poll(self): return 0
+        def wait(self): return 0
+    monkeypatch.setattr(mine, "_start_preflight_pull", lambda: _Pull())
+    monkeypatch.setattr(mine, "_run", lambda cmd, **k: (nvidia_smi, "") if "nvidia-smi" in cmd else ("", ""))
+    monkeypatch.setattr(mine, "_get_public_ip", lambda: "203.0.113.7")
+    monkeypatch.setattr(reg, "fetch_shared_config", _Snapshot)
+    return target, executor_dir
+
+
+def _rendered_env(executor_dir: Path) -> dict[str, str]:
+    return dict(l.split("=", 1) for l in (executor_dir / ".env").read_text().splitlines() if "=" in l)
+
+
 def test_mine_register_refuses_an_expired_token_before_touching_the_host(monkeypatch) -> None:
     calls: list[str] = []
     monkeypatch.setattr(mine, "_clone_or_update_repo", lambda *a, **k: calls.append("clone"))
@@ -449,34 +510,21 @@ def test_mine_register_only_options_are_refused_without_a_token(monkeypatch) -> 
 
 
 def test_mine_register_refuses_a_conflicting_hotkey(monkeypatch) -> None:
-    result = CliRunner().invoke(mine.mine_command, ["--register", _token(exp=int(time.time()) + 3600),
-                                                    "-k", "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty"])
-    assert result.exit_code == 1 and "different account" in result.output
+    result = CliRunner().invoke(mine.mine_command, ["--register", _token(exp=int(time.time()) + 3600), "-k", POOL_HOTKEY])
+    assert result.exit_code == 1 and "differs from what the register token says" in result.output
+    # -k equal to what the node reports under is not a conflict: the portal's key on a custodied token (the Overview's
+    # install command carries it), the account's own key on an own-key token — the install starts in both cases
+    monkeypatch.setattr(mine, "_clone_or_update_repo", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("stop here")))
+    for token, given in ((_token(exp=int(time.time()) + 3600, hotkey=ACCOUNT_ID, node_hotkey=POOL_HOTKEY), POOL_HOTKEY),
+                         (_token(exp=int(time.time()) + 3600), HOTKEY)):
+        result = CliRunner().invoke(mine.mine_command, ["--register", token, "-k", given])
+        assert "differs from what the register token says" not in result.output and "stop here" in result.output
 
 
 def test_mine_register_runs_the_install_then_registers_and_waits(monkeypatch, tmp_path: Path) -> None:
     """End to end through the command with every host action stubbed: the token's account lands in .env,
     --auto is implied, the node is posted from nvidia-smi + .env + public IP, and the wait ends listed."""
-    target = tmp_path / "compute-subnet"
-    executor_dir = target / "neurons" / "executor"
-
-    def fake_clone(target_dir: Path, branch: str) -> None:
-        executor_dir.mkdir(parents=True, exist_ok=True)
-        (executor_dir / ".env.template").write_text(
-            "MINER_HOTKEY_SS58_ADDRESS=\nINTERNAL_PORT=8080\nEXTERNAL_PORT=8080\nSSH_PORT=2200\nSSH_PUBLIC_PORT=2200\n")
-
-    monkeypatch.setattr(mine, "_clone_or_update_repo", fake_clone)
-    for name in ("_install_executor_tools", "_check_prereqs", "_start_executor", "_validate_executor",
-                 "_check_ports_free"):
-        monkeypatch.setattr(mine, name, lambda *a, **k: None)
-
-    class _Pull:
-        def poll(self): return 0
-        def wait(self): return 0
-    monkeypatch.setattr(mine, "_start_preflight_pull", lambda: _Pull())
-    monkeypatch.setattr(mine, "_run", lambda cmd, **k: ("NVIDIA L4, 23034\n", "") if "nvidia-smi" in cmd else ("", ""))
-    monkeypatch.setattr(mine, "_get_public_ip", lambda: "203.0.113.7")
-    monkeypatch.setattr(reg, "fetch_shared_config", _Snapshot)
+    target, executor_dir = _stub_host(monkeypatch, tmp_path)
 
     portal = _Portal()
     portal.on("POST", "/executors", _Resp(200, {"success": True, "data": {"message": "queued"}}))
@@ -492,14 +540,42 @@ def test_mine_register_runs_the_install_then_registers_and_waits(monkeypatch, tm
          "--portal-url", "https://provider-api.example", "--wait", "5"],
     )
     assert result.exit_code == 0, result.output
-    env = dict(l.split("=", 1) for l in (executor_dir / ".env").read_text().splitlines() if "=" in l)
+    env = _rendered_env(executor_dir)
     assert env["MINER_HOTKEY_SS58_ADDRESS"] == HOTKEY and env["SSH_PUBLIC_PORT"] == env["SSH_PORT"]
     post = next(c for c in portal.calls if c["method"] == "POST")
     assert post["json"] == {"gpu_type": "NVIDIA L4", "ip_address": "203.0.113.7", "port": 8080,
                             "price_per_gpu": 0.11, "gpu_count": 1}
+    listing = next(c for c in portal.calls if c["method"] == "GET" and c["url"].endswith("/executors"))
+    assert listing["params"]["miner_hotkey"] == HOTKEY
     assert "Node added: 1×NVIDIA L4 (22 GB) at 203.0.113.7:8080, $0.11/GPU/h" in result.output
     assert "https://provider.example/nodes/node-1" in result.output
     assert "VALIDATION_PENDING" in result.output and "Node listed (AVAILABLE)" in result.output
+
+
+def test_mine_register_custodied_token_writes_the_pool_key_to_env_and_lists_under_the_account(monkeypatch, tmp_path: Path) -> None:
+    """lium-platform#294: an account created with e-mail or Google has an opaque id as ``miner_hotkey`` and the pool's
+    key as ``node_hotkey``. The .env gets the pool's key (the executor's SS58 check passes), the node is looked up
+    under the account id, and nothing about the id is validated as SS58."""
+    target, executor_dir = _stub_host(monkeypatch, tmp_path)
+
+    portal = _Portal()
+    portal.on("POST", "/executors", _Resp(200, {"success": True, "data": {"message": "queued"}}))
+    portal.on("GET", "/executors", _listing())
+    portal.on("GET", "/executors/node-1", _status("AVAILABLE"))
+    monkeypatch.setattr(reg, "build_http", lambda url, token: _http(portal))
+    monkeypatch.setattr(reg, "wait_until_listed", _wait_no_sleep)
+
+    result = CliRunner().invoke(
+        mine.mine_command,
+        ["--register", _token(exp=int(time.time()) + 3600, hotkey=ACCOUNT_ID, node_hotkey=POOL_HOTKEY),
+         "--dir", str(target), "--wait", "5"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Invalid hotkey format" not in result.output and "no usable node identity" not in result.output
+    assert _rendered_env(executor_dir)["MINER_HOTKEY_SS58_ADDRESS"] == POOL_HOTKEY
+    listing = next(c for c in portal.calls if c["method"] == "GET" and c["url"].endswith("/executors"))
+    assert listing["params"]["miner_hotkey"] == ACCOUNT_ID
+    assert "Node listed (AVAILABLE)" in result.output
 
 
 def _wait_no_sleep(http, node_id, **kw):
@@ -514,24 +590,7 @@ _orig_wait = reg.wait_until_listed
 
 
 def test_mine_register_exit_one_on_a_named_fix_and_zero_with_wait_zero(monkeypatch, tmp_path: Path) -> None:
-    target = tmp_path / "compute-subnet"
-    executor_dir = target / "neurons" / "executor"
-
-    def fake_clone(target_dir: Path, branch: str) -> None:
-        executor_dir.mkdir(parents=True, exist_ok=True)
-        (executor_dir / ".env.template").write_text("MINER_HOTKEY_SS58_ADDRESS=\nEXTERNAL_PORT=8080\nSSH_PORT=2200\n")
-
-    monkeypatch.setattr(mine, "_clone_or_update_repo", fake_clone)
-    for name in ("_install_executor_tools", "_check_prereqs", "_start_executor", "_validate_executor", "_check_ports_free"):
-        monkeypatch.setattr(mine, name, lambda *a, **k: None)
-
-    class _Pull:
-        def poll(self): return 0
-        def wait(self): return 0
-    monkeypatch.setattr(mine, "_start_preflight_pull", lambda: _Pull())
-    monkeypatch.setattr(mine, "_run", lambda cmd, **k: ("NVIDIA L4, 23034\n", ""))
-    monkeypatch.setattr(mine, "_get_public_ip", lambda: "203.0.113.7")
-    monkeypatch.setattr(reg, "fetch_shared_config", _Snapshot)
+    target, _ = _stub_host(monkeypatch, tmp_path)
     monkeypatch.setattr(reg, "wait_until_listed", _wait_no_sleep)
 
     portal = _Portal()
@@ -550,24 +609,7 @@ def test_mine_register_exit_one_on_a_named_fix_and_zero_with_wait_zero(monkeypat
 
 def test_mine_register_reports_the_add_and_exits_two_when_the_list_lags(monkeypatch, tmp_path: Path) -> None:
     """Registered but not listed is exit 2 (docs/exit-codes.md), even when the list lagged before any wait."""
-    target = tmp_path / "compute-subnet"
-    executor_dir = target / "neurons" / "executor"
-
-    def fake_clone(target_dir: Path, branch: str) -> None:
-        executor_dir.mkdir(parents=True, exist_ok=True)
-        (executor_dir / ".env.template").write_text("MINER_HOTKEY_SS58_ADDRESS=\nEXTERNAL_PORT=8080\nSSH_PORT=2200\n")
-
-    monkeypatch.setattr(mine, "_clone_or_update_repo", fake_clone)
-    for name in ("_install_executor_tools", "_check_prereqs", "_start_executor", "_validate_executor", "_check_ports_free"):
-        monkeypatch.setattr(mine, name, lambda *a, **k: None)
-
-    class _Pull:
-        def poll(self): return 0
-        def wait(self): return 0
-    monkeypatch.setattr(mine, "_start_preflight_pull", lambda: _Pull())
-    monkeypatch.setattr(mine, "_run", lambda cmd, **k: ("NVIDIA L4, 23034\n", ""))
-    monkeypatch.setattr(mine, "_get_public_ip", lambda: "203.0.113.7")
-    monkeypatch.setattr(reg, "fetch_shared_config", _Snapshot)
+    target, _ = _stub_host(monkeypatch, tmp_path)
     monkeypatch.setattr(reg, "FIND_NODE_RETRY_S", 0.0)
     portal = _Portal()
     portal.on("POST", "/executors", _Resp(200, {"success": True, "data": {"message": "queued"}}))
@@ -595,24 +637,7 @@ def test_get_public_ip_falls_through_a_service_that_is_down(monkeypatch) -> None
 
 
 def test_mine_register_unknown_gpu_is_a_named_fix_and_nothing_is_posted(monkeypatch, tmp_path: Path) -> None:
-    target = tmp_path / "compute-subnet"
-    executor_dir = target / "neurons" / "executor"
-
-    def fake_clone(target_dir: Path, branch: str) -> None:
-        executor_dir.mkdir(parents=True, exist_ok=True)
-        (executor_dir / ".env.template").write_text("MINER_HOTKEY_SS58_ADDRESS=\nEXTERNAL_PORT=8080\nSSH_PORT=2200\n")
-
-    monkeypatch.setattr(mine, "_clone_or_update_repo", fake_clone)
-    for name in ("_install_executor_tools", "_check_prereqs", "_start_executor", "_validate_executor", "_check_ports_free"):
-        monkeypatch.setattr(mine, name, lambda *a, **k: None)
-
-    class _Pull:
-        def poll(self): return 0
-        def wait(self): return 0
-    monkeypatch.setattr(mine, "_start_preflight_pull", lambda: _Pull())
-    monkeypatch.setattr(mine, "_run", lambda cmd, **k: ("NVIDIA A10G, 23028\n", ""))
-    monkeypatch.setattr(mine, "_get_public_ip", lambda: "203.0.113.7")
-    monkeypatch.setattr(reg, "fetch_shared_config", _Snapshot)
+    target, _ = _stub_host(monkeypatch, tmp_path, nvidia_smi="NVIDIA A10G, 23028\n")
     portal = _Portal()
     monkeypatch.setattr(reg, "build_http", lambda url, token: _http(portal))
     result = CliRunner().invoke(mine.mine_command, ["--register", _token(exp=int(time.time()) + 3600), "--dir", str(target)])
