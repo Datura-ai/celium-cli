@@ -759,7 +759,9 @@ def mine_command(ctx, hotkey, dir_, branch, auto, verbose, help_, register_token
         try:
             token = reg.parse_register_token(register_token)
         except reg.RegisterError as e:
-            console.error(f"❌ {e}")
+            from rich.markup import escape
+
+            console.error(f"❌ {escape(str(e))}")
             raise SystemExit(1)
         if hotkey and hotkey != token.miner_hotkey:
             console.error("❌ --hotkey names a different account than the register token; drop -k, the token decides.")
@@ -935,29 +937,29 @@ def _register_and_wait(
 
     if record.node_id is None:
         # the add went through; the list did not show it within ~30 s — nothing to poll, nothing failed
-        console.success(
+        console.success(escape(
             f"\n✨ Node added: {inventory.gpu_count}×{gpu_type} ({inventory.vram_gb} GB) at {ip}:{port}, "
             f"${price_per_gpu:g}/GPU/h — it is not in the node list yet; the page shows it when it is: {node_url}"
-        )
+        ))
         return 0
 
     node_url = f"{node_url}/{record.node_id}"
     if record.already_registered:
         # the portal's record, not this run's values, is what stands: name only the address
-        console.success(f"\n✨ Node already in the portal at {ip}:{port}")
+        console.success(escape(f"\n✨ Node already in the portal at {ip}:{port}"))
     else:
-        console.success(
+        console.success(escape(
             f"\n✨ Node added: {inventory.gpu_count}×{gpu_type} ({inventory.vram_gb} GB) at {ip}:{port}, "
             f"${price_per_gpu:g}/GPU/h"
-        )
-    console.print(f"[yellow]{node_url}[/yellow]")
+        ))
+    console.print(f"[yellow]{escape(node_url)}[/yellow]")
     fix = reg.opt_in_fix(token, portal_url)
     if fix:
-        console.warning(fix)
+        console.warning(escape(fix))
     if wait_minutes == 0:
         return 0
 
-    console.print(f"\n● [8/{total_steps}] Waiting for the validator (up to {wait_minutes} min; Ctrl-C leaves the node registered)")
+    console.print(escape(f"\n● [8/{total_steps}] Waiting for the validator (up to {wait_minutes} min; Ctrl-C leaves the node registered)"))
     started = time.monotonic()
     try:
         final = reg.wait_until_listed(
@@ -967,7 +969,7 @@ def _register_and_wait(
             on_change=lambda s, t: console.print(escape(reg.status_line(s, t))),
         )
     except KeyboardInterrupt:
-        console.print(f"\nStopped watching; the node stays registered: {node_url}")
+        console.print(escape(f"\nStopped watching; the node stays registered: {node_url}"))
         return 2
     message, code = reg.result_summary(final, node_url=node_url, waited_s=time.monotonic() - started)
     if code == 0:
