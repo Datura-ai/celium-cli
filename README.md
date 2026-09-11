@@ -168,7 +168,7 @@ The `lium` CLI exposes the full pod lifecycle. Run `lium --help` to see everythi
 - `lium audit [--pod POD] [--since 24h] [--key ID]` - Who did what to the account's pods, and when: every rent, reboot, edit and delete with the session or API key that requested it (add `--json` for machine-readable output)
 - `lium audit --account [--action pod.] [--source cli] [--since 7d] [--cursor <next_cursor>]` - The account audit log: every request that changed something (pods, keys, logins, balance, settings, team members) with the client and IP it came from; your own IPs only, 90 days (`--json` prints the page with `next_cursor`)
 - `lium update <POD>` - Install Jupyter on a pod
-- `lium templates [SEARCH]` - List available Docker templates (add `--format json` for ids and image details)
+- `lium templates [SEARCH] [--arch hopper|blackwell] [--format json]` - List Docker templates with the CUDA build and the GPU generations it runs on
 - `lium fund` - Fund account with TAO from Bittensor wallet
 - `lium topup create -a <USD> -c <COIN> -n <NETWORK>` - Top up with a stablecoin (`lium topup currencies` lists them)
 - `lium ssh-keys list|sync` - SSH public keys registered on the account
