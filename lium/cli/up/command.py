@@ -195,7 +195,8 @@ def up_command(
     """\b
     Create a new GPU pod on a node.
     \b
-    NODE_ID: Node UUID, HUID, or index from last 'lium ls'.
+    NODE_ID: Node UUID, HUID, or a row number of the last 'lium ls' in this shell
+    (within 10 minutes; a listing another shell wrote is refused — use the huid in scripts).
     If not provided, the filters pick the node and the pick is printed before renting.
     With --gpu the backend chooses: the cheapest $/GPU·h node matching the filters
     (one GPU unless -c) with ≥ 100 Mbps ingress, rented in the same call; a pick taken
