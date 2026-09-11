@@ -61,6 +61,8 @@ def _run_up(monkeypatch, args=(), *, wait="ready", rent_error=None, schedule_err
     )
 
     class _Lium:
+        workspaces = SimpleNamespace(current=lambda: None)   # a server without workspaces: no context line
+
         def get_deployment_estimate(self, *a, **k):
             return {}
 

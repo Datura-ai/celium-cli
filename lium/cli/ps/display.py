@@ -95,7 +95,7 @@ def compact_pod(pod: PodInfo, index: Optional[int] = None) -> dict:
     refers to — and is only meaningful for the full, unfiltered list.
     """
     executor = pod.executor
-    return {
+    view = {
         "index": index,
         "id": pod.id,
         "huid": pod.huid,
@@ -116,6 +116,11 @@ def compact_pod(pod: PodInfo, index: Optional[int] = None) -> dict:
         "removal_scheduled_at": pod.removal_scheduled_at,
         "jupyter_url": pod.jupyter_url,
     }
+    workspace_id = getattr(pod, "workspace_id", None)  # a pod-shaped stub without the field is a pod outside any workspace
+    if workspace_id is not None:
+        # only when the server has workspaces: a server without them keeps today's JSON exactly
+        view["workspace_id"] = workspace_id
+    return view
 
 
 def _spent_usd(created_at: str, price_per_hour: Optional[float]) -> Optional[float]:

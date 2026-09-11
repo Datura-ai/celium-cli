@@ -144,6 +144,9 @@ def test_rent_action_re_selects_on_the_server_capped_at_the_confirmed_price():
 
 def _run_up(monkeypatch, lium_cls):
     class _Ready(lium_cls):
+        # a server without workspaces: `up` reads it for its workspace line (DAH-3033)
+        workspaces = SimpleNamespace(current=lambda: None)
+
         def get_template(self, template_id):
             return SimpleNamespace(id=template_id, name="pytorch")
 

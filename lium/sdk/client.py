@@ -53,6 +53,7 @@ from .models import (
 )
 from .ssh_key_cache import fingerprint, load_cache, save_cache
 from .utils import extract_gpu_type, generate_huid, gpu_short_matches, with_retry
+from .workspaces import WorkspacesClient
 
 # The backend feature `Lium.rent` looks for on GET /version before using POST /executors/rent-by-spec.
 RENT_BY_SPEC = "rent_by_spec"
@@ -419,8 +420,12 @@ class AlphaQuote:
 class Lium:
     """Clean Unix-style SDK for Lium."""
 
-    def __init__(self, config: Optional[Config] = None, source: str = "sdk"):
-        self.config = config or Config.load()
+    def __init__(self, config: Optional[Config] = None, source: str = "sdk", workspace: Optional[str] = None):
+        """``workspace`` picks the API key saved for that workspace (``[workspace.<name>]`` in
+        ~/.lium/config.ini, written by ``lium keys create --workspace … --save``); a key acts in exactly
+        one workspace, so choosing the workspace means choosing the key (lium-platform DAH-2986), and
+        ``ValueError`` is raised when none is saved for it rather than running as another key."""
+        self.config = config or Config.load(workspace=workspace)
         self.source = source
         self.headers = {
             "X-API-KEY": self.config.api_key,
@@ -428,6 +433,7 @@ class Lium:
             "X-Lium-Client-Version": _get_client_version(),
         }
         self._features: Optional[set] = None
+        self.workspaces = WorkspacesClient(self)
         self._ssh_sessions: Dict[str, paramiko.SSHClient] = {}  # pod id -> connection held by ssh_session()
 
     def features(self) -> set:
@@ -1424,6 +1430,7 @@ class Lium:
                 eta_basis=d.get("eta_basis"),
                 phase=d.get("phase"),
                 gpu_count=pod_gpu_count,
+                workspace_id=d.get("workspace_id"),
             ))
 
         return pods

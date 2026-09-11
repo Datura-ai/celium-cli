@@ -196,6 +196,22 @@ The `lium` CLI exposes the full pod lifecycle. Run `lium --help` to see everythi
 - `lium schedules list` - List scheduled terminations
 - `lium schedules rm <POD>` - Cancel scheduled termination
 
+### Workspace Commands
+
+Teams share a workspace whose billing owner pays (lium-platform DAH-1992). An API key is bound to one workspace, so `--workspace NAME` on any command means "use the key saved for NAME" and nothing else. On a server without workspaces these commands say so (exit 3) and every other command behaves as today.
+
+- `lium workspaces [list]` - The workspace this key acts in (the role shown is the account's the key runs as — the billing owner's for a team key); every workspace you belong to, with your own role, after `lium workspaces login`
+- `lium workspaces members [WORKSPACE]` - Members, roles and who pays
+- `lium workspaces use <WORKSPACE>` - Default workspace for every command (`~/.lium/config.ini`); run it as `LIUM_API_KEY=<a key bound to it> lium workspaces use <WORKSPACE>` to save that key for `--workspace`
+- `lium workspaces login` - Sign in once (e-mail + password) for the session-only subcommands below
+- `lium workspaces create <NAME> [--use]` - Create a workspace; you are its owner and billing owner
+- `lium workspaces invite <EMAIL> [WORKSPACE] [--role member|admin|owner]` - E-mail an invitation (no account needed yet)
+- `lium workspaces remove <USER_ID_OR_EMAIL> [WORKSPACE] [--yes]` - Remove a member, asks first (owners and the billing owner cannot be; the server says so)
+- `lium workspaces transfer-billing <USER_ID_OR_EMAIL> [WORKSPACE] [--yes]` - Hand the bill to another member (asks first)
+- `lium workspaces delete [WORKSPACE] [--yes]` - Delete a workspace, asks first (owners; refused while pods run or volumes exist); drops its config section
+- `lium keys list [--workspace W]` / `lium keys create <NAME> [--workspace W] [--save]` - API keys per workspace; `--save` keeps the key for `--workspace`
+- `lium --workspace NAME <command>` / `LIUM_WORKSPACE=NAME` - Run one command with the key saved for NAME (refused, exit 2, when none is saved); `ps`, `ls`, `up`, `rm` print the workspace they act in, and when that key turns out to act elsewhere `up` / `rm` refuse (exit 2) while `ps` / `ls` warn. `lium workspaces …` and `lium keys …` themselves run with `LIUM_API_KEY`, else NAME's saved key, else the stored default's saved key, else `[api] api_key`, so they can mint or save the missing key
+
 ### Configuration Commands
 
 - `lium config show` - Show all configuration
@@ -391,6 +407,23 @@ export LIUM_API_KEY=your-api-key-here
 ```
 
 `LIUM_API_KEY` takes precedence over the config file. To see which key a shell is using, run `lium whoami` (or `lium balance` / `lium config get api.api_key`): they print the key's fingerprint and source (`env:LIUM_API_KEY` or `config:~/.lium/config.ini [api] api_key`), and authentication errors name the same key.
+
+With workspaces, `lium workspaces use` (when the key it runs with acts there) and `lium keys create --save` add:
+
+```ini
+[workspaces]
+active = research
+
+[workspace.research]
+id = 9d8c7b6a-…
+api_key = the-key-bound-to-that-workspace
+
+# from `lium workspaces login`; LIUM_SESSION_TOKEN overrides it
+[session]
+token = …
+```
+
+Key resolution: an explicit `--workspace` / `LIUM_WORKSPACE` uses the key saved for it and nothing else (exit 2 when none is saved). Otherwise, first match wins: `LIUM_API_API_KEY` / `LIUM_API_KEY` (the env key, in the CLI's order), the key saved for `[workspaces] active`, `[api] api_key`. The `[workspace.<name>]` section is written when a key is saved (`lium keys create --save`, or `lium workspaces use` run with a key that acts there); `lium workspaces delete` drops it. Sections are keyed by the lower-cased name, so a save into a section that already holds another workspace's id (two workspaces with one name) is refused (exit 2) rather than overwriting the first one's key — drop that section or rename one of the workspaces first.
 
 SSH host keys of pods are pinned on first use under `~/.lium/known_hosts/<pod-id>`
 (`lium ssh`, `lium up`, and the SDK's `exec`, `stream_exec`, `rsync`). `reboot`, `edit`,

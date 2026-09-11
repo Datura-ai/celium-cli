@@ -12,6 +12,7 @@ from .exceptions import (
     LiumPermissionError,
     LiumRateLimitError,
     LiumServerError,
+    LiumSessionError,
     PodStartError,
     RemoteExecutionError,
 )
@@ -25,11 +26,17 @@ from .models import (
     SSHKey,
     Template,
     VolumeInfo,
+    WorkspaceInfo,
+    WorkspaceMember,
 )
+from .workspaces import WorkspacesClient
 from .result_codec import ResultEncodingError
 
 __all__ = [
     "Lium",
+    "WorkspacesClient",
+    "WorkspaceInfo",
+    "WorkspaceMember",
     "AlphaQuote",
     "Config",
     "ExecutorInfo",
@@ -50,6 +57,7 @@ __all__ = [
     "PodStartError",
     "LiumHostKeyError",
     "LiumInsufficientBalanceError",
+    "LiumSessionError",
     "RemoteExecutionError",
     "ResultEncodingError",
     "machine",

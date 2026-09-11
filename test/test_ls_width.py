@@ -54,6 +54,8 @@ def _run_ls(monkeypatch, columns: int) -> str:
     executors = [_executor("cosmic-hawk-2e", 0.40), _executor("golden-matrix-ff", 12.50, "United Arab Emirates")]
 
     class _FakeLium:
+        workspaces = SimpleNamespace(current=lambda: None)   # a server without workspaces: no context line
+
         def __init__(self, *args, **kwargs):
             pass
 

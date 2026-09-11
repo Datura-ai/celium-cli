@@ -14,6 +14,7 @@ from lium.cli.utils import (
     store_pod_selection,
     resolve_output_format,
 )
+from lium.cli.workspaces.context import show_workspace
 from . import display
 from .actions import GetPodsAction
 
@@ -98,6 +99,7 @@ def ps_command(pod_id: Optional[str], output_format: str, json_output: bool):
         ui.warning("No active pods")
         if account:
             ui.dim(account)
+        show_workspace(lium)
         return
 
     # Build table
@@ -112,3 +114,4 @@ def ps_command(pod_id: Optional[str], output_format: str, json_output: bool):
         ui.dim(f"last event: {format_event(last_event)}")
     if account:
         ui.dim(account)
+    show_workspace(lium)

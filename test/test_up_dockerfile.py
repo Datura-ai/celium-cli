@@ -343,6 +343,8 @@ def test_up_command_reads_dockerfile_and_forwards_content(monkeypatch, tmp_path)
     pod = SimpleNamespace(id="pod-1", name="custom-pod", huid="brave-fox-3a")
 
     class _FakeLium:
+        workspaces = SimpleNamespace(current=lambda: None)  # a server without workspaces: `up` reads it for its workspace line
+
         def resolve_backup_id(self, backup_id):
             assert backup_id == short_backup_id
             return full_backup_id
