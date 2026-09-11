@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any, Callable, Dict, Generator, List, Optional, Union
+from typing import Any, Callable, Dict, Generator, List, Optional, Sequence, Union
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
@@ -2286,13 +2286,66 @@ class Lium:
 
         return shlex.join(self.ssh_argv(pod))
 
-    def rsync(self, pod: PodInfo, *, local: str, remote: str) -> None:
-        """Sync directories with rsync.
+    @staticmethod
+    def rsync_options(
+        *,
+        bwlimit: Optional[int] = None,
+        exclude: Optional[Sequence[str]] = None,
+        delete: bool = False,
+        partial: bool = True,
+        progress: bool = False,
+    ) -> List[str]:
+        """The rsync flags shared by :meth:`rsync` and :meth:`cp`.
+
+        ``partial`` keeps half-copied files so an interrupted transfer resumes
+        instead of starting over — multi-GB pulls over a flaky link are the
+        normal case, not the exception. It stays ``--partial`` only: ``--inplace``
+        would drop rsync's write-then-rename, and a job on the pod could read a
+        half-written checkpoint. ``progress`` is plain ``--progress``, which both
+        GNU rsync and the openrsync stock macOS ships accept (``--info=progress2``
+        needs GNU rsync >= 3.1 and dies before any byte moves on a Mac).
+        """
+        options = ["-az"]
+        if partial:
+            options += ["--partial"]
+        if progress:
+            options += ["--progress"]
+        if bwlimit is not None:
+            if bwlimit <= 0:
+                raise ValueError("bwlimit must be a positive number of KiB/s")
+            options += [f"--bwlimit={int(bwlimit)}"]
+        for pattern in exclude or ():
+            options += [f"--exclude={pattern}"]
+        if delete:
+            options += ["--delete"]
+        return options
+
+    def rsync(
+        self,
+        pod: PodInfo,
+        *,
+        local: str,
+        remote: str,
+        bwlimit: Optional[int] = None,
+        exclude: Optional[Sequence[str]] = None,
+        delete: bool = False,
+        partial: bool = True,
+        progress: bool = False,
+        download: bool = False,
+    ) -> None:
+        """Sync files between the local machine and a pod with rsync.
 
         Args:
             pod: Pod to sync.
-            local: Local path or directory (rsync source).
-            remote: Remote path on the pod.
+            local: Local path (source, or destination when ``download``).
+            remote: Path on the pod (destination, or source when ``download``).
+            bwlimit: Cap the transfer at this many KiB/s (rsync ``--bwlimit``).
+            exclude: Patterns to skip (rsync ``--exclude``), e.g. ``[".git", "*.pt"]``.
+            delete: Remove files at the destination that are not in the source.
+            partial: Keep partially transferred files so a retry resumes (default on).
+            progress: Show rsync's overall progress on the terminal instead of
+                capturing its output.
+            download: Copy from the pod to the local path instead of to it.
 
         Raises:
             RuntimeError: If the rsync command fails.
@@ -2304,11 +2357,212 @@ class Lium:
         ssh_cmd = shlex.join(
             ["ssh", "-i", str(self.config.ssh_key_path), "-p", str(port), *openssh_host_key_options(pod)]
         )
-        cmd = ["rsync", "-avz", "-e", ssh_cmd, local, f"{user}@{host}:{remote}"]
+        remote_spec = f"{user}@{host}:{remote}"
+        endpoints = [remote_spec, local] if download else [local, remote_spec]
+        cmd = [
+            "rsync",
+            *self.rsync_options(bwlimit=bwlimit, exclude=exclude, delete=delete, partial=partial, progress=progress),
+            "-e", ssh_cmd,
+            *endpoints,
+        ]
 
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=not progress, text=True)
         if result.returncode != 0:
-            raise RuntimeError(f"Rsync failed: {result.stderr}")
+            raise RuntimeError(f"Rsync failed: {(result.stderr or '').strip() or f'exit {result.returncode}'}")
+
+    def cp(
+        self,
+        src_pod: PodInfo,
+        src_path: str,
+        dst_pod: PodInfo,
+        dst_path: str,
+        *,
+        bwlimit: Optional[int] = None,
+        exclude: Optional[Sequence[str]] = None,
+        delete: bool = False,
+    ) -> Dict[str, Any]:
+        """Copy files from one pod to another over SSH, without passing through this machine.
+
+        Pod-to-pod links are far faster than relaying through the caller. The
+        source pod gets a one-off ed25519 key, its public half is added to the
+        destination pod's ``authorized_keys`` for the duration of the copy, the
+        source runs ``rsync`` straight to the destination, and both halves are
+        removed again whatever happened. The source verifies the destination with
+        the host key this client pinned for it (``~/.lium/known_hosts/<pod id>``,
+        written by the grant connection), copied next to the transfer key; no pin
+        means no copy (``LIUM_SSH_INSECURE=1`` accepts any key, as everywhere).
+
+        Args:
+            src_pod, src_path: Where to copy from. A trailing ``/`` on a
+                directory copies its contents, as in rsync.
+            dst_pod, dst_path: Where to copy to.
+            bwlimit, exclude, delete: As in :meth:`rsync`.
+
+        Returns:
+            The :meth:`exec` result of the rsync on the source pod.
+
+        Raises:
+            LiumHostKeyError: When nothing is pinned for the destination pod.
+            LiumError: When the copy fails; the message carries rsync's stderr
+                (``rsync: command not found`` means ``apt-get install -y rsync``
+                on the pod named).
+        """
+        if src_pod.id == dst_pod.id:
+            result = self.exec(
+                src_pod,
+                command=f"rsync {shlex.join(self.rsync_options(bwlimit=bwlimit, exclude=exclude, delete=delete))} "
+                        f"{shlex.quote(src_path)} {shlex.quote(dst_path)}",
+            )
+            if not result["success"]:
+                raise LiumError(f"Copy on pod {src_pod.name or src_pod.huid} failed: {result['stderr'].strip()}")
+            return result
+
+        if not dst_pod.ssh_cmd or not dst_pod.host:
+            raise ValueError(f"No SSH for destination pod {dst_pod.name or dst_pod.huid}")
+
+        key_path = f"/tmp/lium-cp-{uuid.uuid4().hex[:12]}"
+        keygen = self.exec(
+            src_pod,
+            command=f"ssh-keygen -q -t ed25519 -N '' -f {key_path} && cat {key_path}.pub",
+        )
+        if not keygen["success"]:
+            raise LiumError(
+                f"Could not create a transfer key on pod {src_pod.name or src_pod.huid}: "
+                f"{keygen['stderr'].strip() or keygen['stdout'].strip()}"
+            )
+        public_key = keygen["stdout"].strip().splitlines()[-1]
+        marker = f"lium-cp-{uuid.uuid4().hex[:12]}"
+        authorized_line = f"{public_key} {marker}"
+
+        authorized = False
+        try:
+            grant = self.exec(dst_pod, command=self.grant_transfer_key_command(authorized_line))
+            if not grant["success"]:
+                # `flock -w 30` gives up silently (exit 1) when another cp holds the lock
+                detail = grant["stderr"].strip() or f"exit {grant.get('exit_code')} (another copy may hold {self.TRANSFER_KEY_LOCK})"
+                raise LiumError(f"Could not authorise the transfer key on pod {dst_pod.name or dst_pod.huid}: {detail}")
+            authorized = True
+
+            # The source pod must verify the destination the way this client does: the grant above went
+            # through ssh_connection, which pinned dst's host key under ~/.lium/known_hosts/<pod id>, so
+            # that pin is copied next to the transfer key and ssh on the source is told to insist on it.
+            # LIUM_SSH_INSECURE=1 keeps the old accept-anything hop, like every other SSH path here.
+            if ssh_insecure():
+                host_key_opts = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+            else:
+                pinned = self._pinned_host_key_lines(dst_pod)
+                if not pinned:
+                    raise LiumHostKeyError(
+                        f"No pinned host key for pod {dst_pod.name or dst_pod.huid} under "
+                        f"{known_hosts_path(dst_pod)}; the transfer key was not used. Connect to it once "
+                        f"(lium ssh {dst_pod.huid}) or set {_SSH_INSECURE_ENV}=1 to skip host key checks."
+                    )
+                pin_copy = self.exec(
+                    src_pod,
+                    command=f"printf '%s\\n' {shlex.quote(pinned)} > {key_path}.known_hosts && chmod 600 {key_path}.known_hosts",
+                )
+                if not pin_copy["success"]:
+                    raise LiumError(
+                        f"Could not place the destination's host key on pod {src_pod.name or src_pod.huid}: "
+                        f"{pin_copy['stderr'].strip()}"
+                    )
+                host_key_opts = f"-o StrictHostKeyChecking=yes -o UserKnownHostsFile={key_path}.known_hosts"
+            ssh_opts = f"ssh -i {key_path} -p {dst_pod.ssh_port} {host_key_opts} -o LogLevel=ERROR"
+            rsync_cmd = (
+                f"rsync {shlex.join(self.rsync_options(bwlimit=bwlimit, exclude=exclude, delete=delete))} "
+                f"-e {shlex.quote(ssh_opts)} {shlex.quote(src_path)} "
+                f"{shlex.quote(f'{dst_pod.username}@{dst_pod.host}:{dst_path}')}"
+            )
+            result = self.exec(src_pod, command=rsync_cmd)
+            if not result["success"]:
+                detail = result["stderr"].strip() or result["stdout"].strip() or f"exit {result['exit_code']}"
+                raise LiumError(
+                    f"Copy from {src_pod.name or src_pod.huid}:{src_path} to "
+                    f"{dst_pod.name or dst_pod.huid}:{dst_path} failed: {detail}"
+                )
+            return result
+        finally:
+            if authorized:
+                revoke = self.revoke_transfer_key_command(marker)
+                self._exec_quietly(
+                    dst_pod,
+                    revoke,
+                    consequence=(
+                        f"the transfer key '{marker}' is still authorised on pod "
+                        f"{dst_pod.name or dst_pod.huid}; revoke it with: "
+                        f"lium exec {dst_pod.huid} {shlex.quote(revoke)}"
+                    ),
+                )
+            self._exec_quietly(src_pod, f"rm -f {key_path} {key_path}.pub {key_path}.known_hosts")
+
+    @staticmethod
+    def _pinned_host_key_lines(pod: PodInfo) -> str:
+        """The destination's pinned host key(s) as ``known_hosts`` lines, ``""`` when nothing is pinned.
+
+        ``ssh_connection`` writes the file (``[host]:port key-type key``) on the first connection to the pod;
+        the file is per pod, so every line in it is this pod's.
+        """
+        try:
+            text = known_hosts_path(pod).read_text()
+        except OSError:
+            return ""
+        return "\n".join(line for line in text.splitlines() if line.strip() and not line.startswith("#"))
+
+    # Every grant and revoke on a pod runs under this lock: two concurrent ``cp``
+    # into the same pod otherwise both filter the same authorized_keys and the
+    # later ``cat >`` puts back the key the earlier revoke removed.
+    TRANSFER_KEY_LOCK = "~/.ssh/.lium-cp.lock"
+
+    @classmethod
+    def _under_transfer_key_lock(cls, command: str) -> str:
+        """``command`` run by ``flock`` on the pod's transfer-key lock (30 s wait, then fail)."""
+        return f"flock -w 30 {cls.TRANSFER_KEY_LOCK} -c {shlex.quote(command)}"
+
+    @classmethod
+    def grant_transfer_key_command(cls, authorized_line: str) -> str:
+        """The remote line that appends ``authorized_line`` to the pod's authorized_keys."""
+        return (
+            "mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
+            + cls._under_transfer_key_lock(
+                f"echo {shlex.quote(authorized_line)} >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
+            )
+        )
+
+    @classmethod
+    def revoke_transfer_key_command(cls, marker: str) -> str:
+        """The remote line that drops the authorized_keys entry tagged ``marker``.
+
+        The scratch file carries the marker, so two ``cp`` runs into the same
+        pod never share one, and the result is written back with ``cat >``
+        (the way lium-io removes keys) rather than ``mv``: the file keeps its
+        mode and a second run's half-written scratch file can never replace it.
+        ``grep`` exits 1 when nothing is left to keep, which is fine; any other
+        failure leaves authorized_keys untouched. The whole line runs under the
+        transfer-key lock, so a concurrent grant or revoke waits for it.
+        """
+        scratch = f"~/.ssh/authorized_keys.{marker}"
+        return cls._under_transfer_key_lock(
+            f"( grep -vF {shlex.quote(marker)} ~/.ssh/authorized_keys > {scratch} || [ $? -eq 1 ] ) "
+            f"&& cat {scratch} > ~/.ssh/authorized_keys; rc=$?; rm -f {scratch}; exit $rc"
+        )
+
+    def _exec_quietly(self, pod: PodInfo, command: str, *, consequence: Optional[str] = None) -> None:
+        """Cleanup step: report a failure as a warning, never as the error the caller sees.
+
+        ``consequence`` says what a failure leaves behind and how to undo it by hand.
+        """
+        where = f"pod {pod.name or pod.huid}"
+        try:
+            result = self.exec(pod, command=command)
+        except Exception as exc:  # noqa: BLE001 - cleanup must not raise
+            detail = str(exc)
+        else:
+            if result["success"]:
+                return
+            detail = result["stderr"].strip() or f"exit {result['exit_code']}"
+        message = f"lium: cleanup on {where} failed ({detail})"
+        message += f": {consequence}" if consequence else f": {command}"
+        warnings.warn(message, stacklevel=3)
     
     def switch_template(self, pod: PodInfo, *, template_id: str) -> PodInfo:
         """Switch the template of a running pod.
