@@ -37,6 +37,11 @@ def ps_command(pod_id: Optional[str], output_format: str, json_output: bool):
     exec and scp accept in place of a pod huid. It stands for the pod shown on
     that row, is honoured only in this shell, for 10 minutes and while that pod
     is still listed; the huid is the stable identifier for scripts.
+    \b
+    Examples:
+      lium ps                           # every pod, one row each
+      lium ps my-pod                    # one pod in detail
+      lium ps --format json | jq '.[0].huid'
     """
     output_format = resolve_output_format(output_format, json_output)
 
