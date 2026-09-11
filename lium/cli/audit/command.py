@@ -308,9 +308,14 @@ def _account_log(
         )
     except LiumPermissionError as exc:
         # the server answers 403 for a key without `read` (and for a team key outside its workspace); the same exit
-        # code every other command uses for a 403 (handle_errors → EXIT_PERMISSION_DENIED), only the hint is added
+        # code every other command uses for a 403 (handle_errors → EXIT_PERMISSION_DENIED), only the hint is added,
+        # and the server's code, hint and request_id ride along like on the 401 above (DAH-3057)
         raise CliFailure(
-            "permission_denied", f"{exc}. The account log needs the key's `read` scope.", EXIT_PERMISSION_DENIED
+            exc.code or "permission_denied",
+            f"{exc}. The account log needs the key's `read` scope.",
+            EXIT_PERMISSION_DENIED,
+            data=_api_error_data(exc),
+            hint=exc.hint,
         )
 
     entries = page.get("items") or []

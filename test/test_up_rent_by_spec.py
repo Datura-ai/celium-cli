@@ -93,7 +93,7 @@ def test_the_servers_hint_and_request_id_ride_along_with_a_spec_refusal():
 
     def no_match(**kwargs):
         raise LiumError("API error 409: no_executor_matches_spec: gpu_count=8", code="no_executor_matches_spec",
-                        hint="Lower gpu_count or drop the country filter.", request_id="req-<eight hex characters>")
+                        hint="Lower gpu_count or drop the country filter.", request_id="req-409-0001")
 
     lium.rent = no_match
 
@@ -101,7 +101,7 @@ def test_the_servers_hint_and_request_id_ride_along_with_a_spec_refusal():
 
     assert not result.ok
     assert result.data == {"hint": "Lower gpu_count or drop the country filter.",
-                           "request_id": "req-<eight hex characters>"}
+                           "request_id": "req-409-0001"}
 
 
 def test_other_api_errors_on_the_spec_path_keep_their_own_code():
@@ -201,7 +201,7 @@ def test_up_prints_the_servers_hint_under_a_spec_refusal(monkeypatch):
     class _Refusing(_SpecLium):
         def rent(self, **kwargs):
             raise LiumError("API error 409: no_executor_matches_spec: gpu_count=1", code="no_executor_matches_spec",
-                            hint="Drop the country filter.", request_id="req-<eight hex characters>")
+                            hint="Drop the country filter.", request_id="req-409-0001")
 
     result = _run_up(monkeypatch, _Refusing)
 
@@ -209,7 +209,7 @@ def test_up_prints_the_servers_hint_under_a_spec_refusal(monkeypatch):
     output = " ".join(result.output.split())
     assert "no_executor_matches_spec" in output
     assert "Drop the country filter." in output
-    assert "request_id: req-<eight hex characters>" in output
+    assert "request_id: req-409-0001" in output
 
 
 def test_up_says_when_the_confirmed_node_was_taken_and_another_rented(monkeypatch):

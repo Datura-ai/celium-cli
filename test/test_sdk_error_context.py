@@ -196,6 +196,9 @@ def test_up_on_a_refused_rent_prints_the_hint_and_the_request_id(monkeypatch):
     from lium.cli.up import command as up_module
 
     class _RefusingLium:
+        # a server without workspaces: `up` reads it for its workspace line (DAH-3033)
+        workspaces = SimpleNamespace(current=lambda: None)
+
         def __init__(self, *args, **kwargs):
             pass
 
