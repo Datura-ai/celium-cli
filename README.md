@@ -195,12 +195,14 @@ The `lium` CLI exposes the full pod lifecycle. Run `lium --help` to see everythi
 - `lium logs <POD>` - Stream a pod's container logs
 - `lium port-forward <POD> <PORT>` - Forward a local port to a pod port
 - `lium scp <POD> <LOCAL_FILE> [REMOTE_PATH]` - Copy files to pods (add `-d` to download from pods)
-- `lium rsync <POD> <LOCAL_DIR> [REMOTE_PATH]` - Sync directories to pods
+- `lium rsync <POD> <LOCAL_DIR> [REMOTE_PATH]` - Sync directories to pods (`--bwlimit`, `--exclude`, `--delete`, `--progress`; resumes on re-run)
+- `lium cp <SRC_POD>:<PATH> <DST_POD>:<PATH>` - Copy files from one pod to another over SSH
 - `lium rm <POD>` - Remove/stop a pod (`--name-only` to refuse `lium ps` row numbers in scripts)
 - `lium reboot <POD>` - Reboot a pod
 - `lium audit [--pod POD] [--since 24h] [--key ID]` - Who did what to the account's pods, and when: every rent, reboot, edit and delete with the session or API key that requested it (add `--json` for machine-readable output)
+- `lium audit --account [--action pod.] [--source cli] [--since 7d] [--cursor <next_cursor>]` - The account audit log: every request that changed something (pods, keys, logins, balance, settings, team members) with the client and IP it came from; your own IPs only, 90 days (`--json` prints the page with `next_cursor`)
 - `lium update <POD>` - Install Jupyter on a pod
-- `lium templates [SEARCH]` - List available Docker templates (add `--format json` for ids and image details)
+- `lium templates [SEARCH] [--arch hopper|blackwell] [--format json]` - List Docker templates with the CUDA build and the GPU generations it runs on
 - `lium fund` - Fund account with TAO from Bittensor wallet
 - `lium topup create -a <USD> -c <COIN> -n <NETWORK>` - Top up with a stablecoin (`lium topup currencies` lists them)
 - `lium ssh-keys list|sync` - SSH public keys registered on the account
@@ -282,6 +284,7 @@ Full reference with every flag and runnable examples: <https://docs.lium.io/deve
 
 - `lium theme [THEME]` - Get or set UI theme (light/dark/auto)
 - `lium mine` - Set up a compute subnet node/miner
+- `lium mine --register <TOKEN>` - Same, then add the node to your portal account from what the host reports and wait until it is listed (token from the portal's Add Node page; the account, and what the node reports under, come from the token — no `-k`)
 - `sudo lium gpu-splitting setup [--device /dev/...] [--yes]` - Prepare Docker storage for LIUM GPU splitting
 - `lium gpu-splitting check [--device /dev/...]` - Inspect the host and print the GPU-splitting plan
 - `lium gpu-splitting verify` - Verify Docker storage matches LIUM GPU-splitting requirements
@@ -307,6 +310,11 @@ lium up 1 --template_id <TEMPLATE_ID> --yes
 
 # Set up node bootstrap flow
 lium mine --auto --hotkey <HOTKEY>
+
+# One command from a bare host to a listed node: the portal's Add Node page prints this line with a
+# one-hour token; GPU model/count, port and address are read from the host, the price is the portal base price for the model
+curl -fsSL https://lium.io/mine.sh | bash -s -- --register <TOKEN>
+lium mine --register <TOKEN> --wait 0          # add the node, do not wait for the validator
 
 # Provider-portal automation (same surface as the portal frontend)
 lium config set provider.coldkey miner-prod        # one-time: persist wallet identity
@@ -368,6 +376,12 @@ lium rsync my-pod ./project                    # Sync to /root/project
 lium rsync 1 ./data /root/datasets/           # Sync to specific directory
 lium rsync all ./models                       # Sync to all pods
 lium rsync 1,2,3 ./code /root/workspace/      # Sync to multiple pods
+lium rsync my-pod ./ckpt /workspace/ckpt --bwlimit 20000 --exclude '*.tmp' --progress
+                                              # Throttled, filtered, with progress; re-run to resume
+
+# Copy between pods directly (data never passes through your machine)
+lium cp dev-pod:/workspace/src train-pod:/workspace/
+lium cp 1:/workspace/ckpt/ 2:/workspace/ckpt/ --exclude '*.tmp'
 
 # Remove multiple pods
 lium rm my-pod-1 my-pod-2
