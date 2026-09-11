@@ -79,6 +79,23 @@ def test_api_key_is_checked_then_saved_and_ssh_is_set_up(home, ssh_setup_ok, api
     assert "saved to" in result.output and "SSH key:" in result.output
 
 
+def test_report_shows_a_bracketed_config_path_literally(monkeypatch, tmp_path, ssh_setup_ok, api):
+    """The paths init prints are the user's text: a HOME like `~/agents/run[v3]` puts `[v3]` in the config path, and
+    Rich reads `[v3]`-style brackets as markup (dropped, or a MarkupError for `[/x]`). Escaped at the sink, the
+    line shows the path as it is."""
+    monkeypatch.setenv("HOME", str(tmp_path / "run[v3]"))
+    for name in ("LIUM_API_KEY", "LIUM_API_API_KEY", "LIUM_WORKSPACE"):
+        monkeypatch.delenv(name, raising=False)
+    fresh = ConfigManager()
+    monkeypatch.setattr(init_actions, "config", fresh)
+    monkeypatch.setattr(init_command, "config", fresh)
+
+    result = CliRunner().invoke(cli, ["init", "--api-key", "sk_good"])
+
+    assert result.exit_code == 0, result.output
+    assert "run[v3]/.lium/config.ini" in result.output.replace("\n", "")
+
+
 def test_api_key_json_names_source_config_and_ssh_key(home, ssh_setup_ok, api):
     result = CliRunner().invoke(cli, ["init", "--api-key", "sk_good", "--json"])
 

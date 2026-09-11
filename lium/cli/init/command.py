@@ -4,6 +4,7 @@ import json
 import os
 
 import click
+from rich.markup import escape
 
 from lium.cli import ui
 from lium.cli.interactive import is_interactive
@@ -197,19 +198,19 @@ def _report(saved_from: str, ssh_key_path: str, json_output: bool) -> None:
         }, sort_keys=True))
         return
     if saved_from == "flag":
-        ui.success(f"API key checked and saved to {config_path}")
+        ui.success(f"API key checked and saved to {escape(config_path)}")
         if env_name:
-            ui.warning(f"{env_name} is set and wins over the saved key while it is exported")
+            ui.warning(f"{escape(env_name)} is set and wins over the saved key while it is exported")
     elif saved_from == "env":
-        ui.info(f"Using the API key from {env_name}; the key is not written to {config_path}")
+        ui.info(f"Using the API key from {escape(env_name)}; the key is not written to {escape(config_path)}")
     elif saved_from == "config":
-        ui.info(f"API key already saved in {config_path}")
+        ui.info(f"API key already saved in {escape(config_path)}")
     if active_workspace and saved_from in ("flag", "session", "browser"):
         # the browser and --session flows save an [api] key too: the same warning where the active
         # workspace's saved key, not the one just saved, is what the next command reads
         ui.warning(
-            f"`lium workspaces use {active_workspace}` is in effect: commands run with the key saved for "
-            f"'{active_workspace}', not the key saved now (`lium config unset workspaces.active` to undo)"
+            f"`lium workspaces use {escape(active_workspace)}` is in effect: commands run with the key saved for "
+            f"'{escape(active_workspace)}', not the key saved now (`lium config unset workspaces.active` to undo)"
         )
     if ssh_key_path:
-        ui.info(f"SSH key: {ssh_key_path}")
+        ui.info(f"SSH key: {escape(ssh_key_path)}")
