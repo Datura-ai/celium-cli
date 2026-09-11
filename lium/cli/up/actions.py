@@ -16,6 +16,26 @@ from lium.cli.utils import (
 )
 
 
+def _pareto_flags_per_rent_count(executors: list[ExecutorInfo], rent_count: Callable[[ExecutorInfo], int]) -> list[bool]:
+    """Pareto flags with the frontier drawn among nodes that would rent the same GPU count.
+
+    The frontier compares $/GPU, so nodes renting different counts must not exclude
+    each other (an 8x node at a lower $/GPU would hide an equal 1x node although the
+    renter pays eight times as much per hour); the caller ranks the optimal ones by
+    total $/h. Same shape as calculate_pareto_frontier: one flag per executor, in the
+    executors' order. With -c every node rents the same count, so this is one frontier.
+    """
+    flags = [False] * len(executors)
+    by_count: dict[int, list[int]] = {}
+    for index, executor in enumerate(executors):
+        by_count.setdefault(rent_count(executor), []).append(index)
+    for indexes in by_count.values():
+        group_flags = calculate_pareto_frontier([executors[i] for i in indexes])
+        for index, is_pareto in zip(indexes, group_flags):
+            flags[index] = is_pareto
+    return flags
+
+
 class ResolveExecutorAction:
 
     def execute(self, ctx: dict) -> ActionResult:
@@ -123,15 +143,44 @@ class ResolveExecutorAction:
             from lium.cli.ls.command import ls_store_executor
             ls_store_executor(gpu_type=gpu)
 
-            pareto_flags = calculate_pareto_frontier(executors)
-            pareto_executors = [e for e, is_pareto in zip(executors, pareto_flags) if is_pareto]
-            candidates = pareto_executors or executors
-            # Cheapest $/GPU·h of the optimal set; min() keeps the first of a
-            # tie, so equal prices fall back to the listing order as before.
-            executor = min(candidates, key=lambda e: e.price_per_gpu or float("inf"))
+            # What a rent on each node takes and costs: -c GPUs, else the node's free
+            # GPUs (DAH-2877) at that node's $/GPU. The frontier is drawn per rented
+            # count and the optimal nodes are ranked by that total $/h.
+            def rent_count(e: ExecutorInfo) -> int:
+                return count if count else rented_gpu_count(e)
+
+            def rent_price(e: ExecutorInfo) -> float:
+                return e.price_per_gpu * rent_count(e)
+
+            # The SDK maps a missing price to 0 and a booked node has 0 free GPUs: neither
+            # is a rent, so neither enters the frontier — alone in its count group, a
+            # booked host would be "optimal" and the pick, at $inf/h, before a rent the
+            # API refuses.
+            rentable = [e for e in executors if e.price_per_gpu and rent_count(e) > 0]
+            if not rentable:
+                return ActionResult(
+                    ok=False,
+                    data={},
+                    error=f"No rentable nodes among {len(executors)} match(es): every one is fully booked or unpriced",
+                )
+
+            pareto_flags = _pareto_flags_per_rent_count(rentable, rent_count)
+            pareto_executors = [e for e, is_pareto in zip(rentable, pareto_flags) if is_pareto]
+            # Nothing is optimal only when every match is below the download floor;
+            # then the cheapest match is still the best answer, and the line says so.
+            candidates = pareto_executors or rentable
+            # min() keeps the first of a tie, so equal prices fall back to the listing order.
+            executor = min(candidates, key=rent_price)
             return ActionResult(
                 ok=True,
-                data={"executor": executor, "auto_selected": True, "candidates": len(candidates)},
+                data={
+                    "executor": executor,
+                    "auto_selected": True,
+                    "candidates": len(candidates),
+                    "pareto": bool(pareto_executors),
+                    "rent_count": rent_count(executor),
+                    "rent_price": rent_price(executor),
+                },
             )
 
         return ActionResult(ok=True, data={"executor": executor})
