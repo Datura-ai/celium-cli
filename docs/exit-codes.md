@@ -22,7 +22,12 @@ mirrors it and a unit test keeps the two in step.
 by the argument parser (an unknown option, a missing argument) exit 2 with
 click's plain-text usage message; they are raised before the command runs and
 are not rendered as JSON. `lium provider …` keeps its own exit-code map,
-documented in `lium/cli/provider/_render.py`.
+documented in `lium/cli/provider/_render.py`. `lium mine --register` exits 0
+when the node is listed, 1 on a failed step or a fix the portal names, and 2
+when the node is registered but not listed — within `--wait` minutes, or not
+yet in the node list right after the add — the same
+code as a usage error; the timeout message (`Still … after N min`) is on
+stdout, a usage error on stderr.
 
 ## The error envelope
 
