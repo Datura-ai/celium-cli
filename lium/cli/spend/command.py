@@ -7,6 +7,7 @@ import click
 from lium.sdk import Lium
 from lium.cli import ui
 from lium.cli.utils import handle_errors, resolve_output_format
+from lium.cli.workspaces.context import show_workspace
 from . import report as report_module
 
 
@@ -54,8 +55,10 @@ def spend_command(output_format: str, json_output: bool):
         ui.info("No active pods; burn is $0.00/h")
         if report.balance_usd is not None:
             ui.dim(f"Balance ${report.balance_usd:,.2f}")
+        show_workspace(lium)   # whose balance and runway this is (lium#183), as ps/ls say under their tables
         return
 
     ui.print(report_module.build_table(report))
     for line in report_module.summary_lines(report):
         ui.dim(line)
+    show_workspace(lium)

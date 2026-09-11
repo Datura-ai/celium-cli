@@ -358,7 +358,11 @@ def test_spend_command_table_and_summary(fake_lium):
     assert "Balance $100.00" in result.output and "runway" in result.output
 
 
-def test_spend_command_json(fake_lium):
+def test_spend_command_json(fake_lium, monkeypatch):
+    # spent_usd is price × wall time: the two invocations must read the same clock or a cent can tick between them
+    from lium.cli.spend import report as report_module
+
+    monkeypatch.setattr(report_module, "datetime", _FrozenDatetime)
     result = CliRunner().invoke(cli, ["spend", "--format", "json"])
     assert result.output == CliRunner().invoke(cli, ["spend", "--json"]).output
 

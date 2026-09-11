@@ -26,12 +26,14 @@ def _pod(price=0.58, age=timedelta(hours=1, minutes=32), created_at=None, name="
     return SimpleNamespace(id="pod-uuid-1", huid="eager-wolf-aa", name=name, executor=executor, created_at=created_at)
 
 
-def _run_rm(monkeypatch, pod, *args):
+def _run_rm(monkeypatch, pod, *args, workspace=None):
     calls = {"rm": [], "scheduled": []}
 
     class _FakeLium:
-        # a server without workspaces: `rm` reads it for its workspace line (lium#183)
-        workspaces = SimpleNamespace(current=lambda: None)
+        # a server without workspaces by default: `rm` reads it for its workspace line (lium#183);
+        # `workspace=` makes it a workspace server whose key acts in that workspace
+        workspaces = SimpleNamespace(current=lambda: workspace)
+        config = SimpleNamespace(workspace=None, workspace_id=None, workspace_explicit=False)
 
         def __init__(self, *a, **k):
             pass
@@ -127,6 +129,21 @@ def test_rm_json_carries_the_spend_fields(monkeypatch):
         "spent_usd": 0.89,
         "spent_is_estimate": True,
     }]
+
+
+def test_rm_json_on_a_workspace_server_keeps_stdout_one_document(monkeypatch):
+    """On a server with workspaces (main since lium#183) `rm` prints a `Workspace: …` context line before it acts.
+    With --format json that line must go to stderr: `lium rm … --format json | jq` reads stdout alone, and a
+    prose line before the payload is a parse error. A rm that printed the line to stdout fails this test."""
+    from lium.sdk.models import WorkspaceInfo
+
+    research = WorkspaceInfo(id="ws-1", name="Research", role="owner", billing_owner_user_id="u-1")
+    runner_result, calls = _run_rm(monkeypatch, _pod(), "--format", "json", workspace=research)
+
+    assert runner_result.exit_code == 0, runner_result.output
+    payload = json.loads(runner_result.stdout)   # stdout alone must parse
+    assert [p["huid"] for p in payload["removed"]] == ["eager-wolf-aa"]
+    assert "Workspace: Research" in runner_result.stderr and "Workspace" not in runner_result.stdout
 
 
 def test_rm_json_with_a_failure_stays_parseable_and_exits_non_zero(monkeypatch):

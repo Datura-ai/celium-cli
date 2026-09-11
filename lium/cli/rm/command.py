@@ -176,7 +176,8 @@ def rm_command(
     (uptime × $/h, marked ≈ because the API returns no billed figure).
     """
     lium = Lium()
-    show_workspace(lium, acting=True)
+    # --format json: stdout is one JSON document, so the workspace context line goes to stderr
+    show_workspace(lium, acting=True, on_stderr=output_format == "json")
     plan = build_removal_plan(
         lium, targets, remove_all, in_duration, at_time,
         allow_index=False if name_only else None, quiet=output_format == "json",
