@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 
 
 class _Serializable:
-    """``to_dict()`` for every model, so a caller can ``json.dumps`` what the SDK returns.
+    """``to_dict()`` for the models below (not ``RentResult`` or the workspace models), so a caller can ``json.dumps`` what the SDK returns.
 
     Nested dataclasses (a pod's executor) are converted too. Subclasses that
     derive useful values from their fields add them in ``_derived``.

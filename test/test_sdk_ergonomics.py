@@ -338,8 +338,18 @@ def test_exec_detach_picks_a_timestamped_log_by_default(monkeypatch):
     assert re.fullmatch(r"/workspace/logs/exec-\d{8}T\d{6}Z-[0-9a-f]{6}\.log", result["log_path"])
 
 
-def test_two_default_log_paths_in_the_same_second_differ():
-    assert Lium.default_detach_log_path() != Lium.default_detach_log_path()
+def test_detach_tokens_from_the_same_second_do_not_collide():
+    """Two jobs started in the same second must not share (and truncate) one log file: the token
+    is the UTC stamp of the given instant plus a random tail. A token that were the stamp alone
+    would make every set below collapse to one path."""
+    from lium.sdk import detach
+
+    same_second = 1_800_000_000.0
+    paths = {detach.default_detach_log_path(detach.detach_token(now=same_second)) for _ in range(16)}
+
+    assert len(paths) == 16
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(same_second))
+    assert all(re.fullmatch(rf"/workspace/logs/exec-{stamp}-[0-9a-f]{{6}}\.log", p) for p in paths)
 
 
 def test_exec_detach_sends_env_over_stdin_and_applies_it_inside_the_login_shell(monkeypatch):
@@ -416,13 +426,26 @@ def test_gpu_stats_reports_a_failed_nvidia_smi(monkeypatch):
 # --- to_dict, schema ---------------------------------------------------------------------------
 
 def test_to_dict_is_json_serialisable_and_carries_derived_fields():
-    data = _pod().to_dict()
+    """A caller `json.dumps` what the SDK returns: the nested executor dataclass must be converted
+    (a raw dataclass is not serialisable) and the properties a user reads on the object — the
+    pod's host/username/port, the executor's GPU model — must be in the dict too, equal to what
+    the object reports, so dropping `_derived()` from `to_dict()` or the nested conversion fails this."""
+    pod = _pod()
 
-    json.dumps(data)
-    assert data["executor"]["gpu_model"] == "H100 80GB HBM3"
-    assert (data["host"], data["username"], data["ssh_port"]) == ("1.2.3.4", "root", 20299)
+    data = pod.to_dict()
+
+    assert json.loads(json.dumps(data)) == data
+    assert data["executor"]["gpu_model"] == pod.executor.gpu_model
+    assert (data["host"], data["username"], data["ssh_port"]) == (pod.host, pod.username, pod.ssh_port)
+    assert data["executor"]["huid"] == pod.executor.huid
 
 
-def test_to_dict_exists_on_every_public_model():
-    for model in (PodInfo, ExecutorInfo, Template, GpuStats):
+def test_to_dict_exists_on_every_serialisable_model():
+    """Every model the `_Serializable` mixin covers has `to_dict()`; `RentResult` and the workspace
+    models are plain dataclasses and must not be advertised as serialisable."""
+    from lium.sdk.models import BackupConfig, BackupLog, RentResult, RestoreLog, SSHKey, VolumeInfo, WorkspaceInfo
+
+    for model in (PodInfo, ExecutorInfo, Template, GpuStats, BackupConfig, BackupLog, RestoreLog, SSHKey, VolumeInfo):
         assert callable(getattr(model, "to_dict", None)), model.__name__
+    for model in (RentResult, WorkspaceInfo):
+        assert not hasattr(model, "to_dict"), model.__name__
