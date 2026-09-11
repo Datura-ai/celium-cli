@@ -214,6 +214,9 @@ def _run_up(monkeypatch, args, *, price=PRICE, pod=None, removed=None, executor=
     resolve_data = {"executor": executor, **(resolve_data or {})}
 
     class _Lium:
+        # a server without workspaces: `up` reads it for its workspace line (lium#183)
+        workspaces = SimpleNamespace(current=lambda: None)
+
         def get_deployment_estimate(self, *a, **k):
             return {}
 

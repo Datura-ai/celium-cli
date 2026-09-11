@@ -30,6 +30,9 @@ def _run_rm(monkeypatch, pod, *args):
     calls = {"rm": [], "scheduled": []}
 
     class _FakeLium:
+        # a server without workspaces: `rm` reads it for its workspace line (lium#183)
+        workspaces = SimpleNamespace(current=lambda: None)
+
         def __init__(self, *a, **k):
             pass
 
@@ -133,6 +136,9 @@ def test_rm_json_with_a_failure_stays_parseable_and_exits_non_zero(monkeypatch):
     calls = {"rm": []}
 
     class _FakeLium:
+        # a server without workspaces: `rm` reads it for its workspace line (lium#183)
+        workspaces = SimpleNamespace(current=lambda: None)
+
         def __init__(self, *a, **k):
             pass
 
@@ -163,6 +169,9 @@ def test_rm_by_row_number_with_json_keeps_stdout_one_document(monkeypatch, tmp_p
     calls = {"rm": []}
 
     class _FakeLium:
+        # a server without workspaces: `rm` reads it for its workspace line (lium#183)
+        workspaces = SimpleNamespace(current=lambda: None)
+
         def __init__(self, *a, **k):
             pass
 
@@ -188,6 +197,9 @@ def test_rm_by_row_number_with_json_keeps_stdout_one_document(monkeypatch, tmp_p
 
 def test_rm_all_on_an_empty_account_with_json_prints_an_empty_payload(monkeypatch):
     class _FakeLium:
+        # a server without workspaces: `rm` reads it for its workspace line (lium#183)
+        workspaces = SimpleNamespace(current=lambda: None)
+
         def __init__(self, *a, **k):
             pass
 

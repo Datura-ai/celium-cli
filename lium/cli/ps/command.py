@@ -78,7 +78,7 @@ def _last_event(lium: Lium, pods: List[PodInfo], pod_id: Optional[str]) -> Optio
 
 def _render(
     pods: List[PodInfo], output_format: str, wide: bool, filtered: bool, show_index: bool,
-    last_event: Optional[dict] = None, account: Optional[str] = None,
+    last_event: Optional[dict] = None, account: Optional[str] = None, lium: Optional[Lium] = None,
 ) -> None:
     if output_format == "json":
         # No account line here: the machine contract is a bare JSON array on stdout and, on
@@ -95,6 +95,8 @@ def _render(
         ui.warning("No pods match the filters" if filtered else "No active pods")
         if account:
             ui.dim(account)
+        if lium is not None:
+            show_workspace(lium)
         return
     short = not wide and _terminal_width() < WIDE_TERMINAL_COLUMNS
     table, header = display.build_pods_table(pods, short=short, show_index=show_index)
@@ -108,6 +110,9 @@ def _render(
         ui.dim(f"last event: {format_event(last_event)}")
     if account:
         ui.dim(account)
+    # The workspace line under the table (lium#183), as on main; never in JSON output.
+    if lium is not None:
+        show_workspace(lium)
 
 
 @click.command("ps", epilog="Use --format json for machine-readable output.")
@@ -186,7 +191,7 @@ def ps_command(
             store_pod_selection(pods)
         _render(
             pods, output_format, wide, filtered=bool(parsed_filters), show_index=not pod_id,
-            last_event=_last_event(lium, pods, pod_id), account=account,
+            last_event=_last_event(lium, pods, pod_id), account=account, lium=lium,
         )
 
     if watch is None:
@@ -201,6 +206,4 @@ def ps_command(
                 click.clear()
             once(quiet=True)
     except KeyboardInterrupt:
-        show_workspace(lium)
         return
-    show_workspace(lium)

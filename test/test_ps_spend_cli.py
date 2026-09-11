@@ -9,6 +9,7 @@ so the totals are estimates worth labelling as such.
 
 import json
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
@@ -58,6 +59,8 @@ def fake_lium(monkeypatch, tmp_path):
     class _Lium:
         pods = list(PODS)
         balance_value = 100.0
+        # a server without workspaces: `ps` reads it for its workspace line (lium#183)
+        workspaces = SimpleNamespace(current=lambda: None)
 
         def __init__(self, *a, **k):
             pass
