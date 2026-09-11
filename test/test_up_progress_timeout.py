@@ -219,6 +219,8 @@ def test_wait_ready_action_forwards_the_progress_callback():
     seen = {}
 
     class _Lium:
+        workspaces = SimpleNamespace(current=lambda: None)  # a server without workspaces: `up` reads it for its workspace line
+
         def wait_ready(self, pod_id, *, timeout, poll_interval, on_poll=None):
             seen["on_poll"] = on_poll
             return _pod("RUNNING")
@@ -233,6 +235,8 @@ def test_wait_ready_action_without_a_reporter_passes_no_callback():
     seen = {}
 
     class _Lium:
+        workspaces = SimpleNamespace(current=lambda: None)  # a server without workspaces: `up` reads it for its workspace line
+
         def wait_ready(self, pod_id, *, timeout, poll_interval, on_poll=None):
             seen["on_poll"] = on_poll
             return _pod("RUNNING")
@@ -254,6 +258,8 @@ def _executor():
 
 def _run_up(monkeypatch, *, resolve_action=None, rent_action=None, wait_action=None, args=()):
     class _Lium:
+        workspaces = SimpleNamespace(current=lambda: None)  # a server without workspaces: `up` reads it for its workspace line
+
         def get_deployment_estimate(self, *a, **k):
             return {}
 

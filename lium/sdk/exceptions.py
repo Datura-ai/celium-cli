@@ -8,6 +8,13 @@ class LiumAuthError(LiumError):
     """Authentication error."""
 
 
+class LiumSessionError(LiumAuthError):
+    """A browser session (``lium workspaces login`` / LIUM_SESSION_TOKEN) is missing or refused.
+
+    An API key cannot fix this, so the CLI's hint must not point at one.
+    """
+
+
 class LiumRateLimitError(LiumError):
     """Rate limit exceeded."""
 

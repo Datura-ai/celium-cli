@@ -144,6 +144,9 @@ class PodInfo(_Serializable):
     # None when the API did not send it. ``executor`` describes the whole host, so
     # for a GPU-split rental (2 of the host's 8) this is the smaller number.
     gpu_count: Optional[int] = None
+    # The workspace the pod belongs to (lium-platform DAH-3030); None from a server without
+    # workspaces or for a pod from before them.
+    workspace_id: Optional[str] = None
 
     def eta_hint(self) -> Optional[str]:
         """One line for a pod that is still starting, e.g. ``est. ready in ~18 s (phase: pulling image)``.
@@ -334,6 +337,34 @@ class GpuStats(_Serializable):
         return {"memory_pct": self.memory_pct}
 
 
+@dataclass
+class WorkspaceInfo:
+    """A workspace as the API describes it (lium-platform DAH-2975 / DAH-3030)."""
+
+    id: str
+    name: str
+    role: str  # the caller's role: owner / admin / member
+    billing_owner_user_id: str
+    pending_billing_owner_user_id: Optional[str] = None
+    created_at: Optional[str] = None
+    # Only GET /users/me says so; None when read from GET /workspaces
+    is_personal: Optional[bool] = None
+
+    def matches(self, name_or_id: str) -> bool:
+        """Whether ``name_or_id`` names this workspace: its id, or its name (case-insensitive)."""
+        return name_or_id == self.id or name_or_id.lower() == self.name.lower()
+
+
+@dataclass
+class WorkspaceMember:
+    user_id: str
+    name: str
+    email: Optional[str]
+    role: str
+    is_billing_owner: bool
+    joined_at: Optional[str] = None
+
+
 __all__ = [
     "ExecutorInfo",
     "PodInfo",
@@ -344,4 +375,6 @@ __all__ = [
     "VolumeInfo",
     "SSHKey",
     "GpuStats",
+    "WorkspaceInfo",
+    "WorkspaceMember",
 ]
