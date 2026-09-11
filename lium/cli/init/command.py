@@ -9,6 +9,7 @@ from lium.cli import ui
 from lium.cli.interactive import is_interactive
 from lium.cli.settings import config
 from lium.cli.utils import CliFailure, EXIT_API_ERROR, EXIT_CONFIGURATION_ERROR, EXIT_GENERAL_ERROR, handle_errors
+from lium.sdk.config import API_KEY_ENV_VAR, API_KEY_SECTION_ENV_VAR, Config
 from .actions import (
     SaveApiKeyAction,
     SetupApiKeyAction,
@@ -70,7 +71,21 @@ def init_command(api_key: str | None, no_browser: bool, session: str | None, jso
         # the browser flows talk to a person (URLs, "waiting…"); a machine caller has a key
         raise CliFailure(
             "invalid_arguments",
-            "--json needs --api-key or an exported LIUM_API_KEY; the browser flows print for a person.",
+            f"--json needs --api-key or an exported {API_KEY_ENV_VAR} (or {API_KEY_SECTION_ENV_VAR}); "
+            "the browser flows print for a person.",
+            EXIT_CONFIGURATION_ERROR,
+        )
+    # With a workspace named for this command (`-w` / LIUM_WORKSPACE, lium#183) every command runs
+    # with the key saved for THAT workspace and nothing else; `init` writes the account key
+    # (`[api] api_key`), so an init that exited 0 here would be followed by `No API key is saved
+    # for workspace …` on the very next command.
+    requested_workspace = os.environ.get("LIUM_WORKSPACE")
+    if requested_workspace:
+        raise CliFailure(
+            "invalid_arguments",
+            f"LIUM_WORKSPACE={requested_workspace} is set: commands run with the key saved for that workspace, "
+            "which `lium init` does not write. Run `lium keys create <name> --workspace "
+            f"{requested_workspace} --save`, or unset LIUM_WORKSPACE to set up the account key.",
             EXIT_CONFIGURATION_ERROR,
         )
 
@@ -88,24 +103,15 @@ def init_command(api_key: str | None, no_browser: bool, session: str | None, jso
         _report("flag", ssh_path, json_output)
         return
 
-    # LIUM_API_KEY is exported: every command already uses it (the environment wins over the
-    # config file; the SDK reads this variable and no other), so there is nothing to
-    # authenticate — with --session or --no-browser included, where the existing actions
-    # would silently do nothing. Say so instead of doing only the SSH half in silence.
+    # A key is exported (LIUM_API_API_KEY or LIUM_API_KEY — the SDK reads both, in that order,
+    # since lium#136): every command already uses it (the environment wins over the config
+    # file), so there is nothing to authenticate — with --session or --no-browser included,
+    # where the existing actions would silently do nothing. Say so instead of doing only the
+    # SSH half in silence.
     if _env_key_name():
         ssh_path = _setup_ssh()
         _report("env", ssh_path, json_output)
         return
-
-    # The CLI-only alias is read by `lium config` but not by the SDK that every command goes
-    # through: an init that accepted it would exit 0 and leave `lium ps` with no key.
-    if os.environ.get("LIUM_API_API_KEY") and not _file_key():
-        raise CliFailure(
-            "unsupported_env_key",
-            "LIUM_API_API_KEY is read by the CLI config only; the commands read LIUM_API_KEY. "
-            "Export LIUM_API_KEY instead, or run 'lium init --api-key <key>'.",
-            EXIT_CONFIGURATION_ERROR,
-        )
 
     # Step 2: verify a pending session
     if session:
@@ -139,14 +145,25 @@ def init_command(api_key: str | None, no_browser: bool, session: str | None, jso
     _report("config" if api_result.data.get("already_configured") else "browser", ssh_path, json_output)
 
 
-def _file_key() -> str | None:
-    """The key in ~/.lium/config.ini itself — not what the environment overrides it with."""
-    return config.get_all().get("api", {}).get("api_key")
-
-
 def _env_key_name() -> str | None:
-    """`LIUM_API_KEY` when it is exported — the one variable both the CLI and the SDK read."""
-    return "LIUM_API_KEY" if os.environ.get("LIUM_API_KEY") else None
+    """The exported key variable the next command will read, in the SDK's order (``LIUM_API_API_KEY``,
+    then ``LIUM_API_KEY`` — ``Config.load``, lium#136); None when neither is set."""
+    for name in (API_KEY_SECTION_ENV_VAR, API_KEY_ENV_VAR):
+        if os.environ.get(name):
+            return name
+    return None
+
+
+def _resolved_source() -> tuple[str, str | None]:
+    """Where the next command reads its key — the SDK's own resolution (``Config.load``), which is what
+    ``lium whoami --json`` prints — and the workspace whose saved key wins over ``[api] api_key`` when
+    ``lium workspaces use`` selected one (``[workspaces] active``, lium#183); None otherwise."""
+    try:
+        resolved = Config.load()
+    except ValueError:
+        return config.get_source("api.api_key"), None
+    active = resolved.workspace if "[workspace." in resolved.api_key_source else None
+    return resolved.api_key_source, active
 
 
 def _setup_ssh() -> str:
@@ -167,12 +184,14 @@ def _report(saved_from: str, ssh_key_path: str, json_output: bool) -> None:
     """
     config_path = str(config.get_config_path())
     env_name = _env_key_name()
+    source, active_workspace = _resolved_source()
     if json_output:
         click.echo(json.dumps({
             "ok": True,
-            "api_key_source": config.get_source("api.api_key"),
+            "api_key_source": source,
             "saved_from": saved_from,
             "env_key": env_name,          # set ⇒ this variable wins over the saved key while exported
+            "active_workspace": active_workspace,   # set ⇒ that workspace's saved key wins over [api] api_key
             "config_path": config_path,
             "ssh_key_path": ssh_key_path,
         }, sort_keys=True))
@@ -185,5 +204,12 @@ def _report(saved_from: str, ssh_key_path: str, json_output: bool) -> None:
         ui.info(f"Using the API key from {env_name}; the key is not written to {config_path}")
     elif saved_from == "config":
         ui.info(f"API key already saved in {config_path}")
+    if active_workspace and saved_from in ("flag", "session", "browser"):
+        # the browser and --session flows save an [api] key too: the same warning where the active
+        # workspace's saved key, not the one just saved, is what the next command reads
+        ui.warning(
+            f"`lium workspaces use {active_workspace}` is in effect: commands run with the key saved for "
+            f"'{active_workspace}', not the key saved now (`lium config unset workspaces.active` to undo)"
+        )
     if ssh_key_path:
         ui.info(f"SSH key: {ssh_key_path}")

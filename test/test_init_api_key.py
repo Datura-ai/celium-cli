@@ -23,6 +23,7 @@ def home(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("LIUM_API_KEY", raising=False)
     monkeypatch.delenv("LIUM_API_API_KEY", raising=False)
+    monkeypatch.delenv("LIUM_WORKSPACE", raising=False)   # a requested workspace makes init refuse (lium#183)
     fresh = ConfigManager()
     monkeypatch.setattr(init_actions, "config", fresh)
     monkeypatch.setattr(init_command, "config", fresh)
@@ -220,39 +221,88 @@ def test_env_key_text_names_the_variable_and_the_file(monkeypatch, home, ssh_set
     assert "LIUM_API_KEY" in result.output and "not written to" in result.output
 
 
-def test_the_cli_only_alias_is_not_a_key_source_for_init(monkeypatch, home, ssh_setup_ok, api):
-    """The SDK reads LIUM_API_KEY only; an init that trusted LIUM_API_API_KEY would exit 0 and leave
-    every following command with no key. The real actions run here — nothing is stubbed but the
-    browser, which must not open."""
+def test_the_cli_alias_variable_is_a_key_source_like_the_sdk_reads_it(monkeypatch, home, ssh_setup_ok, api):
+    """Since lium#136 the SDK's `Config.load()` reads LIUM_API_API_KEY before LIUM_API_KEY, so every command works
+    with only the alias exported; an init that refused it (the pre-#136 `unsupported_env_key`) sent the caller to
+    fix something that was not broken. It takes the env path: nothing saved, no request, browser not opened."""
     monkeypatch.setenv("LIUM_API_API_KEY", "sk_alias")
     monkeypatch.setattr(init_actions, "browser_auth", lambda: pytest.fail("browser must not open"))
 
-    result = CliRunner().invoke(cli, ["init"])
+    result = CliRunner().invoke(cli, ["init", "--json"])
 
-    assert result.exit_code == EXIT_CONFIGURATION_ERROR
-    assert "unsupported" in result.output.lower() or "LIUM_API_KEY" in result.output
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["saved_from"] == "env" and payload["env_key"] == "LIUM_API_API_KEY"
+    assert payload["api_key_source"] == "env:LIUM_API_API_KEY"   # what `lium whoami --json` prints too
     assert home.get_all().get("api", {}).get("api_key") is None
     assert api.seen == []
 
 
-def test_the_alias_next_to_a_saved_key_is_not_an_error(monkeypatch, home, ssh_setup_ok, api):
-    # piped (CliRunner's stdin is not a terminal) and at a terminal: both report the saved key
+def test_api_key_with_the_alias_exported_warns_that_it_wins(monkeypatch, home, ssh_setup_ok, api):
+    monkeypatch.setenv("LIUM_API_API_KEY", "sk_alias")
+
+    result = CliRunner().invoke(cli, ["init", "--api-key", "sk_good"])
+
+    assert result.exit_code == 0, result.output
+    assert api.seen == ["sk_good"] and home.get_all()["api"]["api_key"] == "sk_good"   # the file, not the env
+    assert "LIUM_API_API_KEY is set and wins" in result.output
+
+
+def test_init_refuses_when_a_workspace_is_requested_for_the_command(monkeypatch, home, ssh_setup_ok, api):
+    """With LIUM_WORKSPACE (or the global -w) set, every command runs with the key saved for that workspace and
+    nothing else (lium#183). `init` writes the account key, so an init that exited 0 here would be followed by
+    `No API key is saved for workspace …` on the next command: refuse before checking or saving anything."""
+    monkeypatch.setenv("LIUM_WORKSPACE", "research")
+
+    for argv in (["init", "--api-key", "sk_good", "--json"], ["-w", "research", "init", "--api-key", "sk_good", "--json"]):
+        result = CliRunner().invoke(cli, argv)
+
+        assert result.exit_code == EXIT_CONFIGURATION_ERROR, argv
+        envelope = json.loads(result.stderr)
+        assert envelope["error"]["code"] == "invalid_arguments"
+        assert "lium keys create <name> --workspace research --save" in envelope["error"]["message"]
+        assert api.seen == [] and home.get_all().get("api", {}).get("api_key") is None
+
+
+def test_api_key_source_follows_the_active_workspace_key(home, ssh_setup_ok, api):
+    """`lium workspaces use research` saved a key under [workspace.research] and made it the default: the next
+    command reads THAT key (lium#183), not the [api] key init just saved. `api_key_source` must say so — the same
+    value `lium whoami --json` prints — and the text warns."""
+    home.set("workspaces.active", "research")
+    home.set_in_section("workspace.research", "api_key", "sk_research")
+
+    result = CliRunner().invoke(cli, ["init", "--api-key", "sk_good", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["saved_from"] == "flag" and home.get("api.api_key") == "sk_good"
+    assert payload["api_key_source"] == f"config:{home.config_file} [workspace.research] api_key"
+    assert payload["active_workspace"] == "research"
+
+    result = CliRunner().invoke(cli, ["init", "--api-key", "sk_good"])
+
+    assert result.exit_code == 0, result.output
+    assert "`lium workspaces use research` is in effect" in result.output
+
+
+def test_the_alias_next_to_a_saved_key_reports_the_environment(monkeypatch, home, ssh_setup_ok, api):
+    """LIUM_API_API_KEY exported next to a saved [api] key: the SDK reads the variable first (lium#136), so init
+    says the environment is the source — as it does for LIUM_API_KEY — instead of 'already saved'; piped and at a
+    terminal alike, and no auth session is requested."""
     monkeypatch.setenv("LIUM_API_API_KEY", "sk_alias")
     home.set("api.api_key", "sk_file")
     monkeypatch.setattr(init_actions, "init_auth", lambda: pytest.fail("no auth session must be requested"))
 
     piped = CliRunner().invoke(cli, ["init"])
     assert piped.exit_code == 0, piped.output
-    assert "already saved in" in piped.output
+    assert "Using the API key from LIUM_API_API_KEY" in piped.output
 
     monkeypatch.setattr(interactive, "stdin_is_terminal", lambda: True)
-    monkeypatch.setattr(
-        init_actions.SetupApiKeyAction, "execute",
-        lambda self, ctx: ActionResult(ok=True, data={"already_configured": True}),
-    )
+    monkeypatch.setattr(init_actions.SetupApiKeyAction, "execute", lambda self, ctx: pytest.fail("browser flow must not run"))
     at_terminal = CliRunner().invoke(cli, ["init"])
     assert at_terminal.exit_code == 0, at_terminal.output
-    assert "already saved in" in at_terminal.output
+    assert "Using the API key from LIUM_API_API_KEY" in at_terminal.output
+    assert home.get_all()["api"]["api_key"] == "sk_file"   # the file is left alone
 
 
 def test_env_key_wins_over_session_and_no_browser(monkeypatch, home, ssh_setup_ok, api):

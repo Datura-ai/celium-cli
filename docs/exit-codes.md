@@ -88,8 +88,7 @@ Commands add their own codes for the failures only they can have — for example
 `up` raises `node_selection_failed`, `template_failed`, `jupyter_install_failed`,
 `unreadable_dockerfile`; `exec` raises `unreadable_script`; `rm` raises
 `removal_failed`; `fund` raises `transfer_failed`; `init` raises `api_unreachable` (3, the
-key passed with `--api-key` was not checked), `empty_api_key` (2) and `unsupported_env_key`
-(2, only the CLI-era alias `LIUM_API_API_KEY` is set), and its `invalid_api_key` hint says
+key passed with `--api-key` was not checked) and `empty_api_key` (2), and its `invalid_api_key` hint says
 nothing was saved. They follow the same envelope
 and use the exit code of their family from the table above. Where re-running
 the command would not be safe the hint says so: `jupyter_install_failed` from
