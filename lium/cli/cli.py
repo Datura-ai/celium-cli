@@ -2,6 +2,7 @@
 
 import click
 import os
+from importlib import import_module
 from importlib.metadata import version, PackageNotFoundError
 from lium.__about__ import __version__ as fallback_version
 from .themed_console import ThemedConsole
@@ -33,7 +34,6 @@ from .topup import topup_command
 from .gpu_splitting import gpu_splitting_command
 from .bk import bk_command
 from .mine import mine_command
-from .provider import provider_command
 from .volumes import volumes_command
 from .ssh_keys import ssh_keys_command
 from .schedules import schedules_command
@@ -52,7 +52,25 @@ def get_version():
         return os.environ.get("LIUM_BUILD_VERSION", fallback_version)
 
 
-@click.group(invoke_without_command=True)
+# Command groups imported the first time they are invoked (or listed by --help/completion). The
+# provider group and the package behind it — pydantic models, JWT, the portal client — are a fifth of
+# the CLI's import time warm (89 of 440 ms on a pod) and 40 % cold (281 of 696 ms on a fresh box);
+# `lium ls`/`ps`/`up` never touch it (DAH-3053).
+LAZY_COMMANDS = {"provider": "lium.cli.provider:provider_command"}
+
+
+class LazyGroup(click.Group):
+    def list_commands(self, ctx):
+        return sorted(set(super().list_commands(ctx)) | set(LAZY_COMMANDS))
+
+    def get_command(self, ctx, cmd_name):
+        if cmd_name in LAZY_COMMANDS and cmd_name not in self.commands:
+            module, attr = LAZY_COMMANDS[cmd_name].split(":")
+            self.add_command(getattr(import_module(module), attr), cmd_name)
+        return super().get_command(ctx, cmd_name)
+
+
+@click.group(cls=LazyGroup, invoke_without_command=True)
 @click.version_option(version=get_version(), prog_name="lium")
 @click.pass_context
 def cli(ctx):
@@ -98,7 +116,6 @@ cli.add_command(topup_command)
 cli.add_command(gpu_splitting_command)
 cli.add_command(bk_command, name="bk")
 cli.add_command(mine_command)
-cli.add_command(provider_command)
 cli.add_command(volumes_command)
 cli.add_command(ssh_keys_command, name="ssh-keys")
 cli.add_command(schedules_command, name="schedules")
