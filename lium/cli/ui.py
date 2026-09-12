@@ -93,7 +93,9 @@ def confirm(message: str, default: bool = False, *, hint: str = "re-run with --y
             EXIT_CONFIGURATION_ERROR,
         )
     try:
-        return Confirm.ask(message, default=default)
+        # Asked on the themed console, not Rich's global one: under `--json` the
+        # console is on stderr and the question must not land in the JSON on stdout.
+        return Confirm.ask(message, default=default, console=console)
     except EOFError:
         # The terminal went away mid-prompt. No answer is not a yes.
         raise CliFailure(
