@@ -1,9 +1,11 @@
 """Remove (rm) command implementation."""
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional
 import click
+from rich.markup import escape
 
 from lium.sdk import Lium, PodInfo
 from lium.cli import ui
@@ -15,6 +17,7 @@ from lium.cli.utils import (
     CliFailure,
     TargetMatch,
     handle_errors,
+    narrate_on_stderr_under_json,
 )
 from . import validation, parsing
 from .actions import RemovePodsAction, ScheduleRemovalAction
@@ -121,6 +124,23 @@ def human_approved_removing_every_pod(pods: List[PodInfo]) -> bool:
         return False
 
 
+def pod_ref(pod: PodInfo) -> dict:
+    """The three names a pod goes by, for the JSON result: what `ps`, `rm` and `describe` accept."""
+    return {"id": pod.id, "huid": pod.huid, "name": pod.name}
+
+
+def removal_report(action: str, pods: List[PodInfo], termination_time: Optional[datetime]) -> dict:
+    """``{"action": "removed"|"scheduled", "pods": [...], "termination_time": iso|null}``: what was done to which pods.
+
+    Printed under ``ok: true`` on success; on a partial failure it is the ``data`` of the error envelope.
+    """
+    return {
+        "action": action,
+        "pods": [pod_ref(pod) for pod in pods],
+        "termination_time": termination_time.isoformat() if termination_time else None,
+    }
+
+
 @click.command("rm")
 @click.argument("targets", required=False)
 @click.option("--all", "-a", "remove_all", is_flag=True, help="Remove all active pods")
@@ -133,7 +153,13 @@ def human_approved_removing_every_pod(pods: List[PodInfo]) -> bool:
     is_flag=True,
     help="Treat TARGETS as ids, names or huids only; never as 'lium ps' row numbers (for scripts).",
 )
+@click.option(
+    "--json", "json_output", is_flag=True,
+    help="Print the result as machine-readable JSON on stdout; progress goes to stderr, "
+         "a failure is the JSON error envelope on stderr",
+)
 @handle_errors
+@narrate_on_stderr_under_json
 def rm_command(
     targets: Optional[str],
     remove_all: bool,
@@ -141,6 +167,7 @@ def rm_command(
     in_duration: Optional[str],
     at_time: Optional[str],
     name_only: bool,
+    json_output: bool,
 ):
     """Remove (terminate) GPU pods.
 
@@ -155,13 +182,26 @@ def rm_command(
     \b
     Removal is irreversible. Exits non-zero when nothing matched TARGETS, so a
     typo cannot look like a successful teardown.
+
+    \b
+    Examples:
+      lium rm eager-wolf-aa              # Remove one pod
+      lium rm 1,2 --yes                  # Rows 1 and 2 of your last 'lium ps', no prompt
+      lium rm my-pod --in 6h             # Schedule the removal
+      lium rm --all -y --json            # Remove every pod; print what was removed as JSON
     """
     lium = Lium()
     show_workspace(lium, acting=True)
     plan = build_removal_plan(
         lium, targets, remove_all, in_duration, at_time, allow_index=False if name_only else None
     )
+    scheduling = bool(in_duration or at_time)
     if plan is None:
+        # `--all` on an empty account: nothing to do is the requested state (exit 0), and a
+        # program reading stdout still needs the document that says so.
+        if json_output:
+            report = removal_report("scheduled" if scheduling else "removed", [], None)
+            click.echo(json.dumps({"ok": True, **report}, sort_keys=True, ensure_ascii=False))
         return
 
     if remove_all and not yes and not human_approved_removing_every_pod(plan.pods):
@@ -174,21 +214,28 @@ def rm_command(
     if plan.termination_time:
         context["termination_time"] = plan.termination_time.isoformat()
         action = ScheduleRemovalAction()
-        done_verb = "Scheduled removal for"
+        done_verb, done_action = "Scheduled removal for", "scheduled"
     else:
         action = RemovePodsAction()
-        done_verb = "Removed"
+        done_verb, done_action = "Removed", "removed"
 
     failed_huids = action.execute(context).data["failed_huids"]
-    removed_huids = [pod.huid for pod in plan.pods if pod.huid not in failed_huids]
+    done_pods = [pod for pod in plan.pods if pod.huid not in failed_huids]
+    report = removal_report(done_action, done_pods, plan.termination_time)
 
     # Say what happened: silence is indistinguishable from having done nothing.
-    if removed_huids:
-        ui.success(f"{done_verb} {len(removed_huids)} pod(s): {', '.join(removed_huids)}")
+    if json_output and not failed_huids:
+        click.echo(json.dumps({"ok": True, **report}, sort_keys=True, ensure_ascii=False))
+        return
+    if done_pods and not json_output:
+        ui.success(f"{done_verb} {len(done_pods)} pod(s): {escape(', '.join(pod.huid for pod in done_pods))}")
 
     if failed_huids:
+        # The pods that did go ride along in ``data``: a caller must not retry those, and
+        # the message alone would make it parse the list back out of prose.
         raise CliFailure(
             "removal_failed",
             f"Failed to remove pods: {', '.join(failed_huids)}",
             EXIT_GENERAL_ERROR,
+            data={**report, "failed": [pod_ref(pod) for pod in plan.pods if pod.huid in failed_huids]},
         )

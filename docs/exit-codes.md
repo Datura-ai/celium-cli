@@ -49,16 +49,31 @@ When a command is run for a machine reader, every failure is one JSON object:
 - `code` is a stable `snake_case` identifier to branch on; `message` is for people and may change wording.
 - `hint` is always present: the next command or option to try.
 - `exit_code` repeats the process exit status for readers that only see the streams.
-- `data` (optional) carries anything the caller must not lose along with the failure — `lium signup --json`, for one, returns the credentials it generated.
+- `data` (optional) carries anything the caller must not lose along with the failure — `lium signup --json`, for one, returns the credentials it generated; `lium up` puts the pod it rented in `data.pod_id` / `data.pod_name` on the failures it raises after the rent (`pod_not_ready`, `pod_start_failed`, `gpu_count_mismatch` with `data.pod_removed` true or false under `--strict-gpus`, `gpu_verification_failed`, `jupyter_install_failed`) and on an API error (`server_error`, `rate_limited`, …) or an API that stops answering (`api_timeout`: the transport error `Lium.ps()` and `schedule_termination` re-raise once their retries run out, `install_jupyter` on the first lost connection) during the wait, the `--ttl` retry or the Jupyter install, because that pod exists and bills; a lost connection on the `--strict-gpus` removal is `gpu_count_mismatch` with `data.pod_removed` false; when `--volume new:…` created a volume, `lium up` puts it in `data.volume_id` (the API id) and `data.volume_huid` (what `--volume id:<HUID>` takes) on `timeout_before_rent` and on the failures at the rent itself (`api_timeout`, `rent_rejected`, and an API error such as `server_error`), because the volume exists and is kept; `lium rm` puts the pods that were removed in `data.pods` and the rest in `data.failed` on `removal_failed`.
 
 The envelope goes to **stderr**, stdout is left empty, and the process exits
 with `exit_code`. On success stdout carries the result JSON. Read both streams;
 do not `2>/dev/null`.
 
+`lium up --json` and `lium rm --json` act before they answer, so their progress
+lines (the node picked, the rent, the wait, the confirmation prompt) go to
+stderr and stdout holds exactly one document:
+
+```json
+{"ok": true, "pod": {"id": "…", "huid": "eager-wolf-aa", "name": "train", "status": "RUNNING", "ssh_cmd": "…", "ssh_command": "…", "ports": {…}, "gpu_type": "…", "gpu_count": 1, "price_per_hour": 0.24, "…": "…"}, "termination_time": null}
+{"ok": true, "action": "removed", "pods": [{"id": "…", "huid": "eager-wolf-aa", "name": "train"}], "termination_time": null}
+```
+
+`up --json` implies `--no-ssh`: the command ends once the pod is ready, and `pod`
+has the keys of one row of `lium ps --format json`. `termination_time` is the
+`--ttl`/`--until` time (or `--in`/`--at` for `rm`, where `action` is then
+`"scheduled"`), else `null`. Pair `--json` with `--yes`: behind a pipe a
+confirmation cannot be asked and the command fails with `confirmation_required`.
+
 Machine mode is on when any of these holds:
 
 - `--format json` (list commands: `ls`, `ps`, `templates`, `balance`, `describe`);
-- `--json` (accepted everywhere `--format json` is, and on `exec`, `describe`, `fund`, `signup`, `audit`, `topup`);
+- `--json` (accepted everywhere `--format json` is, and on `up`, `rm`, `exec`, `describe`, `fund`, `signup`, `audit`, `topup`);
 - the environment variable `LIUM_OUTPUT=json` — this switches *failures* to the envelope on every command; success output is JSON only on commands that take `--format json`/`--json`, so pass the flag as well when you need to parse the result.
 
 Without any of these, the same information is printed as text: the error on one
